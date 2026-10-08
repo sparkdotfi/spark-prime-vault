@@ -1,0 +1,14 @@
+{
+  "lib/forge-std": {
+    "rev": "0258fe875e1d8e207c1eb7175e542ea32356773c"
+  },
+  "lib/oz": {
+    "rev": "6c2ab375a9c7db0fa8c21fba1ed3b2057f75dd75"
+  },
+  "lib/oz-upgradeable": {
+    "rev": "fbb026730467fc7c4e3cf1cac15ca6120cf7520d"
+  },
+  "lib/spark-address-registry": {
+    "rev": "98091964e0ef9f74bb2b6da3646f8e6d16448588"
+  }
+}

@@ -1,0 +1,12 @@
+[submodule "lib/forge-std"]
+	path = lib/forge-std
+	url = git@github.com:foundry-rs/forge-std.git
+[submodule "lib/oz"]
+	path = lib/oz
+	url = git@github.com:OpenZeppelin/openzeppelin-contracts.git
+[submodule "lib/oz-upgradeable"]
+	path = lib/oz-upgradeable
+	url = git@github.com:OpenZeppelin/openzeppelin-contracts-upgradeable.git
+[submodule "lib/spark-address-registry"]
+	path = lib/spark-address-registry
+	url = git@github.com:sparkdotfi/spark-address-registry.git
