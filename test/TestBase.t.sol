@@ -25,6 +25,8 @@ interface ISparkVaultLike {
 
     function balanceOf(address user) external view returns (uint256);
 
+    function convertToAssets(uint256 shares) external view returns (uint256);
+
     function convertToShares(uint256 assets) external view returns (uint256);
 
 }
@@ -66,6 +68,8 @@ abstract contract TestBase is Test {
     uint256 internal constant MINIMUM_WITHDRAW = 100e6;
     uint256 internal constant VAULT_CAPACITY   = 100_000_000e6;
     uint256 internal constant RAY              = 1e27;
+    uint256 internal constant FIVE_PCT_VSR     = 1.000000001547125957863212448e27;
+    uint256 internal constant MAX_VSR          = 1.000000021979553151239153027e27;  // 100% APY
 
     address internal admin       = makeAddr("admin");
     address internal guardian    = makeAddr("guardian");
