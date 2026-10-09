@@ -27,11 +27,11 @@ interface IERC4626Like {
 
     function deposit(uint256 amount, address recipient) external returns (uint256 shares);
 
-    function redeem(uint256 shares, address owner, address receiver)
+    function redeem(uint256 shares, address receiver, address owner)
         external
         returns (uint256 assets);
 
-    function withdraw(uint256 assets, address owner, address receiver)
+    function withdraw(uint256 assets, address receiver, address owner)
         external
         returns (uint256 shares);
 
@@ -39,22 +39,19 @@ interface IERC4626Like {
 
     function convertToAssets(uint256 shares) external view returns (uint256 assets);
 
+    function maxRedeem(address owner) external view returns (uint256);
+
 }
 
-// TODO: Remove spUSDC and make generic
 // TODO: _processDepositQueue and _processRedeemQueue should take in a variable that allows netting withdrawals against deposits (there should be a third function)
-// TODO: Remove USDC custody altogether, just use take() to get spUSDC
 // TODO: Clean up roles
 // TODO: Add more validation to setters
 // TODO: Should processDepositQueue and processRedeemQueue both be permissioned, if so, should we make all withdrawals async?
 // TODO: Refactor setChi to use nominal
 // TODO: requestDepositWithPermit?
-// TODO: Take only up to spUSDC.balanceOf(address(this)) - totalQueuedDepositShares in take()
 // TODO: Get pendingOfReceiver()/getPendingOfOwner() even needed?
-// TODO: depositFromSavings withdrawFromSavings() should be gone
 // TODO: Ask Sam if we need to add capability for reducing deposit/redeem request amounts
 // TODO: Ask Sam if we need to add capability for updating receiver in deposit/redeem requests
-// TODO: Prevent access to totalQueuedDepositShares in _withdrawFromSavings() (remove?)
 // TODO: Separate role based functions into dedicated sections?
 // TODO: Remove functions in Liquidity internal helper functions?
 
@@ -70,6 +67,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     event Transfer(address indexed from, address indexed to, uint256 value);
 
+    // TODO: Might be worth putting the sparkVault shares as well.
     event DepositRequest(
         address indexed owner,
         address indexed recipient,
@@ -79,7 +77,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     event CancelDepositRequest(uint256 indexed requestId, uint256 assets);
 
-    // Emitted when spPRIME is minted to `recipient`, instantly or when a queued deposit is filled.
+    // Emitted when shares are minted to `recipient`, instantly or when a queued deposit is filled.
     event Deposit(address indexed owner, address indexed recipient, uint256 assets, uint256 shares);
 
     event RedeemRequest(
@@ -92,7 +90,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     event CancelRedeemRequest(uint256 indexed requestId, uint256 shares);
 
-    // Emitted when USDC is paid to `recipient`, instantly or when a queued redeem is filled.
+    // Emitted when depositAssets are paid to `recipient`, instantly or when a queued redeem is
+    // filled.
     event Redeem(
         address indexed owner,
         address indexed recipient,
@@ -115,7 +114,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     event Paused();
 
     // TODO: Should not have `to` as it can only ever be the caller.
-    event Take(address indexed to, uint256 value);
+    event Take(address indexed to, uint256 shares);
 
     event Unpaused();
 
@@ -127,14 +126,14 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     struct QueuedDepositRequest {
         address owner;      // Paid the assets (deposit), refunded on cancel
-        address recipient;  // Receives the spPRIME (deposit)
-        uint256 amount;     // spUSDC shares in the deposit queue
+        address recipient;  // Receives the shares (deposit)
+        uint256 shares;     // sparkVault shares in the deposit queue
     }
 
     struct QueuedRedeemRequest {
         address owner;      // Paid the shares (redeem), refunded on cancel
-        address recipient;  // Receives the USDC (redeem)
-        uint256 amount;     // spPRIME shares in the redeem queue
+        address recipient;  // Receives the depositAsset (redeem)
+        uint256 shares;     // Shares in the redeem queue
         uint256 fee;        // redeemFee when the request was made [wad]
     }
 
@@ -167,8 +166,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     /*** Storage variables                                                                      ***/
     /**********************************************************************************************/
 
-    address public asset;
-    address public spUSDC;
+    address public depositAsset;
+    address public sparkVault;
 
     uint8 public decimals;
 
@@ -184,15 +183,15 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     bool public paused;
 
     uint256 public maxCapacity;  // Max totalSupply, escrow included [shares]
-    uint256 public minDeposit;   // [asset units]
-    uint256 public minWithdraw;  // [asset units]
+    uint256 public minDeposit;   // [depositAsset units]
+    uint256 public minWithdraw;  // [depositAsset units]
     uint256 public redeemFee;    // Fee locked into new redeem requests [wad]
     uint256 public maxRedeemFee; // [wad]
 
     uint256 public totalSupply;
 
-    uint256 public totalQueuedDepositShares;  // spUSDC held for queued deposits
-    uint256 public totalQueuedRedeemShares;   // spPRIME escrowed for queued redeems
+    uint256 public sparkVaultSharesEncumberedByDeposits;
+    uint256 public sharesEncumberedByRedeems;
 
     QueuedDepositRequest[] public depositQueue;
     QueuedRedeemRequest[]  public redeemQueue;
@@ -221,24 +220,24 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     // NOTE: Neither UUPSUpgradeable nor AccessControlEnumerableUpgradeable require init functions
     //       to be called.
     function initialize(
-        address        asset_,
-        address        spUSDC_,
+        address        depositAsset_,
+        address        sparkVault_,
         string  memory name_,
         string  memory symbol_,
         address        admin
     )
         initializer external
     {
-        require(IERC4626Like(spUSDC_).asset() == asset_, "SparkPrimeVault/asset-mismatch");
+        require(IERC4626Like(sparkVault_).asset() == depositAsset_, "SparkPrimeVault/asset-mismatch");
 
-        asset  = asset_;
-        spUSDC = spUSDC_;
-        name   = name_;
-        symbol = symbol_;
+        depositAsset = depositAsset_;
+        sparkVault   = sparkVault_;
+        name         = name_;
+        symbol       = symbol_;
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
 
-        decimals = IERC20Like(asset_).decimals();
+        decimals = IERC20Like(depositAsset_).decimals();
 
         chi = uint192(RAY);
         rho = uint64(block.timestamp);
@@ -247,7 +246,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         minVSR = RAY;
         maxVSR = RAY;
 
-        SafeERC20.forceApprove(IERC20OZ(asset_), spUSDC_, type(uint256).max);
+        SafeERC20.forceApprove(IERC20OZ(depositAsset_), sparkVault_, type(uint256).max);
     }
 
     // Only DEFAULT_ADMIN_ROLE can upgrade the implementation
@@ -291,77 +290,32 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         emit VSRSet(vsr = vsr_);
     }
 
-    function take(uint256 assets_) external onlyRole(TAKER_ROLE) {
+    function take(uint256 sparkVaultShares_) external onlyRole(TAKER_ROLE) {
         require(
-            assets_ <= IERC20Like(asset).balanceOf(address(this)),
-            "SparkPrimeVault/insufficient-liquidity"
+            sparkVaultShares_ <= maxRedeemableUnencumberedShares(),
+            "SparkPrimeVault/insufficient-unencumbered-shares"
         );
 
-        SafeERC20.safeTransfer(IERC20OZ(asset), msg.sender, assets_);
+        SafeERC20.safeTransfer(IERC20OZ(sparkVault), msg.sender, sparkVaultShares_);
 
-        emit Take(msg.sender, assets_);
+        emit Take(msg.sender, sparkVaultShares_);
     }
 
-    function depositToSavings(uint256 assets_) external onlyRole(REBALANCER_ROLE) {
-        require(
-            assets_ <= IERC20Like(asset).balanceOf(address(this)),
-            "SparkPrimeVault/insufficient-liquidity"
-        );
-
-        IERC4626Like(spUSDC).deposit(assets_, address(this));
-    }
-
-    function withdrawFromSavings(uint256 assets_) external onlyRole(REBALANCER_ROLE) {
-        _withdrawFromSavings(assets_);
-    }
-
-    // Mints spPRIME to queued depositors FIFO, up to `maxAssets_` and the available capacity
+    // Mints shares to queued depositors FIFO, up to `maxAssets_` and the available capacity
     function processDepositQueue(uint256 maxAssets_)
         external
         onlyRole(REBALANCER_ROLE)
         whenNotPaused
     {
-        uint192 chi_    = drip();
-        uint256 budget_ = _min(maxAssets_, availableCapacity() * chi_ / RAY);
-        uint256 i_      = depositHead;
-
-        uint256 skipped_;
-
-        for (; i_ < depositQueue.length; ++i_) {
-            QueuedDepositRequest storage request_ = depositQueue[i_];
-
-            // Cancelled: skip, but bound the walk so the head still advances over a long run.
-            if (request_.amount == 0) {
-                if (++skipped_ == 500) break;
-
-                continue;
-            }
-
-            uint256 value_  = IERC4626Like(spUSDC).convertToAssets(request_.amount);
-            uint256 assets_ = _min(value_, budget_);
-
-            // A partial fill must mint at least one share, else wait for more room.
-            if (assets_ * RAY / chi_ == 0 && assets_ < value_) break;
-
-            // Rounds up so the accepted spUSDC is always worth at least the credited assets.
-            uint256 shares_ = _divup(request_.amount * assets_, value_);
-
-            totalQueuedDepositShares -= shares_;
-            request_.amount          -= shares_;
-            budget_                  -= assets_;
-
-            _mint(request_.owner, request_.recipient, assets_);
-
-            // TODO: Investigate if we can get stuck here with a request with `shares_` that round
-            //       such that `request_.amount` is never zeroed.
-            if (request_.amount != 0) break;  // Partial fill, entry stays at the head
-        }
-
-        depositHead = i_;
+        _processDepositQueue(maxAssets_);
     }
 
-    // Pays queued redeemers FIFO, up to `maxAssets_` net USDC and the available liquidity
-    function processRedeemQueue(uint256 maxAssets_) external whenNotPaused {
+    // Pays queued redeemers FIFO, up to `maxAssets_` net depositAssets and the available liquidity.
+    function processRedeemQueue(uint256 maxAssets_)
+        external
+        onlyRole(REBALANCER_ROLE)
+        whenNotPaused
+    {
         _processRedeemQueue(maxAssets_);
     }
 
@@ -392,9 +346,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     /**********************************************************************************************/
 
     // TODO: Make a `_requestDeposit` function instead of internally calling a public function.
-    // Mints spPRIME to `recipient_` for as much of `assets_` as the capacity allows, the rest waits
-    // in the deposit queue as spUSDC. Returns the queue index, or `type(uint256).max` when nothing
-    // was queued.
+    // Mints shares to `recipient_` for as much of `assets_` as the capacity allows, the rest waits
+    // in the deposit queue as sparkVault shares. Returns the queue index, or `type(uint256).max`
+    // when nothing was queued.
     function requestDeposit(uint256 assets_, address recipient_)
         public
         whenNotPaused
@@ -403,36 +357,27 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         require(recipient_ != address(0), "SparkPrimeVault/invalid-recipient");
         require(assets_ >= minDeposit,    "SparkPrimeVault/below-minimum");
 
-        uint192 chi_ = drip();
+        drip();
 
-        SafeERC20.safeTransferFrom(IERC20OZ(asset), msg.sender, address(this), assets_);
+        bool depositInstantly_ = sparkVaultSharesEncumberedByDeposits == 0;
 
-        // Instant part, only while nobody is queued ahead
-        uint256 instantAmount_ = totalQueuedDepositShares == 0
-            ? _min(assets_, availableCapacity() * chi_ / RAY)
-            : 0;
+        SafeERC20.safeTransferFrom(IERC20OZ(depositAsset), msg.sender, address(this), assets_);
 
-        if ((instantAmount_ * RAY) / chi_ == 0) {
-            instantAmount_ = 0;  // Below one share: queue it all instead
-        } else {
-            _mint(msg.sender, recipient_, instantAmount_);
-        }
-
-        if (instantAmount_ == assets_) return type(uint256).max;
-
-        uint256 shares_ = IERC4626Like(spUSDC).deposit(assets_ - instantAmount_, address(this));
-
-        // A remainder below one spUSDC share is absorbed.
-        // TODO: Consider a 0 request ID in this case, which may be a more clear sentinel.
-        if (shares_ == 0) return type(uint256).max;
+        uint256 sparkVaultShares_ = IERC4626Like(sparkVault).deposit(assets_, address(this));
 
         requestId_ = depositQueue.length;
 
-        depositQueue.push(QueuedDepositRequest(msg.sender, recipient_, shares_));
+        depositQueue
+            .push(QueuedDepositRequest(msg.sender, recipient_, sparkVaultShares_));
 
-        totalQueuedDepositShares += shares_;
+        sparkVaultSharesEncumberedByDeposits += sparkVaultShares_;
 
-        emit DepositRequest(msg.sender, recipient_, requestId_, assets_ - instantAmount_);
+        emit DepositRequest(msg.sender, recipient_, requestId_, assets_);
+
+        // Fill this request, only while nobody is queued ahead.
+        if (depositInstantly_) {
+            _processDepositQueue(type(uint256).max);
+        }
     }
 
     function requestDeposit(uint256 assets_, address recipient_, uint16 referral_)
@@ -443,11 +388,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         return requestDeposit(assets_, recipient_);
     }
 
-    // Refunds a queued deposit to its owner, with the spUSDC yield it earned while waiting.
+    // Refunds a queued deposit to its owner, with the sparkVault yield it earned while waiting.
     function cancelDepositRequest(uint256 requestId_, address recipient_) whenNotPaused external {
         QueuedDepositRequest memory request_ = depositQueue[requestId_];
 
-        require(request_.amount != 0, "SparkPrimeVault/no-request");
+        require(request_.shares != 0, "SparkPrimeVault/no-request");
 
         require(
             msg.sender == request_.owner || hasRole(GUARDIAN_ROLE, msg.sender),
@@ -456,9 +401,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         delete depositQueue[requestId_];
 
-        totalQueuedDepositShares -= request_.amount;
+        sparkVaultSharesEncumberedByDeposits -= request_.shares;
 
-        uint256 assets_ = IERC4626Like(spUSDC).redeem(request_.amount, recipient_, address(this));
+        uint256 assets_ =
+            IERC4626Like(sparkVault).redeem(request_.shares, recipient_, address(this));
 
         emit CancelDepositRequest(requestId_, assets_);
     }
@@ -477,7 +423,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
             "SparkPrimeVault/below-minimum"
         );
 
-        bool redeemInstantly_ = totalQueuedRedeemShares == 0;
+        bool redeemInstantly_ = sharesEncumberedByRedeems == 0;
 
         _transfer(msg.sender, address(this), shares_);
 
@@ -487,7 +433,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         redeemQueue.push(QueuedRedeemRequest(msg.sender, recipient_, shares_, fee_));
 
-        totalQueuedRedeemShares += shares_;
+        sharesEncumberedByRedeems += shares_;
 
         emit RedeemRequest(msg.sender, recipient_, requestId_, shares_, fee_);
 
@@ -500,7 +446,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     function cancelRedeemRequest(uint256 requestId_, address recipient_) whenNotPaused external {
         QueuedRedeemRequest memory request_ = redeemQueue[requestId_];
 
-        require(request_.amount != 0, "SparkPrimeVault/no-request");
+        require(request_.shares != 0, "SparkPrimeVault/no-request");
 
         require(
             msg.sender == request_.owner || hasRole(GUARDIAN_ROLE, msg.sender),
@@ -509,11 +455,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         delete redeemQueue[requestId_];
 
-        _transfer(address(this), recipient_, request_.amount);
+        _transfer(address(this), recipient_, request_.shares);
 
-        totalQueuedRedeemShares -= request_.amount;
+        sharesEncumberedByRedeems -= request_.shares;
 
-        emit CancelRedeemRequest(requestId_, request_.amount);
+        emit CancelRedeemRequest(requestId_, request_.shares);
     }
 
     /**********************************************************************************************/
@@ -650,17 +596,29 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         return maxCapacity > totalSupply ? maxCapacity - totalSupply : 0;
     }
 
-    // USDC the vault can pay out now without touching queued depositors' spUSDC:
-    // idle USDC plus the free spUSDC sleeve, capped by what spUSDC itself can pay.
+    function unencumberedSparkVaultShares() public view returns (uint256) {
+        return
+            IERC20Like(sparkVault).balanceOf(address(this)) - sparkVaultSharesEncumberedByDeposits;
+    }
+
+    function maxRedeemableUnencumberedShares() public view returns (uint256) {
+        uint256 maxRedeemableShares_ = IERC4626Like(sparkVault).maxRedeem(address(this));
+
+        return maxRedeemableShares_ > sparkVaultSharesEncumberedByDeposits
+            ? maxRedeemableShares_ - sparkVaultSharesEncumberedByDeposits
+            : 0;
+    }
+
     function availableLiquidAssets() public view returns (uint256) {
-        uint256 free_ = IERC20Like(spUSDC).balanceOf(address(this)) - totalQueuedDepositShares;
+        uint256 maxRedeemableUnencumberedShares_ = maxRedeemableUnencumberedShares();
 
-        uint256 sleeve_ = _min(
-            IERC4626Like(spUSDC).convertToAssets(free_),
-            IERC20Like(asset).balanceOf(address(spUSDC))
-        );
-
-        return IERC20Like(asset).balanceOf(address(this)) + sleeve_;
+        return
+            IERC20Like(depositAsset).balanceOf(address(this)) +
+            (
+                maxRedeemableUnencumberedShares_ > 0
+                    ? IERC4626Like(sparkVault).convertToAssets(maxRedeemableUnencumberedShares_)
+                    : 0
+            );
     }
 
     function implementation() external view returns (address) {
@@ -678,18 +636,68 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     /*** Request internal helper functions                                                      ***/
     /**********************************************************************************************/
 
-    // Mints spPRIME to `recipient_` at the current price
-    function _mint(address owner_, address recipient_, uint256 assets_) internal {
-        uint256 shares_ = assets_ * RAY / drip();
+    // Burns shares from `account_`.
+    function _burn(address account_, uint256 shares_) internal {
+        totalSupply         -= shares_;
+        balanceOf[account_] -= shares_;
 
+        emit Transfer(account_, address(0), shares_);
+    }
+
+    // Mints shares to `recipient_` at the current price
+    function _mint(address recipient_, uint256 shares_) internal {
         totalSupply           += shares_;
         balanceOf[recipient_] += shares_;
 
         emit Transfer(address(0), recipient_, shares_);
-        emit Deposit(owner_, recipient_, assets_, shares_);
     }
 
-    // Pays queued redeems FIFO up to `maxAssets_` net USDC, burning the escrowed shares
+    function _processDepositQueue(uint256 maxAssets_) internal {
+        uint192 chi_    = drip();
+        uint256 budget_ = _min(maxAssets_, availableCapacity() * chi_ / RAY);
+        uint256 i_      = depositHead;
+
+        uint256 skipped_;
+
+        for (; i_ < depositQueue.length; ++i_) {
+            QueuedDepositRequest storage request_ = depositQueue[i_];
+
+            // Cancelled: skip, but bound the walk so the head still advances over a long run.
+            if (request_.shares == 0) {
+                if (++skipped_ == 500) break;
+
+                continue;
+            }
+
+            uint256 value_  = IERC4626Like(sparkVault).convertToAssets(request_.shares);
+            uint256 assets_ = _min(value_, budget_);
+
+            // A partial fill must mint at least one share, else wait for more room.
+            if (assets_ * RAY / chi_ == 0 && assets_ < value_) break;
+
+            // Rounds up so the accepted sparkVault shares are always worth at least the credited
+            // assets.
+            uint256 sparkVaultShares_ = _divup(request_.shares * assets_, value_);
+
+            sparkVaultSharesEncumberedByDeposits -= sparkVaultShares_;
+            request_.shares                      -= sparkVaultShares_;
+            budget_                              -= assets_;
+
+            uint256 shares_ = (assets_ * RAY) / chi_;
+
+            _mint(request_.recipient, shares_);
+
+            emit Deposit(request_.owner, request_.recipient, assets_, shares_);
+
+            // TODO: Investigate if we can get stuck here with a request with `shares_` that round
+            //       such that `request_.shares` is never zeroed.
+            if (request_.shares != 0) break;  // Partial fill, entry stays at the head
+        }
+
+        depositHead = i_;
+    }
+
+    // Pays queued redeems FIFO up to `maxAssets_` net depositAssets, burning the held shares.
     function _processRedeemQueue(uint256 maxAssets_) internal {
         uint192 chi_    = drip();
         uint256 budget_ = _min(maxAssets_, availableLiquidAssets());
@@ -698,7 +706,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         for (; i_ < redeemQueue.length; ++i_) {
             QueuedRedeemRequest storage request_ = redeemQueue[i_];
 
-            uint256 shares_ = request_.amount;
+            uint256 shares_ = request_.shares;
             uint256 fee_    = request_.fee;
 
             // Partial fill: the largest share amount whose net fits the budget, rounded down.
@@ -710,21 +718,20 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
             uint256 net_ = _getNet(shares_, fee_, chi_);
 
             // TODO: Investigate if we can get stuck here with a request with `shares_` that round
-            //       such that `request_.amount` is never zeroed.
-            if (net_ == 0 && shares_ < request_.amount) break;  // Budget too small to pay anything
+            //       such that `request_.shares` is never zeroed.
+            if (net_ == 0 && shares_ < request_.shares) break;  // Budget too small to pay anything
 
-            balanceOf[address(this)] -= shares_;
-            totalSupply              -= shares_;
-            totalQueuedRedeemShares  -= shares_;
-            request_.amount          -= shares_;
-            budget_                  -= net_;
+            sharesEncumberedByRedeems -= shares_;
+            request_.shares           -= shares_;
+            budget_                   -= net_;
 
-            emit Transfer(address(this), address(0), shares_);
+            _burn(address(this), shares_);
+
             emit Redeem(request_.owner, request_.recipient, net_, shares_);
 
             _pay(request_.recipient, net_);
 
-            if (request_.amount != 0) break;  // Partial fill, entry stays at the head
+            if (request_.shares != 0) break;  // Partial fill, entry stays at the head
         }
 
         redeemHead = i_;
@@ -739,24 +746,17 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     /*** Liquidity internal helper functions                                                    ***/
     /**********************************************************************************************/
 
-    // Pays `assets_` of USDC from idle cash, pulling any shortfall from the free spUSDC sleeve
+    // Pays `assets_` of depositAssets from idle cash, pulling any shortfall from the free
+    // sparkVault sleeve.
+    // NOTE: This function assumes that it is gated by a check on `availableLiquidAssets()`.
     function _pay(address recipient_, uint256 assets_) internal {
-        uint256 balance = IERC20Like(asset).balanceOf(address(this));
+        uint256 balance = IERC20Like(depositAsset).balanceOf(address(this));
 
-        if (balance < assets_) {
-            _withdrawFromSavings(assets_ - balance);
+        if (assets_ > balance) {
+            IERC4626Like(sparkVault).withdraw(assets_ - balance, address(this), address(this));
         }
 
-        SafeERC20.safeTransfer(IERC20OZ(asset), recipient_, assets_);
-    }
-
-    function _withdrawFromSavings(uint256 assets_) internal {
-        IERC4626Like(spUSDC).withdraw(assets_, address(this), address(this));
-
-        require(
-            IERC20Like(spUSDC).balanceOf(address(this)) >= totalQueuedDepositShares,
-            "SparkPrimeVault/queued-shares-locked"
-        );
+        SafeERC20.safeTransfer(IERC20OZ(depositAsset), recipient_, assets_);
     }
 
     /**********************************************************************************************/
