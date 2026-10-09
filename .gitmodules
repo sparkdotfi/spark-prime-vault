@@ -10,3 +10,6 @@
 [submodule "lib/spark-address-registry"]
 	path = lib/spark-address-registry
 	url = git@github.com:sparkdotfi/spark-address-registry.git
+[submodule "lib/token-tests"]
+	path = lib/token-tests
+	url = https://github.com/makerdao/token-tests
