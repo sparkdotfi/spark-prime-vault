@@ -5,7 +5,7 @@ import { TestBase, SparkPrimeVault, ISparkVaultLike } from "./TestBase.t.sol";
 
 contract SparkPrimeVaultTests is TestBase {
 
-    function setUp() public override {
+    function setUp() public virtual override {
         super.setUp();
 
         vm.startPrank(admin);
@@ -1196,6 +1196,128 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         _assertBalances(userBalances);
         _assertBalances(vaultBalances);
         _assertDepositRequest(requestId, user, user, 0);
+    }
+
+}
+
+contract CancelDepositRequestTests is SparkPrimeVaultTests {
+
+    function setUp() public override {
+        super.setUp();
+
+        vm.startPrank(admin);
+        spPRIME.setCapacity(0);
+        spPRIME.grantRole(GUARDIAN_ROLE, guardian);
+        vm.stopPrank();
+    }
+
+    // Failure tests
+
+    function test_cancelDepositRequest_whenNotPaused() external {
+        uint256 requestId = _requestDeposit(user, 1_000_000e6, user); // 1M queued
+
+        vm.prank(guardian);
+        spPRIME.pause();
+
+        vm.expectRevert("SparkPrimeVault/paused");
+        vm.prank(user);
+        spPRIME.cancelDepositRequest(requestId, user);
+    }
+
+    function test_cancelDepositRequest_noRequest() external {
+        uint256 requestId = _requestDeposit(user, 1_000_000e6, user); // 1M queued
+
+        vm.prank(user);
+        spPRIME.cancelDepositRequest(requestId, user);
+
+        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.prank(user);
+        spPRIME.cancelDepositRequest(requestId, user);
+    }
+
+    function test_cancelDepositRequest_notOwner() external {
+        uint256 requestId = _requestDeposit(user, 1_000_000e6, user); // 1M queued
+
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.prank(unauthorized);
+        spPRIME.cancelDepositRequest(requestId, user);
+
+        vm.prank(user);
+        spPRIME.cancelDepositRequest(requestId, user);
+    }
+
+    function test_cancelDepositRequest_notGuardian() external {
+        uint256 requestId = _requestDeposit(user, 1_000_000e6, user); // 500_000e6 queued
+
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.prank(unauthorized);
+        spPRIME.cancelDepositRequest(requestId, user);
+
+        vm.prank(guardian);
+        spPRIME.cancelDepositRequest(requestId, user);
+    }
+
+    // Success tests
+
+    function test_cancelDepositRequest() external {
+        uint256 expectedSavingsShares = spUSDC.convertToShares(1_000_000e6);
+
+        uint256 requestId = _requestDeposit(user, 1_000_000e6, user); // 1M queued
+
+        AssertVaultStateParams memory vaultState = AssertVaultStateParams({
+            totalSupply                  : 0,
+            totalAssets                  : 0,
+            availableCapacity            : 0,
+            availableLiquidAssets        : 0,
+            unencumberedSparkVaultShares : 0,
+            chi                          : spPRIME.nowChi(),
+            rho                          : block.timestamp
+        });
+
+        AssertQueueStateParams memory depositQueueState = AssertQueueStateParams({
+            encumberedShares : expectedSavingsShares,
+            head             : requestId
+        });
+
+        AssertBalancesParams memory userBalances = AssertBalancesParams({
+            account       : user,
+            asset         : 0,
+            shares        : 0,
+            savingsShares : 0
+        });
+
+        AssertBalancesParams memory vaultBalances = AssertBalancesParams({
+            account       : address(spPRIME),
+            asset         : 0,
+            shares        : 0,
+            savingsShares : expectedSavingsShares
+        });
+
+        _assertVaultState(vaultState);
+        _assertDepositQueueState(depositQueueState);
+        _assertBalances(userBalances);
+        _assertBalances(vaultBalances);
+        _assertDepositRequest(requestId, user, user, expectedSavingsShares);
+
+        // Cancel the request
+        vm.expectEmit(address(spPRIME));
+        emit SparkPrimeVault.CancelDepositRequest(requestId, 1_000_000e6 - 1); // Rounding
+
+        vm.prank(user);
+        spPRIME.cancelDepositRequest(requestId, user);
+
+        depositQueueState.encumberedShares = 0;
+        depositQueueState.head             = 0;
+
+        userBalances.asset = 1_000_000e6 - 1; // Rounding
+
+        vaultBalances.savingsShares = 0;
+
+        _assertVaultState(vaultState);
+        _assertDepositQueueState(depositQueueState);
+        _assertBalances(userBalances);
+        _assertBalances(vaultBalances);
+        _assertDepositRequest(requestId, address(0), address(0), 0);
     }
 
 }
