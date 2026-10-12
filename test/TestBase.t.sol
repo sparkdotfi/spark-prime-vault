@@ -11,6 +11,8 @@ import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
 
 interface IERC20Like {
 
+    function approve(address spender, uint256 amount) external returns (bool);
+
     function balanceOf(address user) external view returns (uint256);
 
 }
@@ -18,6 +20,8 @@ interface IERC20Like {
 interface ISparkVaultLike {
 
     function balanceOf(address user) external view returns (uint256);
+
+    function convertToAssets(uint256 shares) external view returns (uint256);
 
 }
 
