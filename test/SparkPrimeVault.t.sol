@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
+import { stdError } from "../lib/forge-std/src/StdError.sol";
+
+import { IAccessControl } from "../lib/oz/contracts/access/IAccessControl.sol";
+
 import { TestBase, SparkPrimeVault, ISparkVaultLike } from "./TestBase.t.sol";
 
 contract SparkPrimeVaultTests is TestBase {
 
-    function setUp() public override {
+    function setUp() public virtual override {
         super.setUp();
 
         vm.startPrank(admin);
@@ -1196,6 +1200,204 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         _assertBalances(userBalances);
         _assertBalances(vaultBalances);
         _assertDepositRequest(requestId, user, user, 0);
+    }
+
+}
+
+contract RealizeLossTests is SparkPrimeVaultTests {
+
+    event LossRealized(uint192 chi, uint256 loss);
+
+    uint256 internal constant DEPOSIT  = 1_000_000e6;
+    uint256 internal constant FIVE_PCT = 1.000000001547125957863212448e27;  // 5% APY
+
+    function setUp() public override {
+        super.setUp();
+
+        vm.startPrank(admin);
+
+        spPRIME.grantRole(GUARDIAN_ROLE,     guardian);
+        spPRIME.grantRole(RISK_MANAGER_ROLE, riskManager);
+        spPRIME.grantRole(SETTER_ROLE,       setter);
+        spPRIME.grantRole(UNPAUSER_ROLE,     unpauser);
+
+        spPRIME.setCapacity(VAULT_CAPACITY);
+        spPRIME.setVSRBounds(RAY, spPRIME.MAX_VSR());
+
+        vm.stopPrank();
+
+        vm.prank(setter);
+        spPRIME.setVSR(FIVE_PCT);
+    }
+
+    /**********************************************************************************************/
+    /*** Helpers                                                                                ***/
+    /**********************************************************************************************/
+
+    function _deposit(uint256 assets) internal {
+        deal(address(usdc), user, assets);
+
+        vm.startPrank(user);
+        usdc.approve(address(spPRIME), assets);
+        spPRIME.requestDeposit(assets, user);
+        vm.stopPrank();
+    }
+
+    function _depositAndPause() internal {
+        _deposit(DEPOSIT);
+
+        vm.prank(guardian);
+        spPRIME.pause();
+    }
+
+    /**********************************************************************************************/
+    /*** Failure tests                                                                          ***/
+    /**********************************************************************************************/
+
+    function test_realizeLoss_notRiskManager() public {
+        _depositAndPause();
+
+        vm.expectRevert(abi.encodeWithSelector(
+            IAccessControl.AccessControlUnauthorizedAccount.selector,
+            address(this),
+            RISK_MANAGER_ROLE
+        ));
+        spPRIME.realizeLoss(1e6);
+    }
+
+    function test_realizeLoss_notPaused() public {
+        _deposit(DEPOSIT);
+
+        vm.expectRevert("SparkPrimeVault/not-paused");
+        vm.prank(riskManager);
+        spPRIME.realizeLoss(1e6);
+    }
+
+    function test_realizeLoss_zeroLossBoundary() public {
+        _depositAndPause();
+
+        vm.expectRevert("SparkPrimeVault/invalid-loss");
+        vm.prank(riskManager);
+        spPRIME.realizeLoss(0);
+
+        assertEq(spPRIME.nowChi(), RAY);
+
+        vm.prank(riskManager);
+        spPRIME.realizeLoss(1);
+
+        assertEq(spPRIME.chi(), 0.999999999998999999999998999e27);  // RAY - divup(1 * RAY / DEPOSIT)
+    }
+
+    function test_realizeLoss_lossTooHigh() public {
+        _depositAndPause();
+
+        uint256 totalAssets = spPRIME.totalAssets();
+
+        vm.expectRevert(stdError.arithmeticError);
+        vm.prank(riskManager);
+        spPRIME.realizeLoss(totalAssets + 1);
+    }
+
+    function test_realizeLoss_zeroSupply() public {
+        vm.prank(guardian);
+        spPRIME.pause();
+
+        assertEq(spPRIME.totalSupply(), 0);
+
+        vm.expectRevert(stdError.divisionError);
+        vm.prank(riskManager);
+        spPRIME.realizeLoss(1);
+    }
+
+    /**********************************************************************************************/
+    /*** Success tests                                                                          ***/
+    /**********************************************************************************************/
+
+    function test_realizeLoss() public {
+        uint256 loss = 100_000e6;
+
+        _depositAndPause();
+
+        skip(365 days);
+
+        uint192 chiBefore    = spPRIME.nowChi();
+        uint256 assetsBefore = spPRIME.totalAssets();
+        uint256 supply       = spPRIME.totalSupply();
+
+        // Drip is pending, realizeLoss must settle it before writing chi down.
+        assertEq(chiBefore,    1.049999999999999999961070145e27);  // ~5% APY
+        assertEq(assetsBefore, supply * chiBefore / RAY);
+        assertEq(supply,       1_000_000e6 - 1);  // Rounding
+
+        uint192 expectedChiAfterLossEvent = chiBefore - uint192((loss * RAY - 1) / supply + 1);
+
+        assertEq(expectedChiAfterLossEvent, 0.949999999999899999961070044e27);
+
+        assertEq(spPRIME.rho(),          block.timestamp - 365 days);
+        assertEq(spPRIME.totalSupply(),  supply);
+        assertEq(spPRIME.assetsOf(user), assetsBefore);
+
+        vm.expectEmit(address(spPRIME));
+        emit LossRealized(expectedChiAfterLossEvent, loss);
+
+        vm.prank(riskManager);
+        spPRIME.realizeLoss(loss);
+
+        assertEq(spPRIME.chi(),          expectedChiAfterLossEvent);
+        assertEq(spPRIME.rho(),          block.timestamp);
+        assertEq(spPRIME.totalSupply(),  supply);
+        assertEq(spPRIME.assetsOf(user), supply * expectedChiAfterLossEvent / RAY);
+
+        uint256 realizedLoss = assetsBefore - spPRIME.totalAssets();
+
+        assertEq(realizedLoss, loss);
+    }
+
+    function test_realizeLoss_accrualContinuesFromNewChi() public {
+        _depositAndPause();
+
+        vm.prank(riskManager);
+        spPRIME.realizeLoss(100_000e6);
+
+        uint192 chiAfterLoss = spPRIME.chi();
+
+        assertEq(chiAfterLoss,          0.899999999999899999999999899e27);
+        assertEq(spPRIME.totalAssets(), 900_000e6 - 2);  // Rounding
+
+        skip(365 days);
+
+        spPRIME.drip();
+
+        // 5% APY over one year, compounding on the new chi
+        assertEq(spPRIME.chi(), 1.049999999999999999961070145e27 * chiAfterLoss / RAY);
+
+        assertEq(spPRIME.totalAssets(), 945_000e6 - 2);  // Rounding
+    }
+
+    function test_realizeLoss_redeemReflectsLoss() public {
+        _depositAndPause();
+
+        uint256 supply = spPRIME.totalSupply();
+
+        uint256 expectedChiAfterLossEvent = RAY - uint192((100_000e6 * RAY - 1) / supply + 1);
+
+        vm.prank(riskManager);
+        spPRIME.realizeLoss(100_000e6);
+
+        vm.prank(unpauser);
+        spPRIME.unpause();
+
+        uint256 shares   = spPRIME.balanceOf(user);
+        uint256 expected = spPRIME.assetsOf(user);
+
+        assertEq(expected, supply * expectedChiAfterLossEvent / RAY);
+
+        vm.prank(user);
+        spPRIME.requestRedeem(shares, user);
+
+        assertEq(spPRIME.balanceOf(user),             0);
+        assertEq(usdc.balanceOf(user),                expected);
+        assertEq(spPRIME.sharesEncumberedByRedeems(), 0);
     }
 
 }
