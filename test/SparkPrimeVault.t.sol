@@ -336,8 +336,8 @@ contract RequestDepositTests is SparkPrimeVaultTests {
     function test_requestDeposit_instantFill_afterInterestAccrual() external {
         uint256 deployTimestamp = block.timestamp;
 
-        // vm.prank(admin);
-        // spPRIME.setVSRBounds(RAY, MAX_VSR);
+        vm.prank(admin);
+        spPRIME.setVSRBounds(RAY, MAX_VSR);
 
         vm.prank(setter);
         spPRIME.setVSR(FIVE_PCT_VSR);
