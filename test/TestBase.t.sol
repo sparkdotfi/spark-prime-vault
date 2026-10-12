@@ -23,6 +23,8 @@ interface ISparkVaultLike {
 
     function convertToAssets(uint256 shares) external view returns (uint256);
 
+    function convertToShares(uint256 assets) external view returns (uint256);
+
 }
 
 contract TestBase is Test {
