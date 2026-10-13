@@ -294,9 +294,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     function take(uint256 sparkVaultShares_) external onlyRole(TAKER_ROLE) {
         require(
-            sparkVaultShares_ <= maxRedeemableUnencumberedShares(),
+            sparkVaultShares_ <= unencumberedSparkVaultShares(),
             "SparkPrimeVault/insufficient-unencumbered-shares"
-        );
+        );  // TODO: Do we have to check for unencumbered redeem shares here?
 
         SafeERC20.safeTransfer(IERC20OZ(sparkVault), msg.sender, sparkVaultShares_);
 
@@ -604,24 +604,17 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
             IERC20Like(sparkVault).balanceOf(address(this)) - sparkVaultSharesEncumberedByDeposits;
     }
 
-    function maxRedeemableUnencumberedShares() public view returns (uint256) {
+    function availableLiquidAssets() public view returns (uint256) {
         uint256 maxRedeemableShares_ = IERC4626Like(sparkVault).maxRedeem(address(this));
 
-        return maxRedeemableShares_ > sparkVaultSharesEncumberedByDeposits
+        uint256 maxRedeemableUnencumberedShares_ =
+            maxRedeemableShares_ > sparkVaultSharesEncumberedByDeposits
             ? maxRedeemableShares_ - sparkVaultSharesEncumberedByDeposits
             : 0;
-    }
-
-    function availableLiquidAssets() public view returns (uint256) {
-        uint256 maxRedeemableUnencumberedShares_ = maxRedeemableUnencumberedShares();
 
         return
             IERC20Like(depositAsset).balanceOf(address(this)) +
-            (
-                maxRedeemableUnencumberedShares_ > 0
-                    ? IERC4626Like(sparkVault).convertToAssets(maxRedeemableUnencumberedShares_)
-                    : 0
-            );
+            IERC4626Like(sparkVault).convertToAssets(maxRedeemableUnencumberedShares_);
     }
 
     function implementation() external view returns (address) {
