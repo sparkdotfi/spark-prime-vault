@@ -53,6 +53,7 @@ interface IERC4626Like {
 // TODO: Ask Sam if we need to add capability for reducing deposit/redeem request amounts
 // TODO: Ask Sam if we need to add capability for updating receiver in deposit/redeem requests
 // TODO: Separate role based functions into dedicated sections?
+// TODO: Cancels are now `whenNotPaused` original version lets you cancel even when paused, check is this intended?
 
 /// @dev If the inheritance is updated, the functions in `initialize` must be updated as well.
 ///      Last updated for: `Initializable, UUPSUpgradeable, AccessControlEnumerableUpgradeable`.
@@ -223,7 +224,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         address        sparkVault_,
         string  memory name_,
         string  memory symbol_,
-        address        admin
+        address        admin_
     )
         initializer external
     {
@@ -234,7 +235,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         name         = name_;
         symbol       = symbol_;
 
-        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(DEFAULT_ADMIN_ROLE, admin_);
 
         decimals = IERC20Like(depositAsset_).decimals();
 
@@ -269,6 +270,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         external
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
+        // TODO: Add additional validation
         emit MinimumsSet(minDeposit = minDeposit_, minWithdraw = minWithdraw_);
     }
 
@@ -291,9 +293,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     function take(uint256 sparkVaultShares_) external onlyRole(TAKER_ROLE) {
         require(
-            sparkVaultShares_ <= maxRedeemableUnencumberedShares(),
+            sparkVaultShares_ <= unencumberedSparkVaultShares(),
             "SparkPrimeVault/insufficient-unencumbered-shares"
-        );
+        );  // TODO: Do we have to check for unencumbered redeem shares here?
 
         SafeERC20.safeTransfer(IERC20OZ(sparkVault), msg.sender, sparkVaultShares_);
 
@@ -393,17 +395,19 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         require(request_.shares != 0, "SparkPrimeVault/no-request");
 
-        require(
-            msg.sender == request_.owner || hasRole(GUARDIAN_ROLE, msg.sender),
-            "SparkPrimeVault/not-authorized"
-        );
+        bool isGuardian_ = hasRole(GUARDIAN_ROLE, msg.sender);
+
+        require(msg.sender == request_.owner || isGuardian_, "SparkPrimeVault/not-authorized");
 
         delete depositQueue[requestId_];
 
         sparkVaultSharesEncumberedByDeposits -= request_.shares;
 
-        uint256 assets_ =
-            IERC4626Like(sparkVault).redeem(request_.shares, recipient_, address(this));
+        uint256 assets_ = IERC4626Like(sparkVault).redeem(
+            request_.shares,
+            isGuardian_ ? request_.owner : recipient_,
+            address(this)
+        );
 
         emit CancelDepositRequest(requestId_, assets_);
     }
@@ -447,14 +451,13 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         require(request_.shares != 0, "SparkPrimeVault/no-request");
 
-        require(
-            msg.sender == request_.owner || hasRole(GUARDIAN_ROLE, msg.sender),
-            "SparkPrimeVault/not-authorized"
-        );
+        bool isGuardian_ = hasRole(GUARDIAN_ROLE, msg.sender);
+
+        require(msg.sender == request_.owner || isGuardian_, "SparkPrimeVault/not-authorized");
 
         delete redeemQueue[requestId_];
 
-        _transfer(address(this), recipient_, request_.shares);
+        _transfer(address(this), isGuardian_ ? request_.owner : recipient_, request_.shares);
 
         sharesEncumberedByRedeems -= request_.shares;
 
@@ -516,11 +519,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         require(block.timestamp <= deadline_, "SparkPrimeVault/permit-expired");
         require(owner_ != address(0),         "SparkPrimeVault/invalid-owner");
 
-        uint256 nonce;
+        uint256 nonce_;
 
-        unchecked { nonce = nonces[owner_]++; }
+        unchecked { nonce_ = nonces[owner_]++; }
 
-        bytes32 digest =
+        bytes32 digest_ =
             keccak256(abi.encodePacked(
                 "\x19\x01",
                 _calculateDomainSeparator(block.chainid),
@@ -529,12 +532,12 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
                     owner_,
                     spender_,
                     value_,
-                    nonce,
+                    nonce_,
                     deadline_
                 ))
             ));
 
-        require(_isValidSignature(owner_, digest, signature_), "SparkPrimeVault/invalid-permit");
+        require(_isValidSignature(owner_, digest_, signature_), "SparkPrimeVault/invalid-permit");
 
         emit Approval(owner_, spender_, allowance[owner_][spender_] = value_);
     }
@@ -600,24 +603,17 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
             IERC20Like(sparkVault).balanceOf(address(this)) - sparkVaultSharesEncumberedByDeposits;
     }
 
-    function maxRedeemableUnencumberedShares() public view returns (uint256) {
+    function availableLiquidAssets() public view returns (uint256) {
         uint256 maxRedeemableShares_ = IERC4626Like(sparkVault).maxRedeem(address(this));
 
-        return maxRedeemableShares_ > sparkVaultSharesEncumberedByDeposits
+        uint256 maxRedeemableUnencumberedShares_ =
+            maxRedeemableShares_ > sparkVaultSharesEncumberedByDeposits
             ? maxRedeemableShares_ - sparkVaultSharesEncumberedByDeposits
             : 0;
-    }
-
-    function availableLiquidAssets() public view returns (uint256) {
-        uint256 maxRedeemableUnencumberedShares_ = maxRedeemableUnencumberedShares();
 
         return
             IERC20Like(depositAsset).balanceOf(address(this)) +
-            (
-                maxRedeemableUnencumberedShares_ > 0
-                    ? IERC4626Like(sparkVault).convertToAssets(maxRedeemableUnencumberedShares_)
-                    : 0
-            );
+            IERC4626Like(sparkVault).convertToAssets(maxRedeemableUnencumberedShares_);
     }
 
     function implementation() external view returns (address) {
@@ -752,13 +748,13 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     /**********************************************************************************************/
 
     function _transfer(address from_, address to_, uint256 amount_) internal {
-        uint256 balance = balanceOf[from_];
+        uint256 balance_ = balanceOf[from_];
 
-        require(balance >= amount_, "SparkPrimeVault/insufficient-balance");
+        require(balance_ >= amount_, "SparkPrimeVault/insufficient-balance");
 
         // NOTE: Don't need an overflow check here b/c sum of all balances == totalSupply.
         unchecked {
-            balanceOf[from_] = balance - amount_;
+            balanceOf[from_] = balance_ - amount_;
 
             balanceOf[to_] += amount_;
         }
@@ -807,14 +803,14 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         if (signer_.code.length == 0) return false;
 
-        (bool success, bytes memory result) = signer_.staticcall(
+        (bool success_, bytes memory result_) = signer_.staticcall(
             abi.encodeCall(IERC1271.isValidSignature, (digest_, signature_))
         );
 
         return
-            success &&
-            result.length == 32 &&
-            abi.decode(result, (bytes4)) == IERC1271.isValidSignature.selector;
+            success_ &&
+            result_.length == 32 &&
+            abi.decode(result_, (bytes4)) == IERC1271.isValidSignature.selector;
     }
 
     /**********************************************************************************************/
@@ -837,19 +833,19 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
             switch x_ case 0 {switch n_ case 0 {z_ := RAY} default {z_ := 0}}
             default {
                 switch mod(n_, 2) case 0 { z_ := RAY } default { z_ := x_ }
-                let half := div(RAY, 2)  // for rounding.
+                let half_ := div(RAY, 2)  // for rounding.
                 for { n_ := div(n_, 2) } n_ { n_ := div(n_, 2) } {
-                    let xx := mul(x_, x_)
-                    if iszero(eq(div(xx, x_), x_)) { revert(0,0) }
-                    let xxRound := add(xx, half)
-                    if lt(xxRound, xx) { revert(0,0) }
-                    x_ := div(xxRound, RAY)
+                    let xx_ := mul(x_, x_)
+                    if iszero(eq(div(xx_, x_), x_)) { revert(0,0) }
+                    let xxRound_ := add(xx_, half_)
+                    if lt(xxRound_, xx_) { revert(0,0) }
+                    x_ := div(xxRound_, RAY)
                     if mod(n_, 2) {
-                        let zx := mul(z_, x_)
-                        if and(iszero(iszero(x_)), iszero(eq(div(zx, x_), z_))) { revert(0,0) }
-                        let zxRound := add(zx, half)
-                        if lt(zxRound, zx) { revert(0,0) }
-                        z_ := div(zxRound, RAY)
+                        let zx_ := mul(z_, x_)
+                        if and(iszero(iszero(x_)), iszero(eq(div(zx_, x_), z_))) { revert(0,0) }
+                        let zxRound_ := add(zx_, half_)
+                        if lt(zxRound_, zx_) { revert(0,0) }
+                        z_ := div(zxRound_, RAY)
                     }
                 }
             }
