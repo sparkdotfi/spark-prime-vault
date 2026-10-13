@@ -568,7 +568,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     function transfer(address to_, uint256 amount_) external returns (bool) {
-        require(to_ != address(0), "SparkPrimeVault/invalid-address");
+        require(to_ != address(0) && to_ != address(this), "SparkPrimeVault/invalid-address");
 
         _transfer(msg.sender, to_, amount_);
 
@@ -576,8 +576,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     function transferFrom(address from_, address to_, uint256 amount_) external returns (bool) {
-        require(to_ != address(0),           "SparkPrimeVault/invalid-address");
-        require(balanceOf[from_] >= amount_, "SparkPrimeVault/insufficient-balance");
+        require(to_ != address(0) && to_ != address(this), "SparkPrimeVault/invalid-address");
+        require(balanceOf[from_] >= amount_,               "SparkPrimeVault/insufficient-balance");
 
         if (from_ != msg.sender) {
             uint256 allowance_ = allowance[from_][msg.sender];

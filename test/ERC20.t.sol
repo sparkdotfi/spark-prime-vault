@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-pragma solidity ^0.8.25;
+pragma solidity ^0.8.34;
 
-import { TokenLike, TokenFuzzChecks } from "../lib/token-tests/src/TokenFuzzChecks.sol";
+import { TokenFuzzChecks } from "../lib/token-tests/src/TokenFuzzChecks.sol";
 
 import "./TestBase.t.sol";
 
@@ -18,16 +18,7 @@ contract ERC20Tests is TestBase, TokenFuzzChecks {
     }
 
     function testERC20() public {
-        checkMetadata(address(vault), "Spark Prime USDC", "spPRIME", "1", 6);
-        checkApprove(address(vault));
-        checkTransferReverts(address(vault), "SparkPrimeVault");
-        checkTransferFromReverts(address(vault), "SparkPrimeVault");
-        checkTransfer(address(vault));
-        checkTransferFrom(address(vault));
-        checkInfiniteApproveTransferFrom(address(vault));
-        checkTransferInsufficientBalance(address(vault), "SparkPrimeVault");
-        checkTransferFromInsufficientAllowance(address(vault), "SparkPrimeVault");
-        checkTransferFromInsufficientBalance(address(vault), "SparkPrimeVault");
+        checkBulkERC20(address(vault), "SparkPrimeVault", "Spark Prime USDC", "spPRIME", "1", 6);
     }
 
     function testERC20Fuzz(uint256 amount1, uint256 amount2, uint256 vsr, uint256 warpTime) public {
@@ -76,20 +67,6 @@ contract ERC20Tests is TestBase, TokenFuzzChecks {
             deadline      : deadline,
             nonce         : nonce
         });
-    }
-
-    /**********************************************************************************************/
-    /*** Internal Helpers                                                                       ***/
-    /**********************************************************************************************/
-
-    function checkTransferReverts(address _token, string memory _contractName) internal {
-        vm.expectRevert(abi.encodePacked(_contractName, "/invalid-address"));
-        TokenLike(_token).transfer(address(0), 1e18);
-    }
-
-    function checkTransferFromReverts(address _token, string memory _contractName) internal {
-        vm.expectRevert(abi.encodePacked(_contractName, "/invalid-address"));
-        TokenLike(_token).transferFrom(address(this), address(0), 1e18);
     }
 
 }
