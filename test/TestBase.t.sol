@@ -128,6 +128,15 @@ abstract contract TestBase is Test {
         vm.stopPrank();
     }
 
+    function _requestRedeem(
+        address user_,
+        uint256 shares_,
+        address recipient_
+    ) internal returns (uint256 requestId_) {
+        vm.prank(user_);
+        requestId_ = spPRIME.requestRedeem(shares_, recipient_);
+    }
+
     /**********************************************************************************************/
     /*** Assertion helpers                                                                      ***/
     /**********************************************************************************************/
@@ -150,6 +159,11 @@ abstract contract TestBase is Test {
         assertEq(spPRIME.firstPendingDepositId(),       state.head);
     }
 
+    function _assertRedeemQueueState(AssertQueueStateParams memory state) internal view {
+        assertEq(spPRIME.sharesEncumberedByRedeems(), state.encumberedShares);
+        assertEq(spPRIME.redeemHead(),                state.head);
+    }
+
     function _assertBalances(AssertBalancesParams memory params) internal view {
         assertEq(usdc.balanceOf(params.account),    params.asset);
         assertEq(spPRIME.balanceOf(params.account), params.shares);
@@ -169,6 +183,28 @@ abstract contract TestBase is Test {
         assertEq(owner_,     owner);
         assertEq(recipient_, recipient);
         assertEq(shares_,    sparkVaultShares);
+    }
+
+    function _assertRedeemRequest(
+        uint256 requestId,
+        address owner,
+        address recipient,
+        uint256 shares,
+        uint256 fee
+    )
+        internal view
+    {
+        (
+            address owner_,
+            address recipient_,
+            uint256 shares_,
+            uint256 fee_
+        ) = spPRIME.redeemQueue(requestId);
+
+        assertEq(owner_,     owner);
+        assertEq(recipient_, recipient);
+        assertEq(shares_,    shares);
+        assertEq(fee_,       fee);
     }
 
 }

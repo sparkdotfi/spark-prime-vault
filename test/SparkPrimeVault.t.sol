@@ -9,8 +9,8 @@ contract SparkPrimeVaultTests is TestBase {
         super.setUp();
 
         vm.startPrank(admin);
-        spPRIME.grantRole(SETTER_ROLE,   setter);
         spPRIME.grantRole(GUARDIAN_ROLE, guardian);
+        spPRIME.grantRole(SETTER_ROLE,   setter);
 
         spPRIME.setCapacity(VAULT_CAPACITY);
         spPRIME.setMinDeposit(MINIMUM_DEPOSIT);
@@ -152,7 +152,13 @@ contract RequestDepositTests is SparkPrimeVaultTests {
     function test_requestDeposit_instantFill() external {
         uint256 deployTimestamp = block.timestamp;
 
-        _accrueInterest(365 days);
+        vm.prank(admin);
+        spPRIME.setVSRBounds(RAY, MAX_VSR);
+
+        vm.prank(setter);
+        spPRIME.setVSR(FIVE_PCT_VSR);
+
+        skip(365 days);
 
         vm.prank(user);
         usdc.approve(address(spPRIME), 1_000_000e6);
@@ -1205,10 +1211,8 @@ contract CancelDepositRequestTests is SparkPrimeVaultTests {
     function setUp() public override {
         super.setUp();
 
-        vm.startPrank(admin);
+        vm.prank(admin);
         spPRIME.setCapacity(0);
-        spPRIME.grantRole(GUARDIAN_ROLE, guardian);
-        vm.stopPrank();
     }
 
     // Failure tests
@@ -1320,6 +1324,518 @@ contract CancelDepositRequestTests is SparkPrimeVaultTests {
         _assertBalances(userBalances);
         _assertBalances(vaultBalances);
         _assertDepositRequest(requestId, address(0), address(0), 0);
+    }
+
+}
+
+contract RequestRedeemTests is SparkPrimeVaultTests {
+
+    function setUp() public override {
+        super.setUp();
+
+        _requestDeposit(user, 1_000_000e6, user); // Instant fill : 999_999e6 shares
+    }
+
+    // Failure tests
+
+    function test_requestRedeem_whenNotPaused() external {
+        vm.prank(guardian);
+        spPRIME.pause();
+
+        vm.expectRevert("SparkPrimeVault/paused");
+        vm.prank(user);
+        spPRIME.requestRedeem(0, user);
+    }
+
+    function test_requestRedeem_invalidRecipient() external {
+        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.prank(user);
+        spPRIME.requestRedeem(0, address(0));
+    }
+
+    function test_requestRedeem_sharesBelowMinimumBoundary() external {
+        vm.expectRevert("SparkPrimeVault/shares-below-minimum");
+        vm.prank(user);
+        spPRIME.requestRedeem(0, user);
+
+        vm.expectRevert("SparkPrimeVault/shares-below-minimum");
+        vm.prank(user);
+        spPRIME.requestRedeem(MINIMUM_WITHDRAW - 1, user);
+
+        vm.prank(user);
+        spPRIME.requestRedeem(MINIMUM_WITHDRAW, user);
+    }
+
+    function test_requestRedeem_insufficientbalanceBoundary() external {
+        vm.expectRevert("SparkPrimeVault/insufficient-balance");
+        vm.prank(user);
+        spPRIME.requestRedeem(1_000_000e6, user);
+
+        vm.prank(user);
+        spPRIME.requestRedeem(1_000_000e6 - 1, user);
+    }
+
+    // Success tests
+
+    function test_requestRedeem() external {
+        uint256 expectedSavingsShares = spUSDC.convertToShares(1_000_000e6);
+
+        AssertVaultStateParams memory vaultState = AssertVaultStateParams({
+            totalSupply                  : 1_000_000e6 - 1, // Rounding
+            totalAssets                  : 1_000_000e6 - 1, // Rounding
+            availableCapacity            : VAULT_CAPACITY - 1_000_000e6 + 1, // Rounding
+            availableLiquidAssets        : 1_000_000e6 - 1, // Rounding
+            unencumberedSparkVaultShares : expectedSavingsShares,
+            chi                          : RAY,
+            rho                          : block.timestamp
+        });
+
+        AssertQueueStateParams memory redeemQueueState = AssertQueueStateParams({
+            encumberedShares : 0,
+            head             : 0
+        });
+
+        AssertBalancesParams memory userBalances = AssertBalancesParams({
+            account       : user,
+            asset         : 0,
+            shares        : 1_000_000e6 - 1, // Rounding
+            savingsShares : 0
+        });
+
+        AssertBalancesParams memory vaultBalances = AssertBalancesParams({
+            account       : address(spPRIME),
+            asset         : 0,
+            shares        : 0,
+            savingsShares : expectedSavingsShares
+        });
+
+        _assertVaultState(vaultState);
+        _assertRedeemQueueState(redeemQueueState);
+        _assertBalances(userBalances);
+        _assertBalances(vaultBalances);
+
+        vm.expectEmit(address(spPRIME));
+        emit SparkPrimeVault.Transfer(user, address(spPRIME), 1_000_000e6 - 1);
+
+        vm.expectEmit(address(spPRIME));
+        emit SparkPrimeVault.RedeemRequest(user, user, 0, 1_000_000e6 - 1, 0);
+
+        vm.prank(user);
+        uint256 requestId = spPRIME.requestRedeem(1_000_000e6 - 1, user);
+
+        assertEq(requestId, 0);
+
+        // Shares are escrowed in the vault, nothing is burned or paid until the queue is processed
+        redeemQueueState.encumberedShares = 1_000_000e6 - 1; // Rounding
+
+        userBalances.shares = 0;
+
+        vaultBalances.shares = 1_000_000e6 - 1; // Rounding
+
+        _assertVaultState(vaultState);
+        _assertRedeemQueueState(redeemQueueState);
+        _assertBalances(userBalances);
+        _assertBalances(vaultBalances);
+        _assertRedeemRequest(requestId, user, user, 1_000_000e6 - 1, 0);
+    }
+
+    function test_requestRedeem_multipleRequests() external {
+        uint256 expectedSavingsShares = spUSDC.convertToShares(1_000_000e6);
+
+        AssertVaultStateParams memory vaultState = AssertVaultStateParams({
+            totalSupply                  : 1_000_000e6 - 1, // Rounding
+            totalAssets                  : 1_000_000e6 - 1, // Rounding
+            availableCapacity            : VAULT_CAPACITY - 1_000_000e6 + 1, // Rounding
+            availableLiquidAssets        : 1_000_000e6 - 1, // Rounding
+            unencumberedSparkVaultShares : expectedSavingsShares,
+            chi                          : RAY,
+            rho                          : block.timestamp
+        });
+
+        AssertQueueStateParams memory redeemQueueState = AssertQueueStateParams({
+            encumberedShares : 0,
+            head             : 0
+        });
+
+        AssertBalancesParams memory userBalances = AssertBalancesParams({
+            account       : user,
+            asset         : 0,
+            shares        : 1_000_000e6 - 1, // Rounding
+            savingsShares : 0
+        });
+
+        AssertBalancesParams memory vaultBalances = AssertBalancesParams({
+            account       : address(spPRIME),
+            asset         : 0,
+            shares        : 0,
+            savingsShares : expectedSavingsShares
+        });
+
+        _assertVaultState(vaultState);
+        _assertRedeemQueueState(redeemQueueState);
+        _assertBalances(userBalances);
+        _assertBalances(vaultBalances);
+
+        // Request 1 with 500k shares
+
+        vm.expectEmit(address(spPRIME));
+        emit SparkPrimeVault.Transfer(user, address(spPRIME), 500_000e6);
+
+        vm.expectEmit(address(spPRIME));
+        emit SparkPrimeVault.RedeemRequest(user, user, 0, 500_000e6, 0);
+
+        vm.prank(user);
+        uint256 requestId = spPRIME.requestRedeem(500_000e6, user);
+
+        assertEq(requestId, 0);
+
+        redeemQueueState.encumberedShares = 500_000e6;
+
+        userBalances.shares = 500_000e6 - 1;
+
+        vaultBalances.shares = 500_000e6;
+
+        _assertVaultState(vaultState);
+        _assertRedeemQueueState(redeemQueueState);
+        _assertBalances(userBalances);
+        _assertBalances(vaultBalances);
+        _assertRedeemRequest(requestId, user, user, 500_000e6, 0);
+
+        // Request 2 with the remaining shares
+
+        vm.expectEmit(address(spPRIME));
+        emit SparkPrimeVault.Transfer(user, address(spPRIME), 500_000e6 - 1);
+
+        vm.expectEmit(address(spPRIME));
+        emit SparkPrimeVault.RedeemRequest(user, user, 1, 500_000e6 - 1, 0);
+
+        vm.prank(user);
+        requestId = spPRIME.requestRedeem(500_000e6 - 1, user);
+
+        assertEq(requestId, 1);
+
+        // Both requests wait in the queue, the head does not move
+        redeemQueueState.encumberedShares = 1_000_000e6 - 1;
+
+        userBalances.shares = 0;
+
+        vaultBalances.shares = 1_000_000e6 - 1;
+
+        _assertVaultState(vaultState);
+        _assertRedeemQueueState(redeemQueueState);
+        _assertBalances(userBalances);
+        _assertBalances(vaultBalances);
+        _assertRedeemRequest(0, user, user, 500_000e6,     0);
+        _assertRedeemRequest(1, user, user, 500_000e6 - 1, 0);
+    }
+
+    function test_requestRedeem_differentRecipient() external {
+        address recipient = makeAddr("recipient");
+
+        uint256 expectedSavingsShares = spUSDC.convertToShares(1_000_000e6);
+
+        AssertVaultStateParams memory vaultState = AssertVaultStateParams({
+            totalSupply                  : 1_000_000e6 - 1, // Rounding
+            totalAssets                  : 1_000_000e6 - 1, // Rounding
+            availableCapacity            : VAULT_CAPACITY - 1_000_000e6 + 1, // Rounding
+            availableLiquidAssets        : 1_000_000e6 - 1, // Rounding
+            unencumberedSparkVaultShares : expectedSavingsShares,
+            chi                          : RAY,
+            rho                          : block.timestamp
+        });
+
+        AssertQueueStateParams memory redeemQueueState = AssertQueueStateParams({
+            encumberedShares : 0,
+            head             : 0
+        });
+
+        AssertBalancesParams memory userBalances = AssertBalancesParams({
+            account       : user,
+            asset         : 0,
+            shares        : 1_000_000e6 - 1, // Rounding
+            savingsShares : 0
+        });
+
+        AssertBalancesParams memory recipientBalances = AssertBalancesParams({
+            account       : recipient,
+            asset         : 0,
+            shares        : 0,
+            savingsShares : 0
+        });
+
+        AssertBalancesParams memory vaultBalances = AssertBalancesParams({
+            account       : address(spPRIME),
+            asset         : 0,
+            shares        : 0,
+            savingsShares : expectedSavingsShares
+        });
+
+        _assertVaultState(vaultState);
+        _assertRedeemQueueState(redeemQueueState);
+        _assertBalances(userBalances);
+        _assertBalances(recipientBalances);
+        _assertBalances(vaultBalances);
+
+        vm.expectEmit(address(spPRIME));
+        emit SparkPrimeVault.Transfer(user, address(spPRIME), 1_000_000e6 - 1);
+
+        vm.expectEmit(address(spPRIME));
+        emit SparkPrimeVault.RedeemRequest(user, recipient, 0, 1_000_000e6 - 1, 0);
+
+        vm.prank(user);
+        uint256 requestId = spPRIME.requestRedeem(1_000_000e6 - 1, recipient);
+
+        assertEq(requestId, 0);
+
+        // Shares come from the caller, the recipient only gets paid when the queue is processed
+        redeemQueueState.encumberedShares = 1_000_000e6 - 1;
+
+        userBalances.shares = 0;
+
+        vaultBalances.shares = 1_000_000e6 - 1;
+
+        _assertVaultState(vaultState);
+        _assertRedeemQueueState(redeemQueueState);
+        _assertBalances(userBalances);
+        _assertBalances(recipientBalances);
+        _assertBalances(vaultBalances);
+        _assertRedeemRequest(requestId, user, recipient, 1_000_000e6 - 1, 0);
+    }
+
+    function test_requestRedeem_withRedeemFee() external {
+        vm.startPrank(admin);
+        spPRIME.grantRole(RISK_MANAGER_ROLE, riskManager);
+        spPRIME.setMaxRedeemFee(0.01e18);
+        vm.stopPrank();
+
+        vm.prank(riskManager);
+        spPRIME.setRedeemFee(0.005e18);
+
+        uint256 expectedSavingsShares = spUSDC.convertToShares(1_000_000e6);
+
+        AssertVaultStateParams memory vaultState = AssertVaultStateParams({
+            totalSupply                  : 1_000_000e6 - 1, // Rounding
+            totalAssets                  : 1_000_000e6 - 1, // Rounding
+            availableCapacity            : VAULT_CAPACITY - 1_000_000e6 + 1, // Rounding
+            availableLiquidAssets        : 1_000_000e6 - 1, // Rounding
+            unencumberedSparkVaultShares : expectedSavingsShares,
+            chi                          : RAY,
+            rho                          : block.timestamp
+        });
+
+        AssertQueueStateParams memory redeemQueueState = AssertQueueStateParams({
+            encumberedShares : 0,
+            head             : 0
+        });
+
+        AssertBalancesParams memory userBalances = AssertBalancesParams({
+            account       : user,
+            asset         : 0,
+            shares        : 1_000_000e6 - 1, // Rounding
+            savingsShares : 0
+        });
+
+        AssertBalancesParams memory vaultBalances = AssertBalancesParams({
+            account       : address(spPRIME),
+            asset         : 0,
+            shares        : 0,
+            savingsShares : expectedSavingsShares
+        });
+
+        _assertVaultState(vaultState);
+        _assertRedeemQueueState(redeemQueueState);
+        _assertBalances(userBalances);
+        _assertBalances(vaultBalances);
+
+        vm.expectEmit(address(spPRIME));
+        emit SparkPrimeVault.Transfer(user, address(spPRIME), 1_000_000e6 - 1);
+
+        vm.expectEmit(address(spPRIME));
+        emit SparkPrimeVault.RedeemRequest(user, user, 0, 1_000_000e6 - 1, 0.005e18);
+
+        vm.prank(user);
+        uint256 requestId = spPRIME.requestRedeem(1_000_000e6 - 1, user);
+
+        assertEq(requestId, 0);
+
+        redeemQueueState.encumberedShares = 1_000_000e6 - 1;
+
+        userBalances.shares = 0;
+
+        vaultBalances.shares = 1_000_000e6 - 1;
+
+        _assertVaultState(vaultState);
+        _assertRedeemQueueState(redeemQueueState);
+        _assertBalances(userBalances);
+        _assertBalances(vaultBalances);
+        _assertRedeemRequest(requestId, user, user, 1_000_000e6 - 1, 0.005e18);
+
+        // The fee is locked at request time, a later fee change does not affect the queued request
+        vm.prank(riskManager);
+        spPRIME.setRedeemFee(0.01e18);
+
+        assertEq(spPRIME.redeemFee(), 0.01e18);
+
+        _assertRedeemRequest(requestId, user, user, 1_000_000e6 - 1, 0.005e18);
+    }
+
+    function test_requestRedeem_afterInterestAccrual() external {
+        uint256 deployTimestamp = block.timestamp;
+
+        uint256 expectedSavingsShares = spUSDC.convertToShares(1_000_000e6);
+
+        vm.prank(admin);
+        spPRIME.setVSRBounds(RAY, MAX_VSR);
+
+        vm.prank(setter);
+        spPRIME.setVSR(FIVE_PCT_VSR);
+
+        skip(365 days);
+
+        uint256 expectedChi         = spPRIME.nowChi();
+        uint256 expectedTotalAssets = (1_000_000e6 - 1) * expectedChi / RAY; // (shares_ * nowChi()) / RAY
+
+        // 5% APY over one year
+        assertApproxEqRel(expectedChi, 1.05e27, 0.0001e18);
+
+        AssertVaultStateParams memory vaultState = AssertVaultStateParams({
+            totalSupply                  : 1_000_000e6 - 1, // Rounding
+            totalAssets                  : expectedTotalAssets,
+            availableCapacity            : VAULT_CAPACITY - 1_000_000e6 + 1, // Rounding
+            availableLiquidAssets        : spUSDC.convertToAssets(expectedSavingsShares), // spUSDC shares of vault will accrue interest
+            unencumberedSparkVaultShares : expectedSavingsShares,
+            chi                          : RAY,
+            rho                          : deployTimestamp
+        });
+
+        AssertQueueStateParams memory redeemQueueState = AssertQueueStateParams({
+            encumberedShares : 0,
+            head             : 0
+        });
+
+        AssertBalancesParams memory userBalances = AssertBalancesParams({
+            account       : user,
+            asset         : 0,
+            shares        : 1_000_000e6 - 1, // Rounding
+            savingsShares : 0
+        });
+
+        AssertBalancesParams memory vaultBalances = AssertBalancesParams({
+            account       : address(spPRIME),
+            asset         : 0,
+            shares        : 0,
+            savingsShares : expectedSavingsShares
+        });
+
+        _assertVaultState(vaultState);
+        _assertRedeemQueueState(redeemQueueState);
+        _assertBalances(userBalances);
+        _assertBalances(vaultBalances);
+
+        // Supply exists, so the drip reports the accrued value
+        vm.expectEmit(address(spPRIME));
+        emit SparkPrimeVault.Drip(uint192(expectedChi), expectedTotalAssets - (1_000_000e6 - 1));
+
+        vm.expectEmit(address(spPRIME));
+        emit SparkPrimeVault.Transfer(user, address(spPRIME), 1_000_000e6 - 1);
+
+        vm.expectEmit(address(spPRIME));
+        emit SparkPrimeVault.RedeemRequest(user, user, 0, 1_000_000e6 - 1, 0);
+
+        vm.prank(user);
+        uint256 requestId = spPRIME.requestRedeem(1_000_000e6 - 1, user);
+
+        assertEq(requestId, 0);
+
+        // The request is stored in shares, so the accrued chi does not change the queued amount
+        vaultState.chi = expectedChi;
+        vaultState.rho = block.timestamp;
+
+        redeemQueueState.encumberedShares = 1_000_000e6 - 1;
+
+        userBalances.shares = 0;
+
+        vaultBalances.shares = 1_000_000e6 - 1;
+
+        _assertVaultState(vaultState);
+        _assertRedeemQueueState(redeemQueueState);
+        _assertBalances(userBalances);
+        _assertBalances(vaultBalances);
+        _assertRedeemRequest(requestId, user, user, 1_000_000e6 - 1, 0);
+    }
+
+    function test_requestRedeem_afterPreviousRequestCancelled() external {
+        uint256 expectedSavingsShares = spUSDC.convertToShares(1_000_000e6);
+
+        // Request 0 for the full balance, then cancel it back to the user
+        uint256 cancelledRequestId = _requestRedeem(user, 1_000_000e6 - 1, user);
+
+        assertEq(cancelledRequestId, 0);
+
+        _assertRedeemRequest(cancelledRequestId, user, user, 1_000_000e6 - 1, 0);
+
+        vm.prank(user);
+        spPRIME.cancelRedeemRequest(cancelledRequestId, user);
+
+        AssertVaultStateParams memory vaultState = AssertVaultStateParams({
+            totalSupply                  : 1_000_000e6 - 1, // Rounding
+            totalAssets                  : 1_000_000e6 - 1, // Rounding
+            availableCapacity            : VAULT_CAPACITY - 1_000_000e6 + 1, // Rounding
+            availableLiquidAssets        : 1_000_000e6 - 1, // Rounding
+            unencumberedSparkVaultShares : expectedSavingsShares,
+            chi                          : RAY,
+            rho                          : block.timestamp
+        });
+
+        AssertQueueStateParams memory redeemQueueState = AssertQueueStateParams({
+            encumberedShares : 0,
+            head             : 0
+        });
+
+        AssertBalancesParams memory userBalances = AssertBalancesParams({
+            account       : user,
+            asset         : 0,
+            shares        : 1_000_000e6 - 1, // Rounding
+            savingsShares : 0
+        });
+
+        AssertBalancesParams memory vaultBalances = AssertBalancesParams({
+            account       : address(spPRIME),
+            asset         : 0,
+            shares        : 0,
+            savingsShares : expectedSavingsShares
+        });
+
+        _assertVaultState(vaultState);
+        _assertRedeemQueueState(redeemQueueState);
+        _assertBalances(userBalances);
+        _assertBalances(vaultBalances);
+        _assertRedeemRequest(cancelledRequestId, address(0), address(0), 0, 0);
+
+        vm.expectEmit(address(spPRIME));
+        emit SparkPrimeVault.Transfer(user, address(spPRIME), 1_000_000e6 - 1);
+
+        vm.expectEmit(address(spPRIME));
+        emit SparkPrimeVault.RedeemRequest(user, user, 1, 1_000_000e6 - 1, 0);
+
+        vm.prank(user);
+        uint256 requestId = spPRIME.requestRedeem(1_000_000e6 - 1, user);
+
+        // The cancelled entry keeps its index, so the new request is appended after it
+        assertEq(requestId, 1);
+
+        redeemQueueState.encumberedShares = 1_000_000e6 - 1; // Rounding
+
+        userBalances.shares = 0;
+
+        vaultBalances.shares = 1_000_000e6 - 1; // Rounding
+
+        _assertVaultState(vaultState);
+        _assertRedeemQueueState(redeemQueueState);
+        _assertBalances(userBalances);
+        _assertBalances(vaultBalances);
+        _assertRedeemRequest(cancelledRequestId, address(0), address(0), 0,               0);
+        _assertRedeemRequest(requestId,          user,       user,       1_000_000e6 - 1, 0);
     }
 
 }
