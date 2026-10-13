@@ -724,13 +724,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
             emit Redeem(request_.owner, request_.recipient, net_, shares_);
 
-            uint256 balance = IERC20Like(depositAsset).balanceOf(address(this));
-
-            if (net_ > balance) {
-                IERC4626Like(sparkVault).withdraw(net_ - balance, address(this), address(this));
-            }
-
-            SafeERC20.safeTransfer(IERC20OZ(depositAsset), request_.recipient, net_);
+            IERC4626Like(sparkVault).withdraw(net_, request_.recipient, address(this));
 
             if (request_.shares != 0) break;  // Partial fill, entry stays at the head
         }
