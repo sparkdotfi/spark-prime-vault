@@ -104,6 +104,16 @@ abstract contract TestBase is Test {
         return 26148600;
     }
 
+    function _accrueInterest(uint256 time_) internal {
+        vm.prank(admin);
+        spPRIME.setVSRBounds(RAY, MAX_VSR);
+
+        vm.prank(setter);
+        spPRIME.setVSR(FIVE_PCT_VSR);
+
+        skip(time_);
+    }
+
     /**********************************************************************************************/
     /*** Assertion helpers                                                                      ***/
     /**********************************************************************************************/
