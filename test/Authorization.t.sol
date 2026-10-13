@@ -310,16 +310,16 @@ contract TakeTests is AuthorizationTestBase {
 
         _requestDeposit(user1, 1_000_000e6); // Instant fill
 
-        uint256 maxUnencumberedShares = vault.maxRedeemableUnencumberedShares();
+        uint256 unencumberedSparkVaultShares = vault.unencumberedSparkVaultShares();
 
-        assertEq(maxUnencumberedShares, expectedSavingsShares);
+        assertEq(unencumberedSparkVaultShares, expectedSavingsShares);
 
         vm.expectRevert("SparkPrimeVault/insufficient-unencumbered-shares");
         vm.prank(taker);
-        vault.take(maxUnencumberedShares + 1);
+        vault.take(unencumberedSparkVaultShares + 1);
 
         vm.prank(taker);
-        vault.take(maxUnencumberedShares);
+        vault.take(unencumberedSparkVaultShares);
     }
 
     // Success tests
@@ -427,7 +427,8 @@ contract ProcessRedeemQueueTests is AuthorizationTestBase {
         assertEq(vault.sharesEncumberedByRedeems(), shares);
         assertEq(vault.redeemHead(),                0);
 
-        deal(address(usdc), address(vault), shares);  // Liquidity returns, chi is RAY
+        vm.prank(taker);
+        spUsdc.transfer(address(vault), savingsShares);  // Liquidity returns
 
         vm.prank(rebalancer);
         vault.processRedeemQueue(type(uint256).max);
