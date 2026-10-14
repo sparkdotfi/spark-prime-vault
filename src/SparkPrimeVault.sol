@@ -722,7 +722,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         uint256 end_ = i_ + _min(depositQueue.length - i_, maxRequests_);
 
         for (; i_ < end_ && remaining_ != 0; ++i_) {
-            Request storage request_ = depositQueue[i_];
+            Request memory request_ = depositQueue[i_];
 
             uint256 requestSavingsShares_ = request_.shares;
 
@@ -761,13 +761,13 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         uint256 end_ = i_ + _min(cancelledDepositQueue.length - i_, maxRequests_);
 
         for (; i_ < end_ && remaining_ != 0; ++i_) {
-            Request storage request_ = cancelledDepositQueue[i_];
+            Request memory request_ = cancelledDepositQueue[i_];
 
             uint256 requestSavingsShares_ = request_.shares;
 
             if (requestSavingsShares_ == 0) continue;  // Cancelled
 
-            uint256 savingsShares_        = _min(requestSavingsShares_, remaining_);
+            uint256 savingsShares_ = _min(requestSavingsShares_, remaining_);
 
             pendingCancelledDepositSavingsShares -= savingsShares_;
             request_.shares                      -= savingsShares_;
@@ -797,7 +797,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         uint256 end_ = i_ + _min(redeemQueue.length - i_, maxRequests_);
 
         for (; i_ < end_ && remaining_ != 0; ++i_) {
-            Request storage request_ = redeemQueue[i_];
+            Request memory request_ = redeemQueue[i_];
 
             uint256 requestShares_ = request_.shares;
 
