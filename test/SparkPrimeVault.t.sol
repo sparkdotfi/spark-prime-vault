@@ -1221,18 +1221,18 @@ contract CancelDepositRequestTests is SparkPrimeVaultTests {
 
         vm.expectRevert("SparkPrimeVault/paused");
         vm.prank(user);
-        spPRIME.cancelDepositRequest(requestId, user);
+        spPRIME.requestDepositCancellation(requestId, user);
     }
 
     function test_cancelDepositRequest_noRequest() external {
         uint256 requestId = _requestDeposit(user, 1_000_000e6, user); // 1M queued
 
         vm.prank(user);
-        spPRIME.cancelDepositRequest(requestId, user);
+        spPRIME.requestDepositCancellation(requestId, user);
 
         vm.expectRevert("SparkPrimeVault/no-request");
         vm.prank(user);
-        spPRIME.cancelDepositRequest(requestId, user);
+        spPRIME.requestDepositCancellation(requestId, user);
     }
 
     function test_cancelDepositRequest_notOwner() external {
@@ -1240,10 +1240,10 @@ contract CancelDepositRequestTests is SparkPrimeVaultTests {
 
         vm.expectRevert("SparkPrimeVault/not-authorized");
         vm.prank(unauthorized);
-        spPRIME.cancelDepositRequest(requestId, user);
+        spPRIME.requestDepositCancellation(requestId, user);
 
         vm.prank(user);
-        spPRIME.cancelDepositRequest(requestId, user);
+        spPRIME.requestDepositCancellation(requestId, user);
     }
 
     function test_cancelDepositRequest_notGuardian() external {
@@ -1251,10 +1251,10 @@ contract CancelDepositRequestTests is SparkPrimeVaultTests {
 
         vm.expectRevert("SparkPrimeVault/not-authorized");
         vm.prank(unauthorized);
-        spPRIME.cancelDepositRequest(requestId, user);
+        spPRIME.requestDepositCancellation(requestId, user);
 
         vm.prank(guardian);
-        spPRIME.cancelDepositRequest(requestId, user);
+        spPRIME.requestDepositCancellation(requestId, user);
     }
 
     // Success tests
@@ -1265,18 +1265,20 @@ contract CancelDepositRequestTests is SparkPrimeVaultTests {
         uint256 requestId = _requestDeposit(user, 1_000_000e6, user); // 1M queued
 
         AssertVaultStateParams memory vaultState = AssertVaultStateParams({
-            totalSupply                  : 0,
-            totalAssets                  : 0,
-            availableCapacity            : 0,
-            availableLiquidAssets        : 0,
-            unencumberedSparkVaultShares : 0,
-            chi                          : spPRIME.nowChi(),
-            rho                          : block.timestamp
+            totalSupply                          : 0,
+            totalAssets                          : 0,
+            availableCapacity                    : 0,
+            availableLiquidAssets                : 0,
+            pendingDepositSavingsShares          : 0,
+            pendingCancelledDepositSavingsShares : 0,
+            pendingRedeemShares                  : 0,
+            chi                                  : spPRIME.nowChi(),
+            rho                                  : block.timestamp
         });
 
         AssertQueueStateParams memory depositQueueState = AssertQueueStateParams({
-            encumberedShares : expectedSavingsShares,
-            head             : requestId
+            pendingShares : expectedSavingsShares,
+            head          : requestId
         });
 
         AssertBalancesParams memory userBalances = AssertBalancesParams({
@@ -1301,13 +1303,13 @@ contract CancelDepositRequestTests is SparkPrimeVaultTests {
 
         // Cancel the request
         vm.expectEmit(address(spPRIME));
-        emit SparkPrimeVault.CancelDepositRequest(requestId, 1_000_000e6 - 1); // Rounding
+        emit SparkPrimeVault.DepositCancellationRequest(requestId, 0, user);
 
         vm.prank(user);
-        spPRIME.cancelDepositRequest(requestId, user);
+        spPRIME.requestDepositCancellation(requestId, user);
 
-        depositQueueState.encumberedShares = 0;
-        depositQueueState.head             = 0;
+        depositQueueState.pendingShares = 0;
+        depositQueueState.head          = 0;
 
         userBalances.asset = 1_000_000e6 - 1; // Rounding
 
