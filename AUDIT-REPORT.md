@@ -14,8 +14,8 @@ Severity counts (first pass + campaign, deduplicated):
 |---|---|---|
 | High | 2 | F-1 (patched), C-3 |
 | Medium | 5 | F-2 (design), F-3 (patched), C-1, C-2, C-4 |
-| Low | 11 | F-4, F-5, F-7, F-8, C-5, C-6, C-7, C-8, C-9, C-10, C-11 |
-| Informational | 13 | F-6, I-1..I-8, C-12..C-15 |
+| Low | 13 | F-4, F-5, F-7, F-8, C-5, C-6, C-7, C-8, C-9, C-10, C-11, E-1, E-3 |
+| Informational | 14 | F-6, I-1..I-8, C-12..C-15, E-2 |
 
 Top items to act on before freezing the design:
 
@@ -157,6 +157,29 @@ Line numbers refer to `src/SparkPrimeVault.sol` on `review/poc-tests`.
 #### C-15 · Info · `drip` overflow bounds
 - chi is capped by `_rpow(vsr, dt) * chi < 2^256`: 76 cumulative years at 100% APY work, 77 revert. With `totalSupply` near `uint128.max`, line 579 overflows after 38 years at MAX_VSR and bricks every entry point (all drip first). Unreachable with a sane `maxVSR`. Tests: `test_extremes_*`.
 
+
+### Post-campaign edge cases (`test/EdgeCases.t.sol`, 13 tests, requires the uncommitted `processQueues`)
+
+#### E-1 · Low · Netting (`processQueues`) inherits C-1 and C-2 for both legs
+- `processQueues` runs the redeem loop then the deposit loop in one transaction, so the redeem leg's ceil-burn revert (C-1) or a blacklisted recipient (C-2) also undoes the deposit leg. With netting the deposit queue is hostage to the redeem queue.
+- Netting pays redeemers out of queued depositors' spUSDC and then mints those depositors shares against backing that left in the same transaction: after one netted call, bob holds 99,040.518408 shares (100k notional) against 1 wei of spUSDC in the vault until the taker returns capital. Intended under F-2, but it is now a single-call path.
+- The deposit leg is bounded by request count only; it fills any pre-existing capacity, not just what the redeem leg freed.
+- Tests: `test_processQueues_redeemLegCeilBurnRevertKillsDepositLeg`, `test_processQueues_blacklistedRedeemRecipientKillsDepositLeg`, `test_processQueues_mintsAgainstBackingPaidOutInSameTx`, `test_processQueues_depositLegFillsPreexistingCapacity`.
+
+#### E-2 · Info · Cancels are a free timing option
+- With fee 0, requesting a redeem costs nothing: a user queued for a year and then cancelling ends identical to one who never queued (104,999.999998 USDC each). With a 1% fee the option costs exactly the fee (1,050.000001 USDC on 100k). A rational user at fee 0 queues a redeem for everything and cancels if they change their mind; the queue carries no commitment (see C-10).
+- A queued depositor earns the spUSDC rate and may cancel for free, so they get `max(spUSDC rate, prime rate)` while filled holders get the prime rate: 104,999.999999 vs 103,999.999998 USDC after a year at 5% / 4%.
+- A queued depositor can front-run the planner's fill with a cancel and re-enter instantly at no cost in shares.
+- Pause blocks cancels, so a `setChi` loss cannot be front-run from either queue. Escrowed redeem shares take the loss (alice: 49,999.999999 after a 50% cut); queued deposits do not (bob: 99,999.999999 back).
+- Tests: `test_cancelRedeemRequest_isFreeOptionWhenFeeZero`, `test_cancelRedeemRequest_feeIsTheOnlyCostOfTheOption`, `test_cancelDepositRequest_queuedDepositorEarnsSpUsdcRateAndKeepsTheChoice`, `test_cancelDepositRequest_frontRunsPlannerFillAtNoCost`, `test_pause_blocksCancelSoLossIsNotFrontRunnable`.
+
+#### E-3 · Low · Capacity zero is not "deposits closed": the queue is an uncapped spUSDC router
+- `requestDeposit` never checks capacity. With `maxCapacity = 0`, ten 1M deposits put 9,999,999.99999 USDC into spUSDC under the vault's name with `totalSupply == 0`. Depositors earn spUSDC yield fee-free and leave by cancel whenever they like; the planner can never fill them.
+- Those deposits consume spUSDC's own deposit cap: with spUSDC's cap 5M above its level, the sixth 1M request reverts `SparkVault/deposit-cap-exceeded`. Anyone can use the prime queue to exhaust spUSDC's cap.
+- A queued cancel also needs USDC liquidity inside spUSDC for the grown amount (C-14): after a year at 5% bob's cancel reverts `SparkVault/insufficient-liquidity` until spUSDC is topped up.
+- Fix: reject requests when `availableCapacity() == 0` (or cap the queue in spUSDC shares), and decide whether queued deposits should count against spUSDC's cap.
+- Tests: `test_setCapacity_zero_redeemsDrainAndDepositsNeverFill`, `test_requestDeposit_capacityZeroStillAcceptsUnlimitedDepositsIntoSpUsdc`, `test_requestDeposit_queueConsumesSpUsdcDepositCap`.
+
 ### Informational items quantified
 - I-2: a 1% fee on a 1,000,000 USDC redeem leaves 10,000 USDC of spUSDC in the vault with `totalSupply == 0`; `take` extracts it; chi is unchanged (`test_requestRedeem_feeLeavesChiUnchangedAndRaisesBackingPerShare`).
 - I-3: UNPAUSER_ROLE cannot unpause (`test_unpause_unpauserRoleCannotUnpause`).
@@ -249,6 +272,8 @@ New:
 13. When a redeem recipient cannot receive USDC (blacklist), should the entry be skipped, parked, or paid to the owner (C-2)?
 14. Should capacity hogging via free redeem requests be tolerated until netting lands, or does launch require a non-zero fee (C-10)?
 15. Is "instant deposits only while the planner runs regularly" an acceptable product property (C-5)?
+16. Compliance can only cancel open queue entries. Once a sanctioned address is filled (instantly, the common case), the only tool is pausing everyone. Is that acceptable, or does the guardian need a per-address freeze?
+17. Should `requestDeposit` be rejected outright when capacity is zero, and should the deposit queue be capped so it cannot exhaust spUSDC's deposit cap (E-3)?
 
 ## 9. Known limitations of this campaign
 
