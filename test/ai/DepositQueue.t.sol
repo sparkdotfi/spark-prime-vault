@@ -5,8 +5,13 @@ import { stdError } from "../../lib/forge-std/src/StdError.sol";
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
 
-/// @dev Deposit-queue stress tests for `SparkPrimeVault` (round 3, `refactor/more-simplifying`
-///      @ ff828d2).
+/// @dev Deposit-queue stress tests for `SparkPrimeVault` (round 4, `fix/update-guardian-transfer`
+///      @ bf93b0d; round-3 numbers in older comments refer to ff828d2).
+///
+///      Round-4 changes under test: a guardian `requestDepositCancellation` must name the owner
+///      as refund recipient (src 424, DQ-7 fixed); `cancelRedeemRequest` is gone; the planner
+///      entry points are `processPendingDeposits` / `processPendingDepositCancellations` and the
+///      heads are `firstPendingDepositId` / `firstPendingDepositCancellationId`.
 ///
 ///      Harness indexes (frozen at RAY after setUp):
 ///        spUSDC  chi_s = 1.047633055711877768967605062e27
@@ -1094,29 +1099,184 @@ contract DepositQueueTest is LocalTestBase {
         _assertQueueConsistent();
     }
 
-    // HIGH (regression of F-1): the guardian's `recipient_` is written into the cancelled entry
-    // (src 450), so a guardian cancel pays whoever the guardian names, not the owner.
-    function test_BUG_guardianCancelRefundsToArbitraryRecipient() public {
+    // Round 4 (DQ-7 fixed at bf93b0d): a guardian cancel must name the owner as the refund
+    // recipient (src 424), the cancelled entry is `(owner, owner, shares)` and settlement pays
+    // the owner, never the deposit's share recipient or the guardian.
+    function test_requestDepositCancellation_guardianRefundsOwner() public {
         _setCapacity(0);
         _fund(alice, ONE_M);
         vm.prank(alice);
         uint256 id = vault.requestDeposit(ONE_M, bob);
 
+        vm.expectEmit(address(vault));
+        emit DepositCancellationRequest(id, 0);
+
         vm.prank(guardian);
-        uint256 cancelId = vault.requestDepositCancellation(id, guardian);
+        uint256 cancelId = vault.requestDepositCancellation(id, alice);
 
         (address cOwner, address cRecipient, uint256 cShares) = _cancelledDepositRequest(cancelId);
         assertEq(cOwner,     alice);
-        assertEq(cRecipient, guardian);
+        assertEq(cRecipient, alice);
         assertEq(cShares,    S_1M);
+        assertEq(_shares(id), 0);
+        assertEq(vault.firstPendingDepositId(), 1);
+
+        vm.expectEmit(address(vault));
+        emit DepositCancellation(alice, alice, S_1M, A_1M);
 
         _processCancelledDeposits(type(uint256).max, 10);
 
-        assertEq(usdc.balanceOf(guardian), A_1M);
-        assertEq(usdc.balanceOf(alice),    0);
+        assertEq(usdc.balanceOf(alice),    A_1M);
         assertEq(usdc.balanceOf(bob),      0);
+        assertEq(usdc.balanceOf(guardian), 0);
         assertEq(vault.pendingDepositSavingsShares(),          0);
         assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
+        assertEq(_vaultSpUsdc(), 0);
+        _assertQueueConsistent();
+    }
+
+    // Round 4: any guardian-named recipient other than the owner reverts `invalid-recipient`
+    // (src 424), including the share recipient, the guardian itself and the vault. The check sits
+    // after `not-authorized` (src 423): a stranger naming the owner still gets `not-authorized`.
+    // The entry is untouched by every failed attempt.
+    function test_requestDepositCancellation_guardianRevertsNonOwnerRecipient() public {
+        _setCapacity(0);
+        _fund(alice, ONE_M);
+        vm.prank(alice);
+        uint256 id = vault.requestDeposit(ONE_M, bob);
+
+        address[4] memory bad = [bob, guardian, carol, address(vault)];
+        for (uint256 i; i < 4; ++i) {
+            vm.prank(guardian);
+            vm.expectRevert("SparkPrimeVault/invalid-recipient");
+            vault.requestDepositCancellation(id, bad[i]);
+        }
+
+        vm.prank(carol);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vault.requestDepositCancellation(id, alice);
+
+        vm.prank(bob);  // the share recipient is not the owner either
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vault.requestDepositCancellation(id, alice);
+
+        (address owner, address recipient, uint256 shares) = _depositRequest(id);
+        assertEq(owner,     alice);
+        assertEq(recipient, bob);
+        assertEq(shares,    S_1M);
+        assertEq(vault.pendingDepositSavingsShares(),          S_1M);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
+        assertEq(_cancelledQueueLength(), 0);
+        assertEq(vault.firstPendingDepositId(), 0);
+    }
+
+    // Round 4: the owner keeps free choice of the refund address (src 422 skips the recipient
+    // check for the owner), and after a guardian cancel the owner can still repoint the refund
+    // because the cancelled entry's `owner` is the depositor (src 432, 500). The guardian cannot.
+    function test_requestDepositCancellation_ownerNamesAnyRecipient_andRepointsAfterGuardian()
+        public
+    {
+        _setCapacity(0);
+        _fund(alice, 2 * ONE_M);
+        vm.prank(alice);
+        uint256 id1 = vault.requestDeposit(ONE_M, bob);
+        vm.prank(alice);
+        uint256 id2 = vault.requestDeposit(ONE_M, bob);
+
+        vm.prank(alice);
+        uint256 c1 = vault.requestDepositCancellation(id1, carol);
+        (, address r1, ) = _cancelledDepositRequest(c1);
+        assertEq(r1, carol);
+
+        vm.prank(guardian);
+        uint256 c2 = vault.requestDepositCancellation(id2, alice);
+
+        vm.prank(guardian);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vault.updateDepositCancellationRecipient(c2, guardian);
+
+        vm.prank(alice);
+        vault.updateDepositCancellationRecipient(c2, dave);
+        (address o2, address r2, uint256 s2) = _cancelledDepositRequest(c2);
+        assertEq(o2, alice);
+        assertEq(r2, dave);
+        assertEq(s2, S_1M);
+
+        _processCancelledDeposits(type(uint256).max, 10);
+
+        assertEq(usdc.balanceOf(carol), A_1M);
+        assertEq(usdc.balanceOf(dave),  A_1M);
+        assertEq(usdc.balanceOf(alice), 0);
+        assertEq(usdc.balanceOf(bob),   0);
+        assertEq(vault.firstPendingDepositCancellationId(), 2);
+        _assertQueueConsistent();
+    }
+
+    // Round 4 (new idea): the recipient is read at every fill (src 830), so a repoint between a
+    // partial fill and the rest sends the remainder to the new recipient; the first part stays
+    // with the old one. The `Deposit` event carries the recipient in force at each fill.
+    function test_updateDepositRecipient_afterPartialFillRedirectsRemainder() public {
+        _setCapacity(0);
+        _fund(alice, ONE_M);
+        vm.prank(alice);
+        uint256 id = vault.requestDeposit(ONE_M, bob);
+
+        // Capacity for exactly SH_100K shares: fills S_100K-ish spUSDC shares.
+        _setCapacity(SH_100K);
+        uint256 part = _remainingForCapacity(SH_100K);
+        (uint256 partAssets, uint256 partShares) = _fillOf(part);
+
+        vm.expectEmit(address(vault));
+        emit Deposit(alice, bob, partAssets, partShares);
+        _processDeposits(type(uint256).max, 10);
+
+        assertEq(vault.balanceOf(bob), partShares);
+        assertEq(_shares(id), S_1M - part);
+        assertEq(vault.firstPendingDepositId(), 0);  // partial fill keeps the head (src 834)
+
+        vm.prank(alice);
+        vault.updateDepositRecipient(id, carol);
+
+        _setCapacity(type(uint128).max);
+        (uint256 restAssets, uint256 restShares) = _fillOf(S_1M - part);
+
+        vm.expectEmit(address(vault));
+        emit Deposit(alice, carol, restAssets, restShares);
+        _processDeposits(type(uint256).max, 10);
+
+        assertEq(vault.balanceOf(bob),   partShares);
+        assertEq(vault.balanceOf(carol), restShares);
+        assertEq(vault.balanceOf(alice), 0);
+        assertEq(_shares(id), 0);
+        assertEq(vault.firstPendingDepositId(), 1);
+        assertLe(SH_1M - (partShares + restShares), 2);  // DQ-6 chunk loss
+        _assertQueueConsistent();
+    }
+
+    // Round 4 (new idea, DQ-4 mirror on the refund side): the owner may repoint a cancelled
+    // entry's refund to the vault itself (src 495 only rejects zero). spUSDC then pays the USDC
+    // to the vault (src 869), where it is stuck: nothing reads the vault's own USDC balance
+    // (`_requestDeposit` pulls `assets_` from the caller and deposits exactly that, src 769-771).
+    function test_updateDepositCancellationRecipient_toVaultStrandsRefund() public {
+        uint256 id = _queue(alice, ONE_M);
+        uint256 cancelId = _cancel(alice, id);
+
+        vm.prank(alice);
+        vault.updateDepositCancellationRecipient(cancelId, address(vault));
+
+        _processCancelledDeposits(type(uint256).max, 10);
+
+        assertEq(usdc.balanceOf(address(vault)), A_1M);
+        assertEq(usdc.balanceOf(alice),          0);
+        assertEq(_vaultSpUsdc(),                 0);
+        assertEq(vault.totalSupply(),            0);
+
+        // A later deposit by bob neither uses nor frees the stranded USDC.
+        _setCapacity(type(uint128).max);
+        _deposit(bob, HUNDRED_K);
+        assertEq(usdc.balanceOf(address(vault)), A_1M);
+        assertEq(vault.balanceOf(bob), SH_100K);
+        assertEq(_vaultSpUsdc(), S_100K);
     }
 
     // The owner can redirect a queued entry's fill (src 416-425, owner-only since ff828d2).

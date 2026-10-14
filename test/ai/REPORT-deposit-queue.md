@@ -1,3 +1,48 @@
+# Round 4 (bf93b0d)
+
+Worker: QUEUES-ROUNDING. File: `test/ai/DepositQueue.t.sol` (`DepositQueueTest is LocalTestBase`), branch `campaign-v4/queues-rounding`, source `src/SparkPrimeVault.sol` at upstream `fix/update-guardian-transfer` `bf93b0d`.
+Result: 62 tests, 62 pass (59 unit, 3 fuzz at 5000 runs). No `test_BUG_` test fails in this file; the three remaining `test_BUG_*` (DQ-1 x2, DQ-2) pass by asserting the known behaviour. Harness indexes and reference conversions unchanged.
+
+Line remap (ff828d2 -> bf93b0d): `_requestDeposit` 706-736 -> 760-793 (head walk 782-787, instant decision 790-792); `requestDepositCancellation` (was `cancelDepositRequest`) 428-463 -> 409-449 (auth 422-425, push 431-433, head walk 440-445); `updateDepositRecipient` 416-425 -> 483-492; `updateDepositCancellationRecipient` (was `updateCancelledDepositRecipient`) 465-477 -> 494-506; `_processPendingDeposits` 738-779 -> 799-840 (capacity conversion 803-806, loop 813, `continue` 818, fill math 823-824, mint 830, partial `break` 834, `delete` 836); `_processPendingDepositCancellations` 781-815 -> 842-879 (budget 847-848, `redeem` 868-869); `realizeLoss` 369-385 -> 365-381; `realizeGain` 297-309 -> 293-305; `totalAssets` 675-677 -> 752-754. The `requestDeposit` natspec with the stale `type(uint256).max` note is gone (no natspec on the function any more).
+
+## Fixed since round 3
+
+- DQ-7 · High · FIXED. `requestDepositCancellation` (`src/SparkPrimeVault.sol:422-425`) now requires `recipient_ == request_.owner` for a non-owner caller, checked after `not-authorized`. The cancelled entry is `(owner, owner, shares)` and settlement (`:869`) pays the owner. `test_BUG_guardianCancelRefundsToArbitraryRecipient` became three regression tests: `test_requestDepositCancellation_guardianRefundsOwner` (guardian names alice: entry `(alice, alice, 954_532_691_143)`, head walks to 1, settlement pays alice `999_999_999_999`, bob and the guardian 0, both pending counters 0); `test_requestDepositCancellation_guardianRevertsNonOwnerRecipient` (bob the share recipient, the guardian, carol and the vault all revert `invalid-recipient`; carol and bob naming alice revert `not-authorized`, so the order is auth first; the entry, counters, head and cancelled-queue length are untouched); `test_requestDepositCancellation_ownerNamesAnyRecipient_andRepointsAfterGuardian` (owner cancels to carol; after a guardian cancel the owner repoints the refund to dave through `updateDepositCancellationRecipient` because the cancelled entry keeps `owner = alice` (`:432`, `:500`), the guardian's repoint reverts `not-authorized`; carol and dave each receive `999_999_999_999`).
+- `cancelRedeemRequest` removed: no deposit-queue test used it. Redeem requests are final.
+
+## New findings (round 4)
+
+- DQ-10 · Low · Refund repointed to the vault is stranded. `updateDepositCancellationRecipient` (`src/SparkPrimeVault.sol:495`) only rejects `address(0)`, so the owner can set the vault itself as the refund recipient; `spUSDC.redeem(shares, vault, vault)` (`:869`) then leaves the USDC in the vault, where nothing reads it (`_requestDeposit` pulls `assets_` from the caller and deposits exactly `assets_`, `:769-771`; there is no sweep). Mirror of DQ-4 on the refund side; self-inflicted. `test_updateDepositCancellationRecipient_toVaultStrandsRefund`: `999_999_999_999` USDC sits in the vault, a later deposit by bob neither uses nor frees it. Same shape for `address(savings)` as the recipient (USDC donated to spUSDC's liquidity, not tested) and for the redeem recipient on the redeem side (RedeemQueue worker's file).
+- No new bug on the guardian path. The check is placed so a stranger cannot probe it (`not-authorized` first), the owner's choice is unrestricted, and the cancelled entry's `owner` is never the guardian, so the guardian never gains a repoint right either.
+
+## Persisting (re-confirmed at bf93b0d)
+
+- DQ-8 · Low · unbounded head walk in the cancel (`:440-445`); planner loop skipped at `:813` when `remaining_ == 0`, so a ghost head is only walked by a cancel or by the next request; ghosts still creatable (`:765`, `minDeposit == 0`). Per ghost the walk costs one cold SLOAD plus one warm SSTORE (`++firstPendingDepositId` writes every step), about 2.3k gas. The victim is never locked: the planner fill at the head does not need the walk. `test_requestDepositCancellation_headWalkGasGrowsWithGhosts`, `test_requestDeposit_zeroAssetsCreatesGhostEntry`.
+- DQ-1 · Low · exact-fit capacity leaves a 1-share dust head (`:803-806` double floor, `:782-787` walk stops on it, `:834` keeps it). `test_BUG_exactFitCapacityLeavesDustThatBlocksInstantFills`, `test_BUG_twoWeiDepositAtFullCapacityJamsInstantPath`.
+- DQ-2 · Low (F-4) · 1-share fill mints 0 and burns the spUSDC share (`:823-836`). After a realised loss (`chi < RAY`) this region is empty (see REPORT-rounding round 4). `test_BUG_dustFillMintsZeroShares`.
+- DQ-3 · Info · cancelled entries behind a live head consume `maxRequests_` (`:811`, `:818`).
+- DQ-4 · Low · `recipient_ == address(vault)` shares are stuck (`:764`, `:830`).
+- DQ-5 · Medium (F-2) · fills mint against backing that left (`:799-840` never reads the spUSDC balance); refunds after a `take()` are paid from others' spUSDC or deferred silently (`:847-848`).
+- DQ-6 · Info · chunked fills cost up to `2*(k-1)` shares (`:823-824`).
+- DQ-9 · Info · a queued depositor does not share a `realizeGain` (`:293-305`); unchanged.
+
+## Properties held (round 4)
+
+Properties 1-16 of rounds 2 and 3 re-held on bf93b0d (same tests, same exact values, 5000 fuzz runs). New:
+
+17. Guardian cancel: succeeds only with the owner as recipient, settles to the owner, cannot be repointed by the guardian; the owner may name any non-zero recipient and may repoint afterwards. Tests above.
+18. The fill recipient is read at each fill (`:830`): after a partial fill the owner can repoint the remainder, the first part stays with the old recipient, each `Deposit` event carries the recipient in force, and the two parts lose at most 2 shares against a single fill. `test_updateDepositRecipient_afterPartialFillRedirectsRemainder` (capacity `99_040_518_410` first, bob gets the first part, carol the rest, entry deleted, head 1).
+19. A refund repointed to the vault strands exactly `floor(shares * chi_s / RAY)` USDC in the vault and nothing else moves. `test_updateDepositCancellationRecipient_toVaultStrandsRefund`.
+
+## Unsettled
+
+- DQ-8 cost model unchanged (30M gas, cold slots, `minDeposit == 0`); the number above assumes Cancun gas costs.
+- Fuzz 2 never calls `take()` or drains spUSDC, so the `maxRedeem` partial-settlement path is covered by unit tests only.
+- `address(savings)` as the refund or fill recipient (USDC or spPRIME sent to spUSDC itself) is not tested.
+- spPRIME VSR > RAY while queued still untested on the deposit side.
+
+---
+
 # Round 3 (ff828d2)
 
 Worker: QUEUES. File: `test/DepositQueue.t.sol` (`DepositQueueTest is LocalTestBase`), branch `campaign-v3/queues`, source `src/SparkPrimeVault.sol` at upstream `refactor/more-simplifying` `ff828d2`.
