@@ -8,7 +8,8 @@ import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
 
 import { MockUSDC } from "../LocalTestBase.t.sol";
 
-// Handler base for the spPRIME invariant campaign (round 2, `refactor/more-simplifying`). Holds
+// Handler base for the spPRIME invariant campaign (round 3, `refactor/more-simplifying` @ ff828d2).
+// Holds
 // the actors (read from the roles granted by `LocalTestBase`), N users, and the ghost bookkeeping
 // every invariant reads.
 //
@@ -95,8 +96,21 @@ contract Init is Test {
     bool    public mintedAboveCapacity;    // invariant F
     uint256 public lastChi;                // invariant G
     bool    public chiDecreasedOutsideLoss;// invariant G: chi fell in a non-realizeLoss action
+    bool    public chiRoseOutsideWarpOrGain;// invariant G: chi rose in a non-warp, non-realizeGain action
     uint256 public lossRealizations;       // realizeLoss calls
-    uint256 public realizedLossUsdc;       // sum of every `loss_` passed to realizeLoss (H)
+    uint256 public realizedLossUsdc;       // sum of every `loss_` passed to realizeLoss
+    uint256 public gainRealizations;       // realizeGain calls
+    uint256 public realizedGainUsdc;       // sum of every `gain_` passed to realizeGain
+
+    // Invariant T: |delta totalAssets - amount| per realizeGain / realizeLoss call.
+    uint256 public maxGainLossError;       // largest error seen (must stay <= 1)
+    uint256 public gainLossOutOfBound;     // calls whose error exceeded 1 wei
+
+    // Invariant H: upper bound (USDC) on the notional deficit `totalAssets() - real backing`
+    // created by fictitious gains (+) and losses (-). Scaled on every warp: by spUSDC's index
+    // while positive, by spPRIME's index while negative (both are upper bounds while the spUSDC
+    // rate is >= the spPRIME rate, see invariant H).
+    int256  public ghostDeficitUsdc;
     uint256 public depositFills;           // entries touched by a deposit fill (incl. partial)
     uint256 public cancelledFills;         // entries touched by a cancelled-deposit fill
     uint256 public redeemFills;            // entries touched by a redeem fill (incl. partial)
@@ -111,18 +125,19 @@ contract Init is Test {
     uint256 public ghostDepositEntries;    // F-5: zero-amount deposit requests
     uint256 public ghostRedeemEntries;     // F-5: zero-share or fee-eaten redeem requests
 
-    // Recipient updates (invariant R)
-    uint256 public recipientUpdates;
-    uint256 public recipientUpdatesByStranger;  // caller is not the entry owner
-    bool    public recipientUpdateChangedState; // anything but the recipient field moved
+    // Recipient updates (invariants R and S)
+    uint256 public recipientUpdates;                 // successful updates (always by the owner)
+    bool    public recipientUpdateChangedState;      // anything but the recipient field moved
+    uint256 public recipientUpdateStrangerAttempts;  // deliberate non-owner attempts
+    uint256 public recipientUpdateStrangerReverts;   // ... that reverted with exactly not-authorized
+    string  public lastStrangerUpdateRevert;
 
     // Revert observations (the handler wraps calls the contract itself may make revert)
     uint256 public redeemProcessReverts;       // "SparkVault/insufficient-balance"
     uint256 public redeemProcessRevertsOther;  // anything else (must stay 0)
     string  public lastRedeemProcessRevert;
 
-    uint256 public cancelProcessReverts;       // "SparkVault/insufficient-liquidity"
-    uint256 public cancelProcessRevertsOther;  // anything else (must stay 0)
+    uint256 public cancelProcessReverts;       // any revert at all (must stay 0 since ff828d2)
     string  public lastCancelProcessRevert;
 
     // Call counts per handler function
@@ -167,11 +182,34 @@ contract Init is Test {
         _chiCheck();
     }
 
-    // chi may only fall inside the realizeLoss handler, which resets `lastChi` itself.
+    // No handler moves time except `warp`, so nowChi() may only change inside the warp (up),
+    // realizeGain (up) and realizeLoss (down) handlers, each of which resets `lastChi` itself.
     function _chiCheck() internal {
         uint256 nowChi_ = vault.nowChi();
-        if (nowChi_ < lastChi) chiDecreasedOutsideLoss = true;
+        if (nowChi_ < lastChi) chiDecreasedOutsideLoss  = true;
+        if (nowChi_ > lastChi) chiRoseOutsideWarpOrGain = true;
         lastChi = nowChi_;
+    }
+
+    // Invariant T bookkeeping: `after` must be `before +/- amount` within 1 wei.
+    function _recordGainLossError(uint256 before, uint256 after_, uint256 amount, bool gain) internal {
+        uint256 expected = gain ? before + amount : before - amount;
+        uint256 err      = after_ > expected ? after_ - expected : expected - after_;
+        if (err > maxGainLossError) maxGainLossError = err;
+        if (err > 1) gainLossOutOfBound++;
+    }
+
+    // Scales the deficit ledger by `after_ / before` (indexes), rounding so the result stays an
+    // upper bound: up when positive, towards zero when negative.
+    function _scaleDeficit(uint256 before, uint256 after_) internal {
+        if (ghostDeficitUsdc == 0 || before == after_) return;
+        if (ghostDeficitUsdc > 0) {
+            uint256 d = uint256(ghostDeficitUsdc);
+            ghostDeficitUsdc = int256((d * after_ + before - 1) / before);
+        } else {
+            uint256 d = uint256(-ghostDeficitUsdc);
+            ghostDeficitUsdc = -int256((d * after_) / before);
+        }
     }
 
     function getRandomUser(uint256 userIndex) internal view returns (address user) {

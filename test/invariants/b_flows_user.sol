@@ -5,7 +5,8 @@ import "./a_init.sol";
 
 // User flows: deposit requests (with and without referral, including zero-amount ghosts), deposit
 // cancels (into the cancelled-deposit queue), redeem requests (including zero-share and one-wei
-// ghosts), redeem cancels, recipient updates by arbitrary callers, transfers and transferFrom.
+// ghosts), redeem cancels, owner recipient updates (plus stranger attempts), transfers and
+// transferFrom.
 contract FlowsUser is Init {
 
     constructor(address vault_) Init(vault_) {}
@@ -202,12 +203,14 @@ contract FlowsUser is Init {
     }
 
     /**********************************************************************************************/
-    /*** Recipient updates (unauthenticated upstream: any caller, any entry)                    ***/
+    /*** Recipient updates (owner-only since ff828d2, open entries only)                         ***/
     /**********************************************************************************************/
 
-    // A random user repoints a random entry (open when there is one, closed otherwise) of one of
-    // the three queues to a random user. The handler asserts that only the recipient field moved
-    // (invariant R) and attributes later fills by balance diff (invariant J).
+    // The entry OWNER repoints a random open entry of one of the three queues to a random user.
+    // The handler asserts that only the recipient field moved (invariant R) and attributes later
+    // fills by balance diff (invariant J). In ~1 of 8 calls a user who is not the owner tries the
+    // same update; that attempt must revert with exactly `SparkPrimeVault/not-authorized`
+    // (invariant S).
     function updateRecipient(
         uint256 queueSeed,
         uint256 idSeed,
@@ -221,38 +224,73 @@ contract FlowsUser is Init {
         uint256 length = q == 0 ? depositQueueLength
                        : q == 1 ? cancelledQueueLength
                        :          redeemQueueLength;
-        if (length == 0) return;
 
         uint256 head = q == 0 ? vault.depositHead()
                      : q == 1 ? vault.cancelledDepositHead()
                      :          vault.redeemHead();
+        if (head >= length) return;
 
-        uint256 id = head < length ? _bound(idSeed, head, length - 1) : _bound(idSeed, 0, length - 1);
+        // Scan forward from a random start for an open entry (closed ones revert `no-request`).
+        uint256 id = _bound(idSeed, head, length - 1);
+        address owner;
+        uint256 shares;
+        for (uint256 i = id; i < length; i++) {
+            (owner, , shares) = _entry(q, i);
+            if (shares != 0) { id = i; break; }
+        }
+        if (shares == 0) return;
 
-        address caller    = getRandomUser(callerIndex);
         address recipient = getRandomUser(recipientIndex);
 
-        (address owner, , ) = q == 0 ? vault.depositQueue(id)
-                            : q == 1 ? vault.cancelledDepositQueue(id)
-                            :          vault.redeemQueue(id);
+        if (queueSeed / 3 % 8 == 0) {
+            uint256 ci = callerIndex % N;
+            if (users[ci] == owner) ci = (ci + 1) % N;
+            address stranger = users[ci];
+            assertTrue(stranger != owner, "handler: stranger is the owner");
+
+            recipientUpdateStrangerAttempts++;
+
+            vm.startPrank(stranger);
+            bool ok;
+            string memory reason;
+            if      (q == 0) { try vault.updateDepositRecipient(id, recipient)          { ok = true; } catch Error(string memory r) { reason = r; } catch {} }
+            else if (q == 1) { try vault.updateCancelledDepositRecipient(id, recipient) { ok = true; } catch Error(string memory r) { reason = r; } catch {} }
+            else             { try vault.updateRedeemRecipient(id, recipient)           { ok = true; } catch Error(string memory r) { reason = r; } catch {} }
+            vm.stopPrank();
+
+            lastStrangerUpdateRevert = ok ? "<no revert>" : reason;
+            if (!ok && keccak256(bytes(reason)) == keccak256("SparkPrimeVault/not-authorized")) {
+                recipientUpdateStrangerReverts++;
+            }
+            return;
+        }
 
         bytes32 before = _stateDigest();
 
-        vm.startPrank(caller);
-        if      (q == 0) vault.updateDepositRecipient(id, recipient);
-        else if (q == 1) vault.updateCancelledDepositRecipient(id, recipient);
-        else             vault.updateRedeemRecipient(id, recipient);
+        vm.startPrank(owner);
+        _updateRecipient(q, id, recipient);
         vm.stopPrank();
 
         if (_stateDigest() != before) recipientUpdateChangedState = true;
 
-        (, address recipientAfter, ) = q == 0 ? vault.depositQueue(id)
-                                     : q == 1 ? vault.cancelledDepositQueue(id)
-                                     :          vault.redeemQueue(id);
+        (, address recipientAfter, ) = _entry(q, id);
         assertEq(recipientAfter, recipient, "handler: recipient not updated");
 
         recipientUpdates++;
-        if (caller != owner) recipientUpdatesByStranger++;
+    }
+
+    function _updateRecipient(uint256 q, uint256 id, address recipient) internal {
+        if      (q == 0) vault.updateDepositRecipient(id, recipient);
+        else if (q == 1) vault.updateCancelledDepositRecipient(id, recipient);
+        else             vault.updateRedeemRecipient(id, recipient);
+    }
+
+    function _entry(uint256 q, uint256 id)
+        internal view returns (address owner, address recipient, uint256 shares)
+    {
+        return q == 0 ? vault.depositQueue(id)
+             : q == 1 ? vault.cancelledDepositQueue(id)
+             :          vault.redeemQueue(id);
     }
 
     /**********************************************************************************************/

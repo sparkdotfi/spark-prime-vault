@@ -1,4 +1,118 @@
-# spPRIME invariant campaign report (round 2)
+# spPRIME invariant campaign report
+
+## Round 3 (ff828d2)
+
+Branch `campaign-v3/invariants`, files `test/invariants/{a_init,b_flows_user,c_flows_admin}.sol`,
+`test/invariants/d_invariants.t.sol`. Target: upstream `src/SparkPrimeVault.sol` from
+`refactor/more-simplifying` @ `ff828d2` (owner-only `update*Recipient`, `realizeLoss` requires
+`0 < loss < totalAssets` and a live supply, `_processCancelledDepositQueue` budgets by
+`spUSDC.maxRedeem(vault)`, new `realizeGain`). Harness: `test/LocalTestBase.t.sol` (real spUSDC
+code, 6-decimal mock USDC, ugly starting indexes chi_s = 1.0476e27, chi_p = 1.0097e27).
+
+Final run: `FOUNDRY_INVARIANT_RUNS=100 FOUNDRY_INVARIANT_DEPTH=500 forge test --match-path
+'test/invariants/*.t.sol' -vv` -> **22 passed, 0 failed** (20 invariants x 100 runs x 500 calls =
+50,000 handler calls per invariant, 0 handler reverts, plus 2 unit proofs).
+
+### (a) Violations and findings
+
+No invariant A..T was violated in any run. No new finding.
+
+- N-2 (round 2, `processCancelledDepositQueue` reverting on spUSDC illiquidity) is **fixed**:
+  `src/SparkPrimeVault.sol:784` now bounds `remaining_` by `spUSDC.maxRedeem(vault)`
+  (= min(balance, floor(liquidity * RAY / chi_s))). The handler wraps the call and counts every
+  revert; `invariant_P` now asserts 0 reverts and held over 50,000 calls with the spUSDC taker
+  draining all liquidity in 1 of 4 drain calls and refunds queued in 68 entries of the 20 sampled
+  last-runs. Unit proof renamed to `test_processCancelledDepositQueuePaysUpToSpUsdcLiquidity`:
+  two 100 USDC refunds queued, 150 USDC liquidity, `(max, 2)` pays alice 99,999,999 and bob
+  49,999,999 (partial, stays at the head), a call with 0 liquidity is a no-op, the remainder is
+  paid once 100 USDC is back (bob ends at 99,999,999).
+- N-1 (round 1, `processRedeemQueue` reverts `SparkVault/insufficient-balance` when the vault's
+  spUSDC balance binds and the per-entry ceil burns add up) is **still present** at
+  `src/SparkPrimeVault.sol:822` / `:845`. `test_BUG_processRedeemQueueRevertsOnCeilBurnWhenBalanceBinds`
+  unchanged and passing; the random walk did not hit it (`redeemProcessReverts` 0).
+- `update*Recipient` (`src/SparkPrimeVault.sol:416`, `:465`, `:537`) are owner-only: 17 of 17
+  deliberate non-owner attempts in the sampled last-runs reverted with exactly
+  `SparkPrimeVault/not-authorized` (new `invariant_S`); the 114 owner updates moved nothing but
+  the recipient field (`invariant_R`).
+- `realizeGain` (`src/SparkPrimeVault.sol:297`): 380 calls in the sampled last-runs, in any pause
+  state, `1 <= gain <= totalAssets / 10`; `totalAssets()` moved by exactly the gain minus at most
+  1 wei every time (new `invariant_T`, `maxGainLossError` 1 in every run). The gain is notional:
+  nothing arrives in the harness, so after a gain the vault is insolvent by the gain plus its
+  yield; `invariant_H` accounts for that with a deficit ledger (below) and still held.
+- `realizeLoss` (`src/SparkPrimeVault.sol:369`): 111 calls, same +/-1 wei accounting.
+
+### (b) Invariants that held (100 runs x depth 500, 50,000 calls each, 0 reverts)
+
+| Name | Claim |
+|---|---|
+| `invariant_A_sumOfBalancesEqualsTotalSupply` | sum of balances over 6 users + vault escrow == totalSupply |
+| `invariant_B_vaultBalanceEqualsPendingRedeemShares` | balanceOf(vault) == pendingRedeemShares |
+| `invariant_C_pendingDepositEqualsSumOfOpenDepositEntries` | pendingDepositSavingsShares == sum of depositQueue[i].shares |
+| `invariant_D_pendingRedeemEqualsSumOfOpenRedeemEntries` | pendingRedeemShares == sum of redeemQueue[i].shares |
+| `invariant_E_headBookkeeping` | every entry strictly before depositHead / cancelledDepositHead / redeemHead has shares == 0; heads <= lengths |
+| `invariant_F_totalSupplyNeverExceedsCapacityViaMint` | no mint ever pushed totalSupply above maxCapacity as set at mint time |
+| `invariant_G_chiMonotonicAndDripConsistent` | nowChi() only changes inside warp (up), realizeGain (up) and realizeLoss (down); nowChi() == the handler's last observation, >= stored chi, > 0; drip() == nowChi(), chi/rho updated |
+| `invariant_H_solvencyWhenSpUsdcRateGePrimeRate` | while spUSDC VSR >= spPRIME VSR always held and the taker holds nothing: value(held spUSDC) - value(open deposit entries) - value(open cancelled entries) + epsilon >= totalAssets() - deficit ledger. Ledger: +gain on realizeGain, -loss on realizeLoss, scaled on each warp by spUSDC's index while positive and by spPRIME's index while negative (both upper bounds given the rate order; rounding towards the bound). epsilon = redeemFills * ceil(chi_s/RAY) + 2 wei |
+| `invariant_I_usersNeverExtractMoreThanDepositsPlusYield` | sum of users' USDC <= USDC deposited + USDC minted into spUSDC + taker top-ups, and == USDC paid by redeem fills + cancelled-deposit refunds |
+| `invariant_J_balanceProvenance` | balanceOf(user) == minted (attributed to the entry recipient at fill time) + transfers in + redeem-cancel refunds - transfers out - escrowed |
+| `invariant_K_backingExistsSomewhere` | USDC in spUSDC + spUSDC taker + users + vault + spPRIME taker == USDC ever minted; vault holds 0 USDC |
+| `invariant_L_availableCapacityFormula` | availableCapacity() == max(0, maxCapacity - totalSupply) |
+| `invariant_M_noMintOfZeroSharesExceptDust` | zero-share fills counted (F-4), reported in afterInvariant() |
+| `invariant_N_spUsdcSharesHeldByVaultAndTaker` | spUSDC totalSupply == vault + taker balances; taker balance == handler ledger |
+| `invariant_O_processRedeemQueueRevertsOnlyOnCeilBurn` | the only revert reason ever seen from processRedeemQueue is `SparkVault/insufficient-balance` |
+| `invariant_P_processCancelledDepositQueueNeverReverts` | processCancelledDepositQueue never reverted (any reason is counted and kept) |
+| `invariant_Q_pendingCancelledEqualsSumOfOpenCancelledEntries` | pendingCancelledDepositSavingsShares == sum of cancelledDepositQueue[i].shares |
+| `invariant_R_recipientUpdatesNeverChangeTotals` | an owner recipient update leaves totals, pendings, heads, chi/rho, every share and USDC balance, the vault's spUSDC and every entry's owner/shares byte-identical (keccak digest before == after) |
+| `invariant_S_recipientUpdateByNonOwnerAlwaysReverts` | every recipient update attempted by a non-owner on an open entry reverted with exactly `SparkPrimeVault/not-authorized` (attempts == such reverts) |
+| `invariant_T_gainAndLossAccounting` | after every realizeGain / realizeLoss, totalAssets() == before +/- amount within 1 wei (running max error <= 1, out-of-bound count 0) |
+
+Handler coverage (foundry selector metrics, `invariant_A`, 100 runs x 500 calls, 0 reverts,
+0 discards): cancelDepositRequest 1941, cancelRedeemRequest 1825, drainSpUsdcLiquidity 1946,
+pause 1987, processCancelledDepositQueue 1997, processDepositQueue 1951, processRedeemQueue 1870,
+realizeGain 1854, realizeLoss 1904, requestDeposit 1953, requestDepositWithReferral 1935,
+requestRedeem 1983, returnSpUsdcLiquidity 1951, returnToVault 1937, setCapacity 1928,
+setMinDeposit 1868, setMinRedeem 1940, setPrimeVsr 1899, setRedeemFee 1887, setSpUsdcVsr 1938,
+take 1877, transfer 1905, transferFrom 2003, unpause 1875, updateRecipient 1944, warp 1902.
+
+Ghost counters summed over the 20 sampled last-runs (one 500-call run per invariant test):
+depositQueueLength 585, cancelledQueueLength 68, redeemQueueLength 215, depositFills 433,
+cancelledFills 84, redeemFills 102, zeroShareFills 5, ghostDepositEntries 71, ghostRedeemEntries 37,
+recipientUpdates 114, strangerUpdateAttempts 17 (all 17 reverted `not-authorized`),
+lossRealizations 111 (realizedLossUsdc 1.36e16), gainRealizations 380 (realizedGainUsdc 5.91e16),
+maxGainLossError 1 in every run, redeemProcessReverts 0, cancelProcessReverts 0,
+usersRedeemedUsdc 1.84e16, usersRefundedUsdc 1.61e16, rateOrderBroken true in 17 of 20.
+
+Handler changes this round: `updateRecipient` scans forward from a random index for an open entry
+and pranks its owner; 1 in 8 calls pranks a different user instead, wrapped in try/catch, and
+records the reason. `pause` pranks the guardian only. `realizeLoss` unchanged in bounds
+(`totalAssets >= 10`, `1 <= loss <= totalAssets/10`, chi kept > 0) and now feeds T and the deficit
+ledger. New `realizeGain` handler (admin, any pause state, `totalSupply > 0`, `totalAssets >= 10`,
+`1 <= gain <= totalAssets/10`, skipped when the resulting chi would exceed 1e30). `warp` is the
+only handler that moves time and now scales the deficit ledger and resets the chi watermark;
+G flags any other chi movement in either direction. `processCancelledDepositQueue` keeps the
+try/catch only to capture a reason if the call ever reverts.
+
+### (c) Unsettled
+
+- H is only checked while the taker holds nothing and the rate order never broke; the random walk
+  breaks the order in most runs (17 of 20 sampled), so H's effective coverage is the prefix of
+  each run before the first order break. A dedicated run with the 1-in-8 branches removed would
+  strengthen it, especially now that realized gains make the vault deliberately insolvent.
+- The deficit ledger is an upper bound, so H proves "the notional never exceeds backing plus the
+  fictitious gains and their worst-case yield"; it does not prove the deficit equals the gains
+  exactly. A harness that mints spUSDC into the vault on `realizeGain` would turn H back into a
+  tight solvency check.
+- `realizeGain` accepts any `gain_ > 0` with no upper bound; the handler keeps chi below 1e30.
+  With `gain_` large enough that `(totalAssets + gain) * RAY` overflows, or chi passes
+  `type(uint192).max`, the call reverts or truncates; not exercised.
+- N-1 with large, non-uniform entries was not reproduced in the random walk.
+- `afterInvariant()` logs are printed once per invariant test (last run only), so ghost counters
+  are sampled, not totals; the selector table is the exact coverage.
+- Donations of spPRIME to the vault (I-6) are excluded by design.
+
+---
+
+## Round 2 (0bc9288)
 
 Branch `campaign-v2/invariants`, files `test/invariants/{a_init,b_flows_user,c_flows_admin}.sol`,
 `test/invariants/d_invariants.t.sol`. Target: upstream `src/SparkPrimeVault.sol` from
