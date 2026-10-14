@@ -74,7 +74,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         address indexed owner,
         address indexed recipient,
         uint256         assets,
-        uint256         savingsShares
+        uint256         shares
     );
 
     event DepositCancellation(
@@ -822,6 +822,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
             // Convert processed savings shares into vault shares.
             uint256 assets_ = IERC4626Like(savings).convertToAssets(savingsShares_);
             uint256 shares_ = convertToShares(assets_);
+
+            // A partial fill must mint at least one share, else wait for more capacity.
+            if (shares_ == 0 && savingsShares_ < requestSavingsShares_) break;
 
             pendingDepositSavingsShares -= savingsShares_;
             request_.shares             -= savingsShares_;
