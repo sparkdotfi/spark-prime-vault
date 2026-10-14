@@ -117,7 +117,7 @@ contract QueueAuditTest is Test {
         assertEq(vault.depositHead(), 0);
 
         vm.prank(alice);
-        vault.cancelDepositRequest(reqIdAlice, alice);
+        vault.requestDepositCancellation(reqIdAlice, alice);
         assertEq(vault.depositHead(), 1);
 
         vm.prank(admin);
@@ -172,7 +172,7 @@ contract QueueAuditTest is Test {
         uint256 reqId = vault.requestDeposit(1000e18, alice);
 
         vm.prank(alice);
-        uint256 cancelReqId = vault.cancelDepositRequest(reqId, alice);
+        uint256 cancelReqId = vault.requestDepositCancellation(reqId, alice);
         assertEq(cancelReqId, 0);
 
         assertEq(vault.pendingDepositSavingsShares(), 0);
@@ -184,7 +184,7 @@ contract QueueAuditTest is Test {
 
         uint256 aliceBalAfter = asset.balanceOf(alice);
         assertEq(aliceBalAfter - aliceBalBefore, 1000e18, "Alice received 100% refund of deposit!");
-        assertEq(vault.cancelledDepositHead(), 1);
+        assertEq(vault.depositCancellationHead(), 1);
         assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
     }
 
@@ -197,7 +197,7 @@ contract QueueAuditTest is Test {
         uint256 reqId = vault.requestDeposit(1000e18, alice);
 
         vm.prank(alice);
-        vault.cancelDepositRequest(reqId, alice);
+        vault.requestDepositCancellation(reqId, alice);
 
         // Savings has maxRedeem limited to 400
         savings.setMaxRedeemLimit(400e18);
@@ -210,8 +210,8 @@ contract QueueAuditTest is Test {
         // Alice receives only 400 (partial cancellation fill)
         uint256 balAfter = asset.balanceOf(alice);
         assertEq(balAfter - balBefore, 400e18);
-        // cancelledDepositHead remains 0 because request is partially filled
-        assertEq(vault.cancelledDepositHead(), 0);
+        // depositCancellationHead remains 0 because request is partially filled
+        assertEq(vault.depositCancellationHead(), 0);
         assertEq(vault.pendingCancelledDepositSavingsShares(), 600e18);
 
         // Savings liquidity frees up: maxRedeem restored to 1000
@@ -222,7 +222,7 @@ contract QueueAuditTest is Test {
 
         // Alice receives remaining 600
         assertEq(asset.balanceOf(alice) - balBefore, 1000e18);
-        assertEq(vault.cancelledDepositHead(), 1);
+        assertEq(vault.depositCancellationHead(), 1);
         assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
     }
 
@@ -277,7 +277,7 @@ contract QueueAuditTest is Test {
 
         // Cancel deposit and test updateCancelledDepositRecipient
         vm.prank(alice);
-        uint256 cancelReqId = vault.cancelDepositRequest(depReqId, alice);
+        uint256 cancelReqId = vault.requestDepositCancellation(depReqId, alice);
 
         vm.prank(attacker);
         vm.expectRevert("SparkPrimeVault/not-authorized");
