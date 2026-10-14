@@ -47,7 +47,7 @@ interface IERC4626Like {
 
 }
 
-// TODO: _processDepositQueue and _processRedeemQueue should take in a variable that allows netting withdrawals against deposits (there should be a third function)
+// TODO: _processPendingDeposits and _processPendingRedeems should take in a variable that allows netting withdrawals against deposits (there should be a third function)
 // TODO: requestDepositWithPermit?
 // TODO: Get pendingOfReceiver()/getPendingOfOwner() even needed?
 
@@ -333,28 +333,28 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         emit Take(msg.sender, savingsShares_);
     }
 
-    function processDepositQueue(uint256 maxSavingsShares_, uint256 maxRequests_)
+    function processPendingDeposits(uint256 maxSavingsShares_, uint256 maxRequests_)
         external
         onlyRole(REBALANCER_ROLE)
         whenNotPaused
     {
-        _processDepositQueue(maxSavingsShares_, maxRequests_);
+        _processPendingDeposits(maxSavingsShares_, maxRequests_);
     }
 
-    function processRedeemQueue(uint256 maxShares_, uint256 maxRequests_)
+    function processPendingRedeems(uint256 maxShares_, uint256 maxRequests_)
         external
         onlyRole(REBALANCER_ROLE)
         whenNotPaused
     {
-        _processRedeemQueue(maxShares_, maxRequests_);
+        _processPendingRedeems(maxShares_, maxRequests_);
     }
 
-    function processCancelledDepositQueue(uint256 maxSavingsShares_, uint256 maxRequests_)
+    function processPendingDepositCancellations(uint256 maxSavingsShares_, uint256 maxRequests_)
         external
         onlyRole(REBALANCER_ROLE)
         whenNotPaused
     {
-        _processCancelledDepositQueue(maxSavingsShares_, maxRequests_);
+        _processPendingDepositCancellations(maxSavingsShares_, maxRequests_);
     }
 
     function setRedeemFeeRate(uint256 feeRate_) external onlyRole(RISK_MANAGER_ROLE) {
@@ -804,7 +804,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         // Fill this request, only while nobody is queued ahead.
         if (firstPendingDepositId == requestId_) {
-            _processDepositQueue(type(uint256).max, 1);
+            _processPendingDeposits(type(uint256).max, 1);
         }
     }
 
@@ -812,7 +812,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     /*** Queue internal helper functions                                                        ***/
     /**********************************************************************************************/
 
-    function _processDepositQueue(uint256 maxSavingsShares_, uint256 maxRequests_) internal {
+    function _processPendingDeposits(uint256 maxSavingsShares_, uint256 maxRequests_) internal {
         drip();
 
         // Convert the maximum admissible assets into savings shares denomination
@@ -855,7 +855,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         firstPendingDepositId = i_;
     }
 
-    function _processCancelledDepositQueue(uint256 maxSavingsShares_, uint256 maxRequests_) internal {
+    function _processPendingDepositCancellations(uint256 maxSavingsShares_, uint256 maxRequests_) internal {
         drip();
 
         uint256 remaining_ = _min(maxSavingsShares_, IERC4626Like(savings).maxRedeem(address(this)));
@@ -893,7 +893,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     // Pays queued redeems FIFO, burning up to `maxShares_` held shares within the available
     // liquidity.
-    function _processRedeemQueue(uint256 maxShares_, uint256 maxRequests_) internal {
+    function _processPendingRedeems(uint256 maxShares_, uint256 maxRequests_) internal {
         drip();
 
         uint256 remaining_ = _min(maxShares_, convertToShares(availableLiquidAssets()));

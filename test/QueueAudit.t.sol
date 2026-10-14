@@ -145,7 +145,7 @@ contract QueueAuditTest is Test {
         vault.setCapacity(1250e18);
 
         vm.prank(rebalancer);
-        vault.processDepositQueue(type(uint256).max, 10);
+        vault.processPendingDeposits(type(uint256).max, 10);
 
         assertEq(vault.balanceOf(alice), 1000e18);
         assertEq(vault.balanceOf(bob), 250e18);
@@ -156,7 +156,7 @@ contract QueueAuditTest is Test {
         vault.setCapacity(2250e18);
 
         vm.prank(rebalancer);
-        vault.processDepositQueue(type(uint256).max, 10);
+        vault.processPendingDeposits(type(uint256).max, 10);
 
         assertEq(vault.balanceOf(bob), 500e18);
         assertEq(vault.balanceOf(charlie), 500e18);
@@ -180,7 +180,7 @@ contract QueueAuditTest is Test {
 
         uint256 aliceBalBefore = asset.balanceOf(alice);
         vm.prank(rebalancer);
-        vault.processCancelledDepositQueue(type(uint256).max, 10);
+        vault.processPendingDepositCancellations(type(uint256).max, 10);
 
         uint256 aliceBalAfter = asset.balanceOf(alice);
         assertEq(aliceBalAfter - aliceBalBefore, 1000e18, "Alice received 100% refund of deposit!");
@@ -205,7 +205,7 @@ contract QueueAuditTest is Test {
         // Rebalancer processes cancelled queue
         uint256 balBefore = asset.balanceOf(alice);
         vm.prank(rebalancer);
-        vault.processCancelledDepositQueue(type(uint256).max, 10);
+        vault.processPendingDepositCancellations(type(uint256).max, 10);
 
         // Alice receives only 400 (partial cancellation fill)
         uint256 balAfter = asset.balanceOf(alice);
@@ -218,7 +218,7 @@ contract QueueAuditTest is Test {
         savings.setMaxRedeemLimit(1000e18);
 
         vm.prank(rebalancer);
-        vault.processCancelledDepositQueue(type(uint256).max, 10);
+        vault.processPendingDepositCancellations(type(uint256).max, 10);
 
         // Alice receives remaining 600
         assertEq(asset.balanceOf(alice) - balBefore, 1000e18);
@@ -239,7 +239,7 @@ contract QueueAuditTest is Test {
         vault.take(9_500e18);
 
         vm.prank(rebalancer);
-        vault.processRedeemQueue(type(uint256).max, 1);
+        vault.processPendingRedeems(type(uint256).max, 1);
 
         assertEq(asset.balanceOf(alice), 90_500e18);
         assertEq(vault.firstPendingRedeemId(), 0);
