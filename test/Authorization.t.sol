@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
+import { stdError } from "../lib/forge-std/src/StdError.sol";
+
 import { IAccessControl } from "../lib/oz/contracts/access/IAccessControl.sol";
 
 import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
@@ -12,8 +14,9 @@ import { LocalTestBase } from "./LocalTestBase.t.sol";
 ///      holders plus a stranger: the authorized actor succeeds, every other actor reverts with the
 ///      exact OZ custom error. Round 2 changes: `realizeLoss` replaces `setChi`,
 ///      `setMinDeposit`/`setMinRedeem` replace `setMinimums`, `processCancelledDepositQueue` is a
-///      new REBALANCER entry point, and the three `update*Recipient` functions have no
-///      authorization at all. `pause` is GUARDIAN again as of 0bc9288.
+///      new REBALANCER entry point. `pause` is GUARDIAN again as of 0bc9288. Round 3 (ff828d2):
+///      the three `update*Recipient` functions are owner-only and `realizeGain` is a new
+///      DEFAULT_ADMIN entry point that is not gated on `paused`.
 contract AuthorizationTest is LocalTestBase {
 
     event Paused();
@@ -121,6 +124,39 @@ contract AuthorizationTest is LocalTestBase {
         vault.setVSRBounds(ONE_PCT_VSR, FOUR_PCT_VSR);
         assertEq(vault.minVSR(), ONE_PCT_VSR);
         assertEq(vault.maxVSR(), FOUR_PCT_VSR);
+    }
+
+    // Round 3: `realizeGain` is DEFAULT_ADMIN only and does not require `paused`.
+    function test_realizeGain_notAuthorized() public {
+        _deposit(alice, 1_000e6);
+        uint192 chi_ = vault.chi();
+        address[8] memory actors_ = _actors();
+        for (uint256 i; i < actors_.length; ++i) {
+            if (actors_[i] == admin) continue;
+            vm.prank(actors_[i]);
+            _expectUnauthorized(actors_[i], DEFAULT_ADMIN_ROLE);
+            vault.realizeGain(1e6);
+        }
+        assertEq(vault.chi(), chi_);
+
+        // Same answer while paused: the gate is the role, not the pause flag.
+        _pause();
+        for (uint256 i; i < actors_.length; ++i) {
+            if (actors_[i] == admin) continue;
+            vm.prank(actors_[i]);
+            _expectUnauthorized(actors_[i], DEFAULT_ADMIN_ROLE);
+            vault.realizeGain(1e6);
+        }
+        assertEq(vault.chi(), chi_);
+    }
+
+    function test_realizeGain_authorized() public {
+        _deposit(alice, 1_000e6);
+        uint192 chi_ = vault.chi();
+        assertFalse(vault.paused());
+        vm.prank(admin);
+        vault.realizeGain(1e6);
+        assertGt(vault.chi(), chi_);
     }
 
     function test_unpause_notAuthorized() public {
@@ -592,11 +628,11 @@ contract AuthorizationTest is LocalTestBase {
         assertEq(left_, 0);
     }
 
-    // Round 2: `updateDepositRecipient`, `updateCancelledDepositRecipient` and
-    // `updateRedeemRecipient` have no authorization. A stranger redirects anyone's queued
-    // deposit, queued refund and queued redeem to itself. NEWSURFACE owns the theft finding;
-    // this test pins the matrix row "anyone".
-    function test_updateRecipient_anyone() public {
+    // Round 3 (R2-7 fixed): `updateDepositRecipient`, `updateCancelledDepositRecipient` and
+    // `updateRedeemRecipient` are owner-only. Every role holder (admin and guardian included)
+    // and a stranger revert `not-authorized` on someone else's entry; the owner succeeds; a dead
+    // entry reverts `no-request` before the owner check; an out-of-range id panics (0x32).
+    function test_updateRecipient_ownerOnly() public {
         _deposit(alice, 1_000e6);
         uint256 redId_ = _requestRedeem(alice, 100e6);
 
@@ -609,28 +645,88 @@ contract AuthorizationTest is LocalTestBase {
         address[8] memory actors_ = _actors();
         for (uint256 i; i < actors_.length; ++i) {
             vm.startPrank(actors_[i]);
+            vm.expectRevert("SparkPrimeVault/not-authorized");
             vault.updateDepositRecipient(depId_, actors_[i]);
+            vm.expectRevert("SparkPrimeVault/not-authorized");
             vault.updateCancelledDepositRecipient(cancelId_, actors_[i]);
+            vm.expectRevert("SparkPrimeVault/not-authorized");
             vault.updateRedeemRecipient(redId_, actors_[i]);
             vm.stopPrank();
-
-            (, address depRecipient_, )    = _depositRequest(depId_);
-            (, address cancelRecipient_, ) = _cancelledDepositRequest(cancelId_);
-            (, address redRecipient_, )    = _redeemRequest(redId_);
-            assertEq(depRecipient_,    actors_[i]);
-            assertEq(cancelRecipient_, actors_[i]);
-            assertEq(redRecipient_,    actors_[i]);
         }
 
-        // Owners are untouched; only the payout address moved.
-        (address depOwner_, , )    = _depositRequest(depId_);
-        (address cancelOwner_, , ) = _cancelledDepositRequest(cancelId_);
-        (address redOwner_, , )    = _redeemRequest(redId_);
-        assertEq(depOwner_,    bob);
-        assertEq(cancelOwner_, bob);
-        assertEq(redOwner_,    alice);
+        // The other depositor is not authorized either (owner check, not "any owner").
+        vm.startPrank(alice);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vault.updateDepositRecipient(depId_, alice);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vault.updateCancelledDepositRecipient(cancelId_, alice);
+        vm.stopPrank();
+        vm.prank(bob);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vault.updateRedeemRecipient(redId_, bob);
+
+        (, address depRecipient_, )    = _depositRequest(depId_);
+        (, address cancelRecipient_, ) = _cancelledDepositRequest(cancelId_);
+        (, address redRecipient_, )    = _redeemRequest(redId_);
+        assertEq(depRecipient_,    bob);
+        assertEq(cancelRecipient_, bob);
+        assertEq(redRecipient_,    alice);
+
+        // Owners succeed; owner field is untouched, only the payout address moves.
+        address payout_ = makeAddr("payout");
+        vm.startPrank(bob);
+        vault.updateDepositRecipient(depId_, payout_);
+        vault.updateCancelledDepositRecipient(cancelId_, payout_);
+        vm.stopPrank();
+        vm.prank(alice);
+        vault.updateRedeemRecipient(redId_, payout_);
+
+        address depOwner_;
+        address cancelOwner_;
+        address redOwner_;
+        (depOwner_,    depRecipient_, )    = _depositRequest(depId_);
+        (cancelOwner_, cancelRecipient_, ) = _cancelledDepositRequest(cancelId_);
+        (redOwner_,    redRecipient_, )    = _redeemRequest(redId_);
+        assertEq(depOwner_,        bob);
+        assertEq(cancelOwner_,     bob);
+        assertEq(redOwner_,        alice);
+        assertEq(depRecipient_,    payout_);
+        assertEq(cancelRecipient_, payout_);
+        assertEq(redRecipient_,    payout_);
+
+        // Dead entries: `no-request` for the owner and for a stranger alike (checked before
+        // the owner check, so a stranger learns nothing beyond "empty").
+        vm.prank(bob);
+        vault.cancelDepositRequest(depId_, bob);
+        vm.prank(alice);
+        vault.cancelRedeemRequest(redId_, alice);
+        _processCancelledDeposits(type(uint256).max, 10);
+
+        address[2] memory callers_ = [bob, stranger];
+        for (uint256 i; i < callers_.length; ++i) {
+            vm.startPrank(callers_[i]);
+            vm.expectRevert("SparkPrimeVault/no-request");
+            vault.updateDepositRecipient(depId_, callers_[i]);
+            vm.expectRevert("SparkPrimeVault/no-request");
+            vault.updateCancelledDepositRecipient(cancelId_, callers_[i]);
+            vm.expectRevert("SparkPrimeVault/no-request");
+            vault.updateRedeemRecipient(redId_, callers_[i]);
+            vm.stopPrank();
+        }
+
+        // Out of range: array index panic, no custom message.
+        uint256 oob_ = type(uint256).max;
+        vm.startPrank(stranger);
+        vm.expectRevert(stdError.indexOOBError);
+        vault.updateDepositRecipient(oob_, stranger);
+        vm.expectRevert(stdError.indexOOBError);
+        vault.updateCancelledDepositRecipient(oob_, stranger);
+        vm.expectRevert(stdError.indexOOBError);
+        vault.updateRedeemRecipient(oob_, stranger);
+        vm.stopPrank();
     }
 
+    // The zero-recipient check runs first, for the owner and for a stranger alike.
     function test_updateRecipient_zeroRecipient() public {
         _deposit(alice, 1_000e6);
         uint256 redId_ = _requestRedeem(alice, 100e6);
@@ -648,6 +744,16 @@ contract AuthorizationTest is LocalTestBase {
         vm.expectRevert("SparkPrimeVault/invalid-recipient");
         vault.updateRedeemRecipient(redId_, address(0));
         vm.stopPrank();
+
+        vm.startPrank(bob);
+        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vault.updateDepositRecipient(depId_, address(0));
+        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vault.updateCancelledDepositRecipient(cancelId_, address(0));
+        vm.stopPrank();
+        vm.prank(alice);
+        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vault.updateRedeemRecipient(redId_, address(0));
     }
 
     /**********************************************************************************************/
@@ -735,20 +841,35 @@ contract AuthorizationTest is LocalTestBase {
         assertGt(left_, 0);
     }
 
-    // The recipient updates are not paused: payout addresses can still be rewritten mid-incident.
+    // The recipient updates are not paused: the owner can still rewrite its own payout address
+    // mid-incident; nobody else can (round 3).
     function test_pause_doesNotBlockUpdateRecipient() public {
         (uint256 depId_, uint256 cancelId_, uint256 redId_) = _pausedFixture();
+        address payout_ = makeAddr("payout");
+
         vm.startPrank(stranger);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
         vault.updateDepositRecipient(depId_, stranger);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
         vault.updateCancelledDepositRecipient(cancelId_, stranger);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
         vault.updateRedeemRecipient(redId_, stranger);
         vm.stopPrank();
+
+        vm.startPrank(bob);
+        vault.updateDepositRecipient(depId_, payout_);
+        vault.updateCancelledDepositRecipient(cancelId_, payout_);
+        vm.stopPrank();
+        vm.prank(alice);
+        vault.updateRedeemRecipient(redId_, payout_);
+
         (, address r1_, ) = _depositRequest(depId_);
         (, address r2_, ) = _cancelledDepositRequest(cancelId_);
         (, address r3_, ) = _redeemRequest(redId_);
-        assertEq(r1_, stranger);
-        assertEq(r2_, stranger);
-        assertEq(r3_, stranger);
+        assertEq(r1_, payout_);
+        assertEq(r2_, payout_);
+        assertEq(r3_, payout_);
+        assertTrue(vault.paused());
     }
 
     function test_pause_doesNotBlockTake() public {
@@ -786,6 +907,17 @@ contract AuthorizationTest is LocalTestBase {
         vm.prank(riskManager);
         vault.realizeLoss(1e6);
         assertEq(vault.chi(), (totalAssets_ - 1e6) * RAY / supply_);
+    }
+
+    // Round 3: `realizeGain` has no pause requirement either way (see Admin.t.sol for unpaused).
+    function test_pause_doesNotBlockRealizeGain() public {
+        _pausedFixture();
+        uint256 totalAssets_ = vault.totalAssets();
+        uint256 supply_      = vault.totalSupply();
+        vm.prank(admin);
+        vault.realizeGain(1e6);
+        assertEq(vault.chi(), (totalAssets_ + 1e6) * RAY / supply_);
+        assertTrue(vault.paused());
     }
 
     function test_pause_doesNotBlockERC20() public {
@@ -982,6 +1114,10 @@ contract AuthorizationTest is LocalTestBase {
             vm.prank(actors_[i]);
             _expectUnauthorized(actors_[i], DEFAULT_ADMIN_ROLE);
             vault.grantRole(DEFAULT_ADMIN_ROLE, actors_[i]);
+
+            vm.prank(actors_[i]);
+            _expectUnauthorized(actors_[i], DEFAULT_ADMIN_ROLE);
+            vault.realizeGain(1e6);
         }
         assertTrue(vault.paused());
     }

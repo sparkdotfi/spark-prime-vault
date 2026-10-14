@@ -19,13 +19,14 @@ contract UninitializedERC1967Proxy is ERC1967Proxy {
 }
 
 /// @dev Setter bounds (what each role can and cannot do once its key is compromised), setter
-///      validation gaps, setter events, `realizeLoss`, `take`, `initialize`, and ERC20/permit
-///      basics, on `refactor/more-simplifying`.
+///      validation gaps, setter events, `realizeLoss`, `realizeGain` (round 3), `take`,
+///      `initialize`, and ERC20/permit basics, on `refactor/more-simplifying` @ ff828d2.
 contract AdminTest is LocalTestBase {
 
     event Approval(address indexed owner, address indexed spender, uint256 value);
     event Transfer(address indexed from, address indexed to, uint256 value);
     event CapacitySet(uint256 capacity);
+    event GainRealized(uint192 chi, uint256 gain);
     event LossRealized(uint192 chi, uint256 loss);
     event Drip(uint192 chi, uint256 diff);
     event MaxRedeemFeeSet(uint256 fee);
@@ -448,7 +449,8 @@ contract AdminTest is LocalTestBase {
     /*** realizeLoss (RISK_MANAGER_ROLE, hot wallet)                                            ***/
     /**********************************************************************************************/
 
-    // As of 0bc9288: chi = floor((totalAssets() - loss) * RAY / totalSupply) after a drip.
+    // As of ff828d2: chi = floor((totalAssets() - loss) * RAY / totalSupply) after a drip, with
+    // `0 < loss < totalAssets()` required (`invalid-loss`) and `totalSupply != 0` (`no-shares`).
 
     function test_realizeLoss_notPaused() public {
         _deposit(alice, 1_000e6);
@@ -553,99 +555,269 @@ contract AdminTest is LocalTestBase {
         assertEq(_vaultSpUsdc(), 0);
     }
 
-    // C-3 (worst case): loss = totalAssets sets chi to 0. nowChi() stays 0 forever (rpow * 0),
-    // `convertToShares` divides by zero, `processRedeemQueue` can never run, and deposits can
-    // never mint (availableCapacity converts to 0 assets). The vault is dead with the whole
-    // backing still inside it, and only `take` can move that backing.
-    function test_realizeLoss_fullLossZeroesChiAndBricksVault() public {
+    // Round 3 (R2-1 worst case fixed): loss == totalAssets() is rejected with `invalid-loss`, so
+    // chi can no longer be set to 0 (the round-2 brick: nowChi() stuck at 0, convertToShares
+    // dividing by zero). The index stays untouched and the vault keeps working. The boundary
+    // just below (totalAssets - 1) is still accepted: see the test above.
+    function test_realizeLoss_fullLossRejected() public {
         _deposit(alice, 1_000_000e6);
         _pause();
         uint256 totalAssets_ = vault.totalAssets();
+        uint192 chi_         = vault.chi();
 
         vm.prank(riskManager);
-        vm.expectEmit(address(vault));
-        emit LossRealized(0, totalAssets_);
+        vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(totalAssets_);
 
-        assertEq(vault.chi(),         0);
-        assertEq(vault.nowChi(),      0);
-        assertEq(vault.totalAssets(), 0);
-        assertEq(vault.assetsOf(alice), 0);
+        assertEq(vault.chi(),           chi_);
+        assertGt(vault.nowChi(),        0);
+        assertEq(vault.totalAssets(),   totalAssets_);
+        assertGt(vault.assetsOf(alice), 0);
+        assertGt(vault.convertToShares(1e6), 0);
 
-        vm.expectRevert(stdError.divisionError);
-        vault.convertToShares(1);
-
-        // Time at MAX_VSR does not help: rpow(vsr, dt) * 0 == 0.
-        _setPrimeVsr(MAX_VSR);
-        skip(3650 days);
-        assertEq(vault.nowChi(), 0);
-
-        // A second loss cannot be realised either (0 - loss underflows).
-        vm.prank(riskManager);
-        vm.expectRevert(stdError.arithmeticError);
-        vault.realizeLoss(1);
-
+        // Nothing is bricked: redeems still process after unpausing.
         _unpause();
-
-        // Redeem requests still queue but can never be processed.
-        _requestRedeem(alice, vault.balanceOf(alice));
-        vm.prank(rebalancer);
-        vm.expectRevert(stdError.divisionError);
-        vault.processRedeemQueue(type(uint256).max, 10);
-
-        // New deposits queue and never mint: capacity converts to 0 assets at chi 0.
-        uint256 id_ = _deposit(bob, 100e6);
-        assertEq(vault.balanceOf(bob), 0);
-        (, , uint256 queued_) = _depositRequest(id_);
-        assertGt(queued_, 0);
-        _processDeposits(type(uint256).max, 10);
-        assertEq(vault.balanceOf(bob), 0);
-
-        // The backing is still there and still takeable.
-        assertApproxEqAbs(spUsdc.convertToAssets(_vaultSpUsdc()), 1_000_100e6, 3);
-        _takeAll();
-        assertEq(_vaultSpUsdc(), 0);
+        uint256 redId_ = _requestRedeem(alice, vault.balanceOf(alice));
+        _processRedeems(type(uint256).max, 10);
+        (, , uint256 left_) = _redeemRequest(redId_);
+        assertEq(left_, 0);
+        assertApproxEqAbs(usdc.balanceOf(alice), 1_000_000e6, 2);
     }
 
-    // loss > totalAssets underflows (panic 0x11) instead of a clean revert string.
-    function test_realizeLoss_aboveTotalAssetsUnderflows() public {
+    // Round 3 (R2-2 fixed): loss > totalAssets reverts `invalid-loss` instead of panic 0x11.
+    // Exact boundary: totalAssets + 1 and totalAssets revert, totalAssets - 1 is accepted.
+    function test_realizeLoss_aboveTotalAssetsBoundary() public {
         _deposit(alice, 1_000e6);
         _pause();
         uint256 totalAssets_ = vault.totalAssets();
+        uint256 supply_      = vault.totalSupply();
 
         vm.prank(riskManager);
-        vm.expectRevert(stdError.arithmeticError);
+        vm.expectRevert("SparkPrimeVault/invalid-loss");
+        vault.realizeLoss(type(uint256).max);
+
+        vm.prank(riskManager);
+        vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(totalAssets_ + 1);
 
         vm.prank(riskManager);
+        vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(totalAssets_);
-        assertEq(vault.chi(), 0);
+
+        vm.prank(riskManager);
+        vault.realizeLoss(totalAssets_ - 1);
+        assertEq(vault.chi(), uint192(RAY / supply_));
     }
 
-    // totalSupply == 0: totalAssets() is 0 so any loss underflows before the division by zero.
+    // Round 3 (R2-2 fixed): totalSupply == 0 gives totalAssets() == 0, so every loss fails the
+    // `loss_ < totalAssets_` check first and reverts `invalid-loss`. The `no-shares` branch in
+    // `realizeLoss` is therefore unreachable: totalAssets() == convertToAssets(totalSupply) is 0
+    // whenever totalSupply is 0, and the `invalid-loss` check runs before the supply check.
     function test_realizeLoss_zeroSupplyReverts() public {
         assertEq(vault.totalSupply(), 0);
+        assertEq(vault.totalAssets(), 0);
         _pause();
+
         vm.prank(riskManager);
-        vm.expectRevert(stdError.arithmeticError);
+        vm.expectRevert("SparkPrimeVault/invalid-loss");
+        vault.realizeLoss(1);
+
+        vm.prank(riskManager);
+        vm.expectRevert("SparkPrimeVault/invalid-loss");
+        vault.realizeLoss(type(uint256).max);
+
+        // Still unreachable after time at the max rate: 0 * rpow == 0.
+        _setPrimeVsr(MAX_VSR);
+        skip(365 days);
+        assertEq(vault.totalAssets(), 0);
+        vm.prank(riskManager);
+        vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(1);
     }
 
+    // Info: the `no-shares` revert string in `realizeLoss` is never emitted. For every supply
+    // the check order is invalid-loss first; with supply 0 that check always fails.
+    function testFuzz_realizeLoss_noSharesBranchUnreachable(uint256 loss_) public {
+        _pause();
+        assertEq(vault.totalSupply(), 0);
+        vm.prank(riskManager);
+        vm.expectRevert("SparkPrimeVault/invalid-loss");
+        vault.realizeLoss(loss_);
+    }
+
     // The uint192 cast is safe: the result is at most chi (< 2^192) for any accepted loss.
+    // Accepted range is now [1, totalAssets - 1].
     function testFuzz_realizeLoss_neverRaisesChi(uint256 deposit_, uint256 loss_) public {
         deposit_ = bound(deposit_, 2, 1_000_000_000e6);
         _deposit(alice, deposit_);
         _pause();
         uint256 totalAssets_ = vault.totalAssets();
-        vm.assume(totalAssets_ > 0);
-        loss_ = bound(loss_, 1, totalAssets_);
+        vm.assume(totalAssets_ > 1);
+        loss_ = bound(loss_, 1, totalAssets_ - 1);
 
         uint192 chi_ = vault.chi();
         _realizeLoss(loss_);
 
         assertLt(vault.chi(), chi_);
+        assertGt(vault.chi(), 0);
         assertGe(totalAssets_ - vault.totalAssets(), loss_);
         assertLe(totalAssets_ - vault.totalAssets(), loss_ + 1);
+    }
+
+    /**********************************************************************************************/
+    /*** realizeGain (DEFAULT_ADMIN_ROLE)                                                       ***/
+    /**********************************************************************************************/
+
+    // As of ff828d2: chi = floor((totalAssets() + gain) * RAY / totalSupply) after a drip. Admin
+    // only, no pause requirement, `gain > 0` (`invalid-gain`), `totalSupply != 0` (`no-shares`).
+
+    function test_realizeGain_zeroGain() public {
+        _deposit(alice, 1_000e6);
+        vm.prank(admin);
+        vm.expectRevert("SparkPrimeVault/invalid-gain");
+        vault.realizeGain(0);
+    }
+
+    // Unlike `realizeLoss`, the `no-shares` branch is reachable here: there is no totalAssets
+    // check in front of it. The drip still runs first (rho moves) before the revert.
+    function test_realizeGain_noShares() public {
+        assertEq(vault.totalSupply(), 0);
+        vm.prank(admin);
+        vm.expectRevert("SparkPrimeVault/no-shares");
+        vault.realizeGain(1);
+
+        vm.prank(admin);
+        vm.expectRevert("SparkPrimeVault/no-shares");
+        vault.realizeGain(type(uint256).max);
+    }
+
+    // Exact formula and event; the write-up is at least the gain minus rounding.
+    function test_realizeGain() public {
+        _deposit(alice, 1_000e6);
+        assertFalse(vault.paused());
+        uint256 totalAssets_ = vault.totalAssets();
+        uint256 supply_      = vault.totalSupply();
+        uint256 before_      = vault.assetsOf(alice);
+        uint192 expected_    = uint192((totalAssets_ + 10e6) * RAY / supply_);
+        assertGt(expected_, vault.chi());
+
+        vm.prank(admin);
+        vm.expectEmit(address(vault));
+        emit GainRealized(expected_, 10e6);
+        vault.realizeGain(10e6);
+
+        assertEq(vault.chi(),           expected_);
+        assertEq(vault.rho(),           block.timestamp);
+        assertEq(vault.assetsOf(alice), vault.balanceOf(alice) * expected_ / RAY);
+        assertGe(vault.assetsOf(alice) - before_, 10e6 - 1);
+        assertLe(vault.assetsOf(alice) - before_, 10e6);
+        assertLe(totalAssets_ + 10e6 - vault.totalAssets(), 1);
+        // Backing is untouched: the gain is a bookkeeping write-up, not a transfer in.
+        assertApproxEqAbs(spUsdc.convertToAssets(_vaultSpUsdc()), 1_000e6, 2);
+    }
+
+    // Works while paused too (no `paused` requirement in either direction).
+    function test_realizeGain_whilePaused() public {
+        _deposit(alice, 1_000e6);
+        _pause();
+        uint256 totalAssets_ = vault.totalAssets();
+        uint256 supply_      = vault.totalSupply();
+        uint192 expected_    = uint192((totalAssets_ + 10e6) * RAY / supply_);
+
+        vm.prank(admin);
+        vm.expectEmit(address(vault));
+        emit GainRealized(expected_, 10e6);
+        vault.realizeGain(10e6);
+
+        assertEq(vault.chi(), expected_);
+        assertTrue(vault.paused());
+    }
+
+    // realizeGain drips first, so the gain lands on the accrued value and rho moves.
+    function test_realizeGain_dripsFirst() public {
+        _deposit(alice, 1_000e6);
+        _setPrimeVsr(TEN_PCT_VSR);
+        uint192 stored_ = vault.chi();
+        skip(30 days);
+        uint192 dripped_     = vault.nowChi();
+        uint256 supply_      = vault.totalSupply();
+        uint256 totalAssets_ = vault.totalAssets();  // valued at nowChi
+        assertGt(dripped_, stored_);
+
+        vm.prank(admin);
+        vm.expectEmit(address(vault));
+        emit Drip(dripped_, totalAssets_ - supply_ * stored_ / RAY);
+        vm.expectEmit(address(vault));
+        emit GainRealized(uint192((totalAssets_ + 1e6) * RAY / supply_), 1e6);
+        vault.realizeGain(1e6);
+
+        assertEq(vault.chi(), uint192((totalAssets_ + 1e6) * RAY / supply_));
+        assertEq(vault.rho(), block.timestamp);
+        assertGt(vault.chi(), dripped_);
+    }
+
+    // Repeated calls compound through totalAssets(); gain then loss of the same amount returns
+    // to the starting index within rounding.
+    function test_realizeGain_repeatedAndRoundTripWithLoss() public {
+        _deposit(alice, 1_000e6);
+        uint256 supply_ = vault.totalSupply();
+
+        uint192 chi0_ = vault.chi();
+        vm.prank(admin);
+        vault.realizeGain(5e6);
+        uint192 chi1_ = vault.chi();
+        assertEq(chi1_, uint192((supply_ * chi0_ / RAY + 5e6) * RAY / supply_));
+        assertGt(chi1_, chi0_);
+
+        vm.prank(admin);
+        vault.realizeGain(5e6);
+        uint192 chi2_ = vault.chi();
+        assertEq(chi2_, uint192((supply_ * chi1_ / RAY + 5e6) * RAY / supply_));
+        assertGt(chi2_, chi1_);
+
+        _pause();
+        _realizeLoss(10e6);
+        // Three floors, each losing less than one asset unit (RAY / supply_ in chi units).
+        assertApproxEqAbs(vault.chi(), chi0_, 3 * (RAY / supply_ + 1));
+        assertLe(vault.chi(), chi0_);
+    }
+
+    // No upper bound: 1e30 (one trillion times the backing) is accepted and chi moves to match.
+    // Larger values truncate the uint192 cast or overflow the next `drip`; NEWSURFACE/ROUNDING
+    // own those thresholds.
+    function test_realizeGain_noUpperBound() public {
+        _deposit(alice, 1_000e6);
+        uint256 totalAssets_ = vault.totalAssets();
+        uint256 supply_      = vault.totalSupply();
+        uint192 chi_         = vault.chi();
+
+        vm.prank(admin);
+        vault.realizeGain(1e30);
+
+        uint256 expected_ = (totalAssets_ + 1e30) * RAY / supply_;
+        assertLt(expected_, type(uint192).max);  // No truncation at this size
+        assertEq(vault.chi(), expected_);
+        assertGt(vault.chi(), chi_);
+        assertApproxEqAbs(vault.totalAssets(), 1e30 + totalAssets_, 1);
+        // Backing did not move: the vault now claims 1e30 against ~1_000e6 of spUSDC.
+        assertApproxEqAbs(spUsdc.convertToAssets(_vaultSpUsdc()), 1_000e6, 2);
+    }
+
+    // The index only ever moves up under realizeGain for any accepted gain.
+    function testFuzz_realizeGain_neverLowersChi(uint256 deposit_, uint256 gain_) public {
+        deposit_ = bound(deposit_, 1, 1_000_000_000e6);
+        gain_    = bound(gain_, 1, 1e30);
+        _deposit(alice, deposit_);
+        vm.assume(vault.totalSupply() > 0);
+        uint256 totalAssets_ = vault.totalAssets();
+
+        uint192 chi_ = vault.chi();
+        vm.prank(admin);
+        vault.realizeGain(gain_);
+
+        assertGt(vault.chi(), chi_);
+        assertGe(vault.totalAssets() + 1, totalAssets_ + gain_);
+        assertLe(vault.totalAssets(),     totalAssets_ + gain_);
     }
 
     /**********************************************************************************************/

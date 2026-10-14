@@ -1,3 +1,119 @@
+# ROLES worker report, round 3 (ff828d2): authorization, admin bounds, pause scope, upgrade
+
+Branch `campaign-v3/roles`, upstream `src/SparkPrimeVault.sol` = `refactor/more-simplifying` @ `ff828d2` (merged via `review/poc-tests-v2`, unpatched). Files: `test/Authorization.t.sol` (73 tests), `test/Admin.t.sol` (76), `test/Upgrade.t.sol` (12), `test/mocks/SparkPrimeVaultV2Mock.sol`, plus the fork harness `test/TestBase.t.sol` and `test/Review.t.sol` (compile only; neither references `realizeLoss` or `update*Recipient`, so no port was needed).
+
+Run: `forge test --match-path 'test/{Authorization,Admin,Upgrade}.t.sol' -vv`. Result: 161 passed, 0 failed, 0 skipped. `forge build` of the whole tree (fork files included): 0 errors.
+
+Line numbers refer to `src/SparkPrimeVault.sol` @ `ff828d2`.
+
+## Fixed since round 2
+
+| # | Round-2 item | What changed at ff828d2 | Regression tests |
+|---|---|---|---|
+| R2-7 (Critical, NEWSURFACE) | `update*Recipient` had no authorization | `src/SparkPrimeVault.sol:416-425, 465-477, 537-546`: `require(recipient_ != 0)`, then `require(shares != 0, "no-request")`, then `require(msg.sender == request_.owner, "not-authorized")`. Every role holder (admin and guardian included), a stranger and the other depositor revert `not-authorized` on someone else's entry; the owner succeeds and only the payout address moves; dead entries revert `no-request` for owner and stranger alike (checked before the owner check); out-of-range ids panic 0x32. | `test_updateRecipient_ownerOnly`, `test_updateRecipient_zeroRecipient`, `test_pause_doesNotBlockUpdateRecipient` |
+| R2-1 worst case (chi == 0 brick) | `realizeLoss(totalAssets())` set `chi = 0` for good | `src/SparkPrimeVault.sol:376`: `require(loss_ > 0 && loss_ < totalAssets_, "invalid-loss")`. Full loss is rejected, index and vault untouched, redeems still process after unpause. | `test_realizeLoss_fullLossRejected` |
+| R2-2 (Info) | `loss > totalAssets` and empty vault reverted with panic 0x11 | Both revert `SparkPrimeVault/invalid-loss`. Boundary: `totalAssets + 1` and `totalAssets` revert, `totalAssets - 1` accepted. | `test_realizeLoss_aboveTotalAssetsBoundary`, `test_realizeLoss_zeroSupplyReverts` |
+
+## Persisting
+
+| # | Location | Status | Test | Severity |
+|---|---|---|---|---|
+| R2-1 (C-3) | `src/SparkPrimeVault.sol:369-385` | No floor. `realizeLoss(totalAssets - 1)` is accepted and leaves `chi = RAY / totalSupply`, holders worth 1 wei in total, backing intact and takeable. Pause + one hot RISK_MANAGER key, no admin involvement, no two-step. The brick is gone; the wipe-out is not. | `test_realizeLoss_totalAssetsMinusOneWipesHolders`, `testFuzz_realizeLoss_neverRaisesChi` (accepted range now `[1, totalAssets - 1]`, chi stays `> 0`) | High (trust model) |
+| R3-1 (Info) | `src/SparkPrimeVault.sol:380` | The `no-shares` branch in `realizeLoss` is unreachable: `totalAssets() == convertToAssets(totalSupply)` is 0 whenever `totalSupply == 0`, and the `invalid-loss` check (`loss_ < 0` is false for every `loss_`) runs first. Dead code; the string can never be observed. | `test_realizeLoss_zeroSupplyReverts`, `testFuzz_realizeLoss_noSharesBranchUnreachable` | Info |
+| R2-3 (C-4) | `:253`, OZ `renounceRole`/`revokeRole` | Only admin can still renounce or revoke itself; zero admin at init still accepted. Unchanged. `realizeGain` joins the list of functions dead forever afterwards. | `test_renounceDefaultAdmin_vaultHasNoAdminForever`, `test_revokeDefaultAdmin_self_vaultHasNoAdminForever`, `test_initialize_zeroAdminNotGuarded` | Medium (operational) |
+| R2-4 (C-7) | `:276-279`, `:289-295` | Tightening a bound below the live value leaves the live value in force. Unchanged. | `test_setMaxRedeemFee_belowCurrentFeeLeavesFeeAboveMax`, `test_setVSRBounds_currentVsrOutsideNewBounds` | Low |
+| R2-5 (C-8) | `:281-287` | `setMinDeposit` / `setMinRedeem` unvalidated. Unchanged. | `test_setMinRedeem_noValidation_blocksAllRedeems`, `test_setMinDeposit_noValidation_blocksAllDeposits`, `test_setMinDeposit_aboveCapacity`, `test_setMinRedeem_grossOfFee` | Low |
+| R2-6 | `:272-274` | `setCapacity` has no upper bound. Unchanged. | `test_setCapacity_noUpperBound` | Low (NEWSURFACE owns the brick) |
+| R2-8 | `:428-463`, `:509-535` | Guardian cancel with a guardian-chosen `recipient_` still pays the refund / returns the escrowed shares to `recipient_`. Unchanged (CANCEL-FEES owns). | `test_cancelDepositRequest_guardian`, `test_cancelRedeemRequest_guardian` | High (owned by CANCEL-FEES) |
+| R2-9 (I-3) | `:169`, `:311` | `UNPAUSER_ROLE` declared, `unpause` still DEFAULT_ADMIN. Unchanged. | `test_unpause_unpauserRoleCannotUnpause` | Info |
+| R2-10 (F-2) | `:329-338` | `take` ignores pending counters and is not paused. Unchanged. | `test_take_ignoresPendingDepositSavingsShares`, `test_take_whilePaused`, `test_pause_doesNotBlockTake` | Known |
+| R2-11 | layout | Not compatible with round 1. Unchanged (see storage status below). | `test_storageLayout_notCompatibleWithRoundOne` | Info |
+
+## New: `realizeGain` (`src/SparkPrimeVault.sol:297-309`)
+
+`onlyRole(DEFAULT_ADMIN_ROLE)`, no pause requirement, `require(gain_ > 0, "invalid-gain")`, `drip()`, `require(totalSupply != 0, "no-shares")`, `chi = uint192((totalAssets() + gain_) * RAY / totalSupply)`, `GainRealized(chi, gain)`.
+
+| Aspect | Result | Test |
+|---|---|---|
+| Matrix | admin OK; guardian, rebalancer, riskManager, setter, taker, unpauser, stranger revert `AccessControlUnauthorizedAccount(caller, DEFAULT_ADMIN_ROLE)`, paused and unpaused alike | `test_realizeGain_notAuthorized`, `test_realizeGain_authorized` |
+| Pause scope | allowed unpaused and paused; `paused` flag untouched | `test_realizeGain`, `test_realizeGain_whilePaused`, `test_pause_doesNotBlockRealizeGain` |
+| Event | `GainRealized(expectedChi, gain)` exact; preceded by `Drip(nowChi, diff)` when time has passed | `test_realizeGain`, `test_realizeGain_dripsFirst` |
+| Formula | `chi == floor((totalAssets + gain) * RAY / totalSupply)`, `rho == now`; write-up in `[gain - 1, gain]`; repeated calls compound; gain then equal loss returns within 3 floors of the start | `test_realizeGain`, `test_realizeGain_repeatedAndRoundTripWithLoss`, `testFuzz_realizeGain_neverLowersChi` (1000 runs, chi strictly increases) |
+| Validation | `realizeGain(0)` -> `invalid-gain`; empty vault -> `no-shares` (reachable here, no totalAssets check in front) | `test_realizeGain_zeroGain`, `test_realizeGain_noShares` |
+| Admin bound | none. `realizeGain(1e30)` on 1,000 USDC of backing is accepted, chi moves to `~1e45`, `totalAssets() ~= 1e30` while the vault holds ~1,000 USDC of spUSDC. Larger values truncate the `uint192` cast or overflow the next `drip`: NEWSURFACE/ROUNDING own the thresholds. | `test_realizeGain_noUpperBound` |
+| Revocation | nothing new: with no admin left, `realizeGain` is dead like `unpause`/upgrade/grantRole | `test_renounceDefaultAdmin_vaultHasNoAdminForever` |
+| Trust note | `realizeGain` writes up the index without any backing moving in. With the fresh `realizeLoss` floor (`loss < totalAssets`) the admin can now raise and lower the index freely (gain is unbounded, loss is bounded by `totalAssets - 1`); the admin key is the cold key under the trust model so this is reported as data, not a finding. README lists it under DEFAULT_ADMIN. | |
+
+## Authorization matrix (ff828d2)
+
+Columns are the single role each actor holds. OK = succeeds; X = reverts `AccessControlUnauthorizedAccount(caller, <required role>)`.
+
+| Function | required role | ADMIN | GUARDIAN | REBALANCER | RISK_MGR | SETTER | TAKER | UNPAUSER | stranger |
+|---|---|---|---|---|---|---|---|---|---|
+| setCapacity | DEFAULT_ADMIN | OK | X | X | X | X | X | X | X |
+| setMaxRedeemFee | DEFAULT_ADMIN | OK | X | X | X | X | X | X | X |
+| setMinDeposit | DEFAULT_ADMIN | OK | X | X | X | X | X | X | X |
+| setMinRedeem | DEFAULT_ADMIN | OK | X | X | X | X | X | X | X |
+| setVSRBounds | DEFAULT_ADMIN | OK | X | X | X | X | X | X | X |
+| **realizeGain (new)** | DEFAULT_ADMIN | OK | X | X | X | X | X | X | X |
+| unpause | DEFAULT_ADMIN | OK | X | X | X | X | X | **X** (I-3) | X |
+| upgradeToAndCall | DEFAULT_ADMIN | OK | X | X | X | X | X | X | X |
+| grantRole (all 7 roles) | DEFAULT_ADMIN | OK | X | X | X | X | X | X | X |
+| revokeRole (all 7 roles) | DEFAULT_ADMIN | OK | X | X | X | X | X | X | X |
+| renounceRole(role, self) | none | OK | OK | OK | OK | OK | OK | OK | OK (no-op); for another account: `AccessControlBadConfirmation()` |
+| setVSR | SETTER | X | X | X | X | OK | X | X | X |
+| take | TAKER | X | X | X | X | X | OK | X | X |
+| processDepositQueue | REBALANCER | X | X | OK | X | X | X | X | X |
+| processRedeemQueue | REBALANCER | X | X | OK | X | X | X | X | X |
+| processCancelledDepositQueue | REBALANCER | X | X | OK | X | X | X | X | X |
+| setRedeemFee | RISK_MANAGER | X | X | X | OK | X | X | X | X |
+| realizeLoss (paused) | RISK_MANAGER | X | X | X | OK | X | X | X | X |
+| pause | GUARDIAN | X | OK | X | X | X | X | X | X |
+| cancelDepositRequest (not owner) | owner or GUARDIAN | `not-authorized` | OK (refund to guardian-chosen recipient on settlement) | `not-authorized` | `not-authorized` | `not-authorized` | `not-authorized` | `not-authorized` | `not-authorized` |
+| cancelRedeemRequest (not owner) | owner or GUARDIAN | `not-authorized` | OK (shares to guardian-chosen recipient) | `not-authorized` | `not-authorized` | `not-authorized` | `not-authorized` | `not-authorized` | `not-authorized` |
+| updateDepositRecipient, updateCancelledDepositRecipient, updateRedeemRecipient (not owner) | **owner only** (R2-7 fixed) | `not-authorized` | `not-authorized` | `not-authorized` | `not-authorized` | `not-authorized` | `not-authorized` | `not-authorized` | `not-authorized`; owner OK; dead entry `no-request`; zero recipient `invalid-recipient` (checked first) |
+| requestDeposit (x2), requestRedeem, cancel own request, update own recipient, approve, transfer, transferFrom, permit, drip | none | OK | OK | OK | OK | OK | OK | OK | OK (`test_permissionless_stranger`, `test_updateRecipient_ownerOnly`) |
+
+`getRoleAdmin(role) == DEFAULT_ADMIN_ROLE` for all 7 roles (`test_grantRole_authorized`).
+
+## Pause scope (ff828d2)
+
+| Function | While paused | Test |
+|---|---|---|
+| requestDeposit(assets, recipient) | blocked, `SparkPrimeVault/paused` | `test_pause_blocksRequestDeposit` |
+| requestDeposit(assets, recipient, referral) | blocked | `test_pause_blocksRequestDepositWithReferral` |
+| cancelDepositRequest (owner and guardian) | blocked | `test_pause_blocksCancelDepositRequest` |
+| requestRedeem | blocked | `test_pause_blocksRequestRedeem` |
+| cancelRedeemRequest (owner and guardian) | blocked | `test_pause_blocksCancelRedeemRequest` |
+| processDepositQueue | blocked | `test_pause_blocksProcessDepositQueue` |
+| processRedeemQueue | blocked | `test_pause_blocksProcessRedeemQueue` |
+| processCancelledDepositQueue | blocked (queued refunds wait) | `test_pause_blocksProcessCancelledDepositQueue` |
+| updateDepositRecipient / updateCancelledDepositRecipient / updateRedeemRecipient | allowed for the **owner** only; strangers `not-authorized` | `test_pause_doesNotBlockUpdateRecipient` |
+| take | allowed | `test_pause_doesNotBlockTake` |
+| drip | allowed, chi keeps accruing | `test_pause_doesNotBlockDrip` |
+| setVSR | allowed | `test_pause_doesNotBlockSetVSR` |
+| realizeLoss | allowed (requires paused) | `test_pause_doesNotBlockRealizeLoss` |
+| **realizeGain (new)** | allowed (also allowed unpaused) | `test_pause_doesNotBlockRealizeGain`, `test_realizeGain_whilePaused`, `test_realizeGain` |
+| approve / transfer / transferFrom | allowed | `test_pause_doesNotBlockERC20` |
+| permit | allowed | `test_pause_doesNotBlockPermit` |
+| setCapacity, setMaxRedeemFee, setMinDeposit, setMinRedeem, setVSRBounds, grantRole, revokeRole, setRedeemFee | allowed | `test_pause_doesNotBlockAdminSetters` |
+| upgradeToAndCall | allowed, `paused` survives the upgrade | `test_pause_doesNotBlockUpgrade` |
+| pause when paused / unpause when not paused | idempotent, event still emitted | `test_pause_idempotent`, `test_unpause_idempotent` |
+
+## Storage layout status
+
+`forge inspect SparkPrimeVault storage-layout` at ff828d2 is identical to the round-2 table below: 27 linear slots, `savings` (0) .. `allowance` (26), same packing (`asset`+`decimals` in slot 1, `rho`+`chi` in slot 4), same namespaced OZ slots. `realizeGain` and the `_requestDeposit` move add no state. `SparkPrimeVaultV2Mock.newVar` still lands at slot 27. `test_storageLayout_packing`, `test_upgradeToAndCall` (41 getter fields and 27 raw slots diffed), `test_upgradeToAndCall_withReinitializer`, `test_upgradeToAndCall_roundTrip` pass unchanged. The round-2 table was not edited.
+
+## Unsettled
+
+- Fork PoCs (`test/TestBase.t.sol`, `test/Review.t.sol`) compile under `forge build` and needed no change for ff828d2 (no `realizeLoss` / `update*Recipient` usage); still not executed (no RPC).
+- R2-1 severity stays High under the trust model: the chi-to-zero brick is closed, the `totalAssets - 1` wipe-out by a single hot key is not. A drawdown floor (or an admin-only path like `realizeGain`) is still the open question.
+- `realizeGain` thresholds (`uint192` truncation of the cast, `drip` overflow after a very large gain) are owned by NEWSURFACE/ROUNDING; only acceptance of `1e30` is asserted here.
+- `upgradeToAndCall` with ETH value (`ERC1967NonPayable`) not tested; OZ behaviour.
+- `transfer(address(vault), x)` permanently stuck (I-6) not re-tested here.
+
+---
+
 # ROLES worker report, round 2: authorization, admin bounds, pause scope, upgrade
 
 Branch `campaign-v2/roles`, upstream `src/SparkPrimeVault.sol` = `refactor/more-simplifying` @ `0bc9288` (merged via `review/poc-tests-v2`, unpatched). Files: `test/Authorization.t.sol` (70 tests), `test/Admin.t.sol` (67), `test/Upgrade.t.sol` (12), `test/mocks/SparkPrimeVaultV2Mock.sol`, plus the fork harness `test/TestBase.t.sol` and `test/Review.t.sol` (ported to compile; not executed, no RPC in this environment).

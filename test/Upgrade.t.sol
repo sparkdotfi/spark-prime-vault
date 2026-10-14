@@ -25,7 +25,8 @@ contract InvalidSparkPrimeVault2 {}
 ///      implementation contract itself. Layout as of `refactor/more-simplifying`:
 ///      `asset`, `pendingCancelledDepositSavingsShares`, `cancelledDepositQueue` and
 ///      `cancelledDepositHead` were inserted mid-layout, so this layout is NOT compatible with
-///      the round-1 layout (nothing is deployed yet).
+///      the round-1 layout (nothing is deployed yet). Re-verified unchanged at ff828d2
+///      (`realizeGain` adds no state).
 contract UpgradeTest is LocalTestBase {
 
     // keccak256("eip1967.proxy.implementation") - 1
