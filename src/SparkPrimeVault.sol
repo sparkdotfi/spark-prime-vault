@@ -88,7 +88,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     event DepositCancellationRequest(uint256 indexed depositRequestId, uint256 cancelRequestId);
 
-    event CancelledDepositRecipientUpdated(uint256 indexed requestId, address indexed recipient);
+    event DepositCancellationRecipientUpdated(uint256 indexed requestId, address indexed recipient);
 
     event DepositRecipientUpdated(uint256 indexed requestId, address indexed recipient);
 
@@ -455,7 +455,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         emit DepositCancellationRequest(requestId_, newRequestId_);
     }
 
-    function updateCancelledDepositRecipient(uint256 requestId_, address recipient_) external {
+    function updateDepositCancellationRecipient(uint256 requestId_, address recipient_) external {
         require(recipient_ != address(0), "SparkPrimeVault/invalid-recipient");
 
         Request storage request_ = depositCancellationRequests[requestId_];
@@ -463,7 +463,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         require(request_.shares != 0,         "SparkPrimeVault/no-request");
         require(msg.sender == request_.owner, "SparkPrimeVault/not-authorized");
 
-        emit CancelledDepositRecipientUpdated(
+        emit DepositCancellationRecipientUpdated(
             requestId_,
             request_.recipient = recipient_
         );

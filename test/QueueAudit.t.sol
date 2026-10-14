@@ -275,16 +275,16 @@ contract QueueAuditTest is Test {
         vm.expectRevert("SparkPrimeVault/not-authorized");
         vault.updateDepositRecipient(depReqId, charlie);
 
-        // Cancel deposit and test updateCancelledDepositRecipient
+        // Cancel deposit and test updateDepositCancellationRecipient
         vm.prank(alice);
         uint256 cancelReqId = vault.requestDepositCancellation(depReqId, alice);
 
         vm.prank(attacker);
         vm.expectRevert("SparkPrimeVault/not-authorized");
-        vault.updateCancelledDepositRecipient(cancelReqId, attacker);
+        vault.updateDepositCancellationRecipient(cancelReqId, attacker);
 
         vm.prank(alice);
-        vault.updateCancelledDepositRecipient(cancelReqId, david);
+        vault.updateDepositCancellationRecipient(cancelReqId, david);
 
         // Redeem queue recipient update
         vm.prank(admin);
