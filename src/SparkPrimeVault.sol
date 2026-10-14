@@ -47,6 +47,12 @@ interface IERC4626Like {
 
 }
 
+interface IHasBlackList {
+
+    function isBlacklisted(address account) external view returns (bool);
+
+}
+
 // TODO: requestDepositWithPermit?
 // TODO: Get pendingOfReceiver()/getPendingOfOwner() even needed?
 
@@ -70,12 +76,28 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         uint256         savingsShares
     );
 
+    event DepositRecipientUpdated(uint256 indexed requestId, address indexed recipient);
+
+    event DepositRequestCancelled(
+        uint256 indexed depositRequestId,
+        uint256 indexed depositCancellationRequestId
+    );
+
     event Deposit(
         address indexed owner,
         address indexed recipient,
         uint256         assets,
+        uint256         shares
+    );
+
+    event DepositCancellationRequest(
+        address indexed owner,
+        uint256 indexed requestId,
+        address indexed recipient,
         uint256         savingsShares
     );
+
+    event DepositCancellationRecipientUpdated(uint256 indexed requestId, address indexed recipient);
 
     event DepositCancellation(
         address indexed owner,
@@ -83,16 +105,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         uint256         savingsShares,
         uint256         assets
     );
-
-    event DepositCancellationRequest(
-        uint256 indexed depositRequestId,
-        uint256 indexed cancelRequestId,
-        address indexed recipient
-    );
-
-    event DepositCancellationRecipientUpdated(uint256 indexed requestId, address indexed recipient);
-
-    event DepositRecipientUpdated(uint256 indexed requestId, address indexed recipient);
 
     event RedeemRequest(
         address indexed owner,
@@ -103,6 +115,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     );
 
     event RedeemRecipientUpdated(uint256 indexed requestId, address indexed recipient);
+
+    event UnprocessableRedeem(uint256 indexed requestId);
 
     event Redeem(
         address indexed owner,
@@ -413,29 +427,24 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         external
         returns (uint256 newRequestId_)
     {
-        require(recipient_ != address(0), "SparkPrimeVault/invalid-recipient");
+        require(recipient_ != address(0),               "SparkPrimeVault/invalid-recipient");
+        require(!_assetBlacklistsRecipient(recipient_), "SparkPrimeVault/blacklisted-recipient");
 
         Request memory request_ = _depositRequests[requestId_];
 
-        uint256 requestSavingsShares_ = request_.shares;
-
-        require(requestSavingsShares_ != 0, "SparkPrimeVault/no-request");
-
-        if (msg.sender != request_.owner) {
-            require(hasRole(GUARDIAN_ROLE, msg.sender), "SparkPrimeVault/not-authorized");
-            require(recipient_ == request_.owner,       "SparkPrimeVault/invalid-recipient");
-        }
+        require(request_.shares != 0,         "SparkPrimeVault/no-request");
+        require(msg.sender == request_.owner, "SparkPrimeVault/not-authorized");
 
         delete _depositRequests[requestId_];
 
         newRequestId_ = _depositCancellationRequests.length;
 
         _depositCancellationRequests.push(
-            Request(request_.owner, recipient_, requestSavingsShares_)
+            Request(request_.owner, recipient_, request_.shares)
         );
 
-        pendingDepositSavingsShares          -= requestSavingsShares_;
-        pendingCancelledDepositSavingsShares += requestSavingsShares_;
+        pendingDepositSavingsShares          -= request_.shares;
+        pendingCancelledDepositSavingsShares += request_.shares;
 
         if (requestId_ == firstPendingDepositId) {
             // Advance head past any cancelled/dead requests.
@@ -447,7 +456,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
             }
         }
 
-        emit DepositCancellationRequest(requestId_, newRequestId_, recipient_);
+        emit DepositRequestCancelled(requestId_, newRequestId_);
+        emit DepositCancellationRequest(request_.owner, newRequestId_, recipient_, request_.shares);
     }
 
     function requestRedeem(uint256 shares_, address recipient_)
@@ -455,8 +465,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         whenNotPaused
         returns (uint256 requestId_)
     {
-        require(recipient_ != address(0), "SparkPrimeVault/invalid-recipient");
-        require(shares_ >= minRedeem,     "SparkPrimeVault/below-minimum");
+        require(recipient_ != address(0),               "SparkPrimeVault/invalid-recipient");
+        require(!_assetBlacklistsRecipient(recipient_), "SparkPrimeVault/blacklisted-recipient");
+        require(shares_ >= minRedeem,                   "SparkPrimeVault/below-minimum");
 
         drip();
 
@@ -494,7 +505,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     function updateDepositCancellationRecipient(uint256 requestId_, address recipient_) external {
-        require(recipient_ != address(0), "SparkPrimeVault/invalid-recipient");
+        require(recipient_ != address(0),               "SparkPrimeVault/invalid-recipient");
+        require(!_assetBlacklistsRecipient(recipient_), "SparkPrimeVault/blacklisted-recipient");
 
         Request storage request_ = _depositCancellationRequests[requestId_];
 
@@ -508,7 +520,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     function updateRedeemRecipient(uint256 requestId_, address recipient_) external {
-        require(recipient_ != address(0), "SparkPrimeVault/invalid-recipient");
+        require(recipient_ != address(0),               "SparkPrimeVault/invalid-recipient");
+        require(!_assetBlacklistsRecipient(recipient_), "SparkPrimeVault/blacklisted-recipient");
 
         Request storage request_ = _redeemRequests[requestId_];
 
@@ -840,6 +853,15 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         }
     }
 
+    function _assetBlacklistsRecipient(address recipient_) internal view returns (bool) {
+        // If there is no blacklist at the asset, this will fail safely.
+        try IHasBlackList(asset).isBlacklisted(recipient_) returns (bool isBlacklisted_) {
+            return isBlacklisted_;
+        } catch {
+            return false;
+        }
+    }
+
     /**********************************************************************************************/
     /*** Queue internal helper functions                                                        ***/
     /**********************************************************************************************/
@@ -861,19 +883,15 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         for (; i_ < end_ && remaining_ != 0; ++i_) {
             Request storage request_ = _depositRequests[i_];
 
-            uint256 requestSavingsShares_ = request_.shares;
-
-            if (requestSavingsShares_ == 0) continue;  // Cancelled
-
-            uint256 savingsShares_ = _min(requestSavingsShares_, remaining_);
-
-            // Convert processed savings shares into vault shares.
-            uint256 assets_ = IERC4626Like(savings).convertToAssets(savingsShares_);
-            uint256 shares_ = convertToShares(assets_);
+            uint256 savingsShares_ = _min(request_.shares, remaining_);
 
             pendingDepositSavingsShares -= savingsShares_;
             request_.shares             -= savingsShares_;
             remaining_                  -= savingsShares_;
+
+            // Convert processed savings shares into vault shares.
+            uint256 assets_ = IERC4626Like(savings).convertToAssets(savingsShares_);
+            uint256 shares_ = convertToShares(assets_);
 
             _mint(request_.recipient, shares_);
 
@@ -903,18 +921,20 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         for (; i_ < end_ && remaining_ != 0; ++i_) {
             Request storage request_ = _depositCancellationRequests[i_];
 
-            uint256 requestSavingsShares_ = request_.shares;
+            // TODO: Handle case where `_assetBlacklistsRecipient(request_.recipient)`.
 
-            if (requestSavingsShares_ == 0) continue;  // Cancelled
-
-            uint256 savingsShares_ = _min(requestSavingsShares_, remaining_);
+            uint256 savingsShares_ = _min(request_.shares, remaining_);
 
             pendingCancelledDepositSavingsShares -= savingsShares_;
             request_.shares                      -= savingsShares_;
             remaining_                           -= savingsShares_;
 
             uint256 assets_ =
-                IERC4626Like(savings).redeem(savingsShares_, request_.recipient, address(this));
+                IERC4626Like(savings).redeem(
+                    savingsShares_,
+                    request_.recipient,
+                    address(this)
+                );
 
             emit DepositCancellation(request_.owner, request_.recipient, savingsShares_, assets_);
 
@@ -926,8 +946,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         firstPendingDepositCancellationId = i_;
     }
 
-    // Pays queued redeems FIFO, burning up to `maxShares_` held shares within the available
-    // liquidity.
     function _processPendingRedeems(uint256 maxShares_, uint256 maxRequests_) internal {
         drip();
 
@@ -939,18 +957,28 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         for (; i_ < end_ && remaining_ != 0; ++i_) {
             Request storage request_ = _redeemRequests[i_];
 
-            uint256 requestShares_ = request_.shares;
+            if (_assetBlacklistsRecipient(request_.recipient)) {
+                pendingRedeemShares -= request_.shares;
 
-            if (requestShares_ == 0) continue;  // Empty
+                emit UnprocessableRedeem(i_);
 
-            uint256 shares_ = _min(requestShares_, remaining_);
-            uint256 assets_ = convertToAssets(shares_);
+                // Transfer shares back to owner.
+                _transfer(address(this), request_.owner, request_.shares);
+
+                delete _redeemRequests[i_];
+
+                continue;
+            }
+
+            uint256 shares_ = _min(request_.shares, remaining_);
 
             pendingRedeemShares -= shares_;
             request_.shares     -= shares_;
             remaining_          -= shares_;
 
             _burn(address(this), shares_);
+
+            uint256 assets_ = convertToAssets(shares_);
 
             emit Redeem(request_.owner, request_.recipient, shares_, assets_);
 
