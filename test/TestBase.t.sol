@@ -64,7 +64,6 @@ abstract contract TestBase is Test {
     bytes32 internal constant RISK_MANAGER_ROLE  = keccak256("RISK_MANAGER_ROLE");
     bytes32 internal constant SETTER_ROLE        = keccak256("SETTER_ROLE");
     bytes32 internal constant TAKER_ROLE         = keccak256("TAKER_ROLE");
-    bytes32 internal constant UNPAUSER_ROLE      = keccak256("UNPAUSER_ROLE");
 
     uint256 internal constant MINIMUM_DEPOSIT = 100e6;
     uint256 internal constant MINIMUM_REDEEM  = 100e6;
@@ -79,7 +78,6 @@ abstract contract TestBase is Test {
     address internal riskManager = makeAddr("riskManager");
     address internal setter      = makeAddr("setter");
     address internal taker       = makeAddr("taker");
-    address internal unpauser    = makeAddr("unpauser");
 
     address internal user = makeAddr("user");
 

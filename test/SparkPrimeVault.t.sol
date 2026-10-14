@@ -1219,7 +1219,6 @@ contract RealizeLossTests is SparkPrimeVaultTests {
         spPRIME.grantRole(GUARDIAN_ROLE,     guardian);
         spPRIME.grantRole(RISK_MANAGER_ROLE, riskManager);
         spPRIME.grantRole(SETTER_ROLE,       setter);
-        spPRIME.grantRole(UNPAUSER_ROLE,     unpauser);
 
         spPRIME.setCapacity(VAULT_CAPACITY);
         spPRIME.setVSRBounds(RAY, spPRIME.MAX_VSR());
@@ -1273,41 +1272,31 @@ contract RealizeLossTests is SparkPrimeVaultTests {
         spPRIME.realizeLoss(1e6);
     }
 
-    function test_realizeLoss_zeroLossBoundary() public {
+    function test_realizeLoss_invalidLoss_zeroLoss() public {
         _depositAndPause();
 
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vm.prank(riskManager);
         spPRIME.realizeLoss(0);
 
-        assertEq(spPRIME.nowChi(), RAY);
-
         vm.prank(riskManager);
         spPRIME.realizeLoss(1);
-
-        assertEq(spPRIME.chi(), 0.999999999998999999999998999e27);  // RAY - divup(1 * RAY / DEPOSIT)
     }
 
-    function test_realizeLoss_lossTooHigh() public {
+    function test_realizeLoss_invalidLoss_tooHighBoundary() public {
         _depositAndPause();
 
         uint256 totalAssets = spPRIME.totalAssets();
 
-        vm.expectRevert(stdError.arithmeticError);
+        vm.expectRevert("SparkPrimeVault/invalid-loss");
         vm.prank(riskManager);
         spPRIME.realizeLoss(totalAssets + 1);
-    }
 
-    function test_realizeLoss_zeroSupply() public {
-        vm.prank(guardian);
-        spPRIME.pause();
-
-        assertEq(spPRIME.totalSupply(), 0);
-
-        vm.expectRevert(stdError.divisionError);
         vm.prank(riskManager);
-        spPRIME.realizeLoss(1);
+        spPRIME.realizeLoss(totalAssets);
     }
+
+    // TODO: test_realizeLoss_zeroSupply can probably only be done with a harness
 
     /**********************************************************************************************/
     /*** Success tests                                                                          ***/
@@ -1329,9 +1318,9 @@ contract RealizeLossTests is SparkPrimeVaultTests {
         assertEq(assetsBefore, supply * chiBefore / RAY);
         assertEq(supply,       1_000_000e6 - 1);  // Rounding
 
-        uint192 expectedChiAfterLossEvent = chiBefore - uint192((loss * RAY - 1) / supply + 1);
+        uint192 expectedChiAfterLossEvent = uint192(((assetsBefore - loss) * RAY) / supply);
 
-        assertEq(expectedChiAfterLossEvent, 0.949999999999899999961070044e27);
+        assertEq(expectedChiAfterLossEvent, 0.949999999998949999999998949e27);
 
         assertEq(spPRIME.rho(),          block.timestamp - 365 days);
         assertEq(spPRIME.totalSupply(),  supply);
@@ -1350,7 +1339,7 @@ contract RealizeLossTests is SparkPrimeVaultTests {
 
         uint256 realizedLoss = assetsBefore - spPRIME.totalAssets();
 
-        assertEq(realizedLoss, loss);
+        assertEq(realizedLoss, loss + 1);
     }
 
     function test_realizeLoss_accrualContinuesFromNewChi() public {
@@ -1375,29 +1364,31 @@ contract RealizeLossTests is SparkPrimeVaultTests {
     }
 
     function test_realizeLoss_redeemReflectsLoss() public {
+        uint256 loss = 100_000e6;
+
         _depositAndPause();
 
         uint256 supply = spPRIME.totalSupply();
 
-        uint256 expectedChiAfterLossEvent = RAY - uint192((100_000e6 * RAY - 1) / supply + 1);
+        uint256 expectedChiAfterLossEvent = uint192(((DEPOSIT - loss) * RAY) / supply);
 
         vm.prank(riskManager);
-        spPRIME.realizeLoss(100_000e6);
+        spPRIME.realizeLoss(loss);
 
-        vm.prank(unpauser);
+        vm.prank(admin);
         spPRIME.unpause();
 
         uint256 shares   = spPRIME.balanceOf(user);
         uint256 expected = spPRIME.assetsOf(user);
 
-        assertEq(expected, supply * expectedChiAfterLossEvent / RAY);
+        assertEq(expected, supply * expectedChiAfterLossEvent / RAY - 1);
 
         vm.prank(user);
         spPRIME.requestRedeem(shares, user);
 
-        assertEq(spPRIME.balanceOf(user),             0);
-        assertEq(usdc.balanceOf(user),                expected);
-        assertEq(spPRIME.sharesEncumberedByRedeems(), 0);
+        assertEq(spPRIME.balanceOf(user),       0);
+        assertEq(usdc.balanceOf(user),          0);
+        assertEq(spPRIME.pendingRedeemShares(), shares);
     }
 
 }

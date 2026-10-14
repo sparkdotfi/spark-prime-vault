@@ -373,7 +373,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         uint256 totalAssets_ = totalAssets();
 
-        require(loss_ > 0 && loss_ < totalAssets_, "SparkPrimeVault/invalid-loss");
+        require(loss_ > 0 && loss_ <= totalAssets_, "SparkPrimeVault/invalid-loss");
 
         uint256 totalSupply_ = totalSupply;
 
