@@ -4,9 +4,9 @@ pragma solidity ^0.8.34;
 import "./a_init.sol";
 
 // User flows: deposit requests (with and without referral, including zero-amount ghosts), deposit
-// cancels (into the cancelled-deposit queue), redeem requests (including zero-share and one-wei
-// ghosts), redeem cancels, owner recipient updates (plus stranger attempts), transfers and
-// transferFrom.
+// cancels (into the cancelled-deposit queue, by the owner or by the guardian refunding the owner),
+// redeem requests (including zero-share and one-wei ghosts; redeems cannot be cancelled since
+// bf93b0d), owner recipient updates (plus stranger attempts), transfers and transferFrom.
 contract FlowsUser is Init {
 
     constructor(address vault_) Init(vault_) {}
@@ -109,22 +109,37 @@ contract FlowsUser is Init {
         (address owner, , uint256 shares) = _depositRequest(id);
         if (shares == 0) return;
 
+        // The guardian may cancel on the owner's behalf but must refund the owner (bf93b0d).
         bool    byGuardian = seed % 3 == 0;
-        address caller     = byGuardian ? guardian : owner;
-        address recipient  = getRandomUser(recipientIndex);
+        address recipient  = byGuardian ? owner : getRandomUser(recipientIndex);
 
-        uint256 pendingBefore          = vault.pendingDepositSavingsShares();
-        uint256 pendingCancelledBefore = vault.pendingCancelledDepositSavingsShares();
-        uint256 spUsdcBefore           = spUsdc.balanceOf(address(vault));
-        uint256 usersUsdcBefore        = _usersUsdc();
+        if (byGuardian) _probeGuardianCancel(id, owner, recipientIndex);
 
-        vm.startPrank(caller);
+        uint256[4] memory before = [
+            vault.pendingDepositSavingsShares(),
+            vault.pendingCancelledDepositSavingsShares(),
+            spUsdc.balanceOf(address(vault)),
+            _usersUsdc()
+        ];
+
+        vm.startPrank(byGuardian ? guardian : owner);
         uint256 cancelId = vault.requestDepositCancellation(id, recipient);
         vm.stopPrank();
 
         assertEq(cancelId, cancelledQueueLength, "handler: unexpected cancel request id");
         cancelledQueueLength++;
 
+        _checkCancel(id, cancelId, owner, recipient, shares, before);
+    }
+
+    function _checkCancel(
+        uint256 id,
+        uint256 cancelId,
+        address owner,
+        address recipient,
+        uint256 shares,
+        uint256[4] memory before
+    ) internal view {
         (, , uint256 sharesAfter) = _depositRequest(id);
         assertEq(sharesAfter, 0, "handler: cancel left deposit entry open");
 
@@ -133,10 +148,37 @@ contract FlowsUser is Init {
         assertEq(cRecipient, recipient, "handler: cancelled entry recipient");
         assertEq(cShares,    shares,    "handler: cancelled entry shares");
 
-        assertEq(vault.pendingDepositSavingsShares(),          pendingBefore - shares,          "handler: cancel pending deposit");
-        assertEq(vault.pendingCancelledDepositSavingsShares(), pendingCancelledBefore + shares, "handler: cancel pending cancelled");
-        assertEq(spUsdc.balanceOf(address(vault)),             spUsdcBefore,                    "handler: cancel moved spUSDC");
-        assertEq(_usersUsdc(),                                 usersUsdcBefore,                 "handler: cancel paid USDC");
+        assertEq(vault.pendingDepositSavingsShares(),          before[0] - shares, "handler: cancel pending deposit");
+        assertEq(vault.pendingCancelledDepositSavingsShares(), before[1] + shares, "handler: cancel pending cancelled");
+        assertEq(spUsdc.balanceOf(address(vault)),             before[2],          "handler: cancel moved spUSDC");
+        assertEq(_usersUsdc(),                                 before[3],          "handler: cancel paid USDC");
+    }
+
+    // A guardian cancel that would pay anyone but the owner must revert `invalid-recipient`
+    // (bf93b0d). Asserted inline; counts reported in afterInvariant().
+    function _probeGuardianCancel(uint256 id, address owner, uint256 recipientIndex) internal {
+        address other = getRandomUser(recipientIndex);
+        if (other == owner) other = users[(_bound(recipientIndex, 0, N - 1) + 1) % N];
+
+        guardianCancelProbes++;
+
+        vm.startPrank(guardian);
+        try vault.requestDepositCancellation(id, other) {
+            lastGuardianCancelProbe = "<no revert>";
+        } catch Error(string memory r) {
+            lastGuardianCancelProbe = r;
+            if (keccak256(bytes(r)) == keccak256("SparkPrimeVault/invalid-recipient")) {
+                guardianCancelProbeReverts++;
+            }
+        } catch {
+            lastGuardianCancelProbe = "<non-string revert>";
+        }
+        vm.stopPrank();
+
+        assertEq(
+            guardianCancelProbeReverts, guardianCancelProbes,
+            string.concat("handler: guardian cancel to a non-owner did not revert invalid-recipient: ", lastGuardianCancelProbe)
+        );
     }
 
     /**********************************************************************************************/
@@ -175,31 +217,6 @@ contract FlowsUser is Init {
         redeemQueueLength++;
 
         ghostEscrowed[user] += shares;
-    }
-
-    function cancelRedeemRequest(uint256 idSeed, uint256 recipientIndex, uint256 seed)
-        public counted("cancelRedeemRequest")
-    {
-        if (vault.paused()) return;
-
-        uint256 head = vault.firstPendingRedeemId();
-        if (head >= redeemQueueLength) return;
-
-        uint256 id = _bound(idSeed, head, redeemQueueLength - 1);
-
-        (address owner, , uint256 shares) = _redeemRequest(id);
-        if (shares == 0) return;
-
-        bool    byGuardian = seed % 3 == 0;
-        address caller     = byGuardian ? guardian : owner;
-        address recipient  = getRandomUser(recipientIndex);
-
-        vm.startPrank(caller);
-        vault.cancelRedeemRequest(id, recipient);
-        vm.stopPrank();
-
-        // Upstream pays the `recipient_` argument whoever the caller is.
-        ghostRefunded[recipient] += shares;
     }
 
     /**********************************************************************************************/
