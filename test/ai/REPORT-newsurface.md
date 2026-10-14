@@ -1,5 +1,70 @@
 # NEWSURFACE worker report
 
+## Round 4 (bf93b0d)
+
+Target: `src/SparkPrimeVault.sol` on `fix/update-guardian-transfer` @ bf93b0d. Files:
+`test/ai/NewSurface.t.sol` (55 tests in `NewSurfaceTest`, `NewSurfaceRealizeGainTest`,
+`NewSurfaceMiscTest`; split kept for the jump-tag limit), `test/ai/CancelledDepositQueue.t.sol`
+(22 tests), `test/ai/Views.t.sol` (7 tests). All 84 pass; the fuzz properties pass at 5_000 runs.
+Harness constants unchanged (chi_s = 1.047633055711877768967605062e27, chi_p =
+1.009687768242461209408770821e27, 1_000_000e6 USDC = 954_532_691_143 spUSDC = 990_405_184_109
+spPRIME).
+
+### Fixed or removed since round 3 (regression tests)
+
+- F-1 deposit side (`:422-425`): a non-owner caller must be GUARDIAN and must name the owner;
+  `requestDepositCancellation(id, guardian)` and `(id, bob)` revert `invalid-recipient`, `(id,
+  alice)` queues `(owner alice, recipient alice, S_1M)` and settles 999_999_999_999 to alice,
+  guardian 0. The owner can still repoint the refund afterwards; the guardian cannot
+  (`not-authorized`). `test_requestDepositCancellation_guardianMustRefundOwner`,
+  `test_updateDepositCancellationRecipient_guardianCancelRefundsOwnerOnly`. The cancelled-queue
+  fuzz asserts `invalid-recipient` for every non-owner recipient and cancels to the owner
+  (`testFuzz_cancelledQueue_countersTrackOpenEntries`, 5_000 runs).
+- `cancelRedeemRequest` removed: the selector reverts, the entry stays open with its shares
+  escrowed (`balanceOf(vault) == SH_100K`), a filled slot still rejects the updater with
+  `no-request`. `test_updateRedeemRecipient_filledEntryRevertsNoRequest`. A `requestRedeem(0)`
+  ghost is now permanent: no cancel, updater says `no-request`
+  (`test_requestRedeem_zeroSharesCreatesGhostEntry`). Event `CancelRedeemRequest` (`:101`) is dead
+  code (Info).
+
+### Persists (unchanged numbers)
+
+- C-3 no floor under `realizeLoss`: `loss = totalAssets - 1` leaves chi = 1_009_687_768_243_692,
+  every holder at 0 (`test_BUG_realizeLoss_noFloor_totalAssetsMinusOneWipesHolders`).
+- G-1 / G-2 / G-3 / G-4 on `realizeGain`: brick above `GAIN_BRICK`, `uint192` wrap at
+  `GAIN_TRUNCATE` to chi 458_233_707_431_279, overflow revert above `GAIN_OVERFLOW`, no pause
+  requirement. Same tests.
+- N-4 unbounded `setCapacity`; ghost entries; head-walk gas (500 ghosts: 553_162 vs 164_662
+  baseline). Same tests.
+
+### New this round
+
+#### `uint192` casts enumerated (Info)
+`initialize` `:248` casts RAY; `drip` `:620` and `nowChi` `:748` cast a quotient that is at most
+`maxUint256 / RAY` whenever the multiplication did not revert, and `2^192 / (maxUint256 / RAY) =
+54_210_108`, so a chi that drips at all can never be a wrapped value; `realizeLoss` `:378` only
+lowers chi (fuzzed); `realizeGain` `:302` is the one cast that can wrap: the smallest gain whose
+quotient reaches 2^192 writes chi = 458_233_707_431_279 (quotient minus 2^192, below one gain
+step `RAY / supply`), `totalAssets() == 0`. `test_uint192Casts_onlyRealizeGainCanWrap`.
+
+#### Views: range read of a deleted head entry (property)
+In all three queues the deleted slot reads as `(0, 0, 0)` through the range getter, the
+head-to-end getter excludes it, `(head, head)` is an empty read, past the end reverts
+`invalid-range`, and an open entry behind the deleted head is returned with its exact shares.
+`test_getPendingRequests_rangeReadOfDeletedHeadEntry`.
+
+### Properties held (round 4 additions)
+- Guardian cancel refunds the owner, every other recipient reverts, owner repoint afterwards
+  works and the guardian's does not.
+- Removed selector reverts; filled and ghost redeem slots reject the updater; escrow intact.
+- Deleted-slot reads are stable across all three queues and range forms.
+
+### Unsettled
+- Same three as round 3: bound on `realizeGain` (G-1/G-2) and its pause requirement (G-4);
+  floor under `realizeLoss` (C-3); netting not on this branch.
+- Delete the dead `CancelRedeemRequest` event.
+
+
 ## Round 3 (ff828d2)
 
 Target: `src/SparkPrimeVault.sol` on `refactor/more-simplifying` @ ff828d2. Files:
