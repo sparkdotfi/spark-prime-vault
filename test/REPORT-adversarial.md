@@ -1,4 +1,117 @@
-# spPRIME adversarial campaign: round 2 report
+# spPRIME adversarial campaign
+
+## Round 3 (ff828d2)
+
+Worker: adversarial. File: `test/Adversarial.t.sol` (contract `AdversarialTest is LocalTestBase`),
+87 tests, all passing at 1000 and 5000 fuzz runs. Line numbers refer to `src/SparkPrimeVault.sol`
+at upstream `refactor/more-simplifying` @ ff828d2. Every round-1 and round-2 property is
+re-pinned; round-2 attacks that upstream fixed are kept as regression tests under new names.
+
+### Fixed upstream (regression tests)
+
+| Round-2 finding | Fix at ff828d2 | Regression test |
+|---|---|---|
+| R2-1 Critical: anyone repoints any queued request | `msg.sender == request_.owner` plus open entry in all three `update*Recipient` (lines 416-425, 465-477, 537-546) | `test_updateRecipient_strangerCannotRepointRedeem_victimPaid`, `..._strangerCannotRepointDeposit_victimMinted`, `..._strangerCannotRepointCancelled_victimRefunded`, `..._ownerRepointsAndCancelsSafely`, `..._onlyOwnerWritesCountAtFill`, `..._filledEntryIsHarmless` |
+| R2-2 High: zero-cost queue block / strand / dead capacity on victims | same authorization | `test_updateRecipient_strangerCannotBlacklistBlockQueue_ownerStillCan`, `..._onlyOwnerCanStrandOwnRedeemInVault`, `..._onlyOwnerCanBurnOwnDepositIntoDeadCapacity` |
+| R2-3 (part): `loss == totalAssets` sets `chi = 0` and bricks redeems; bounds were panics | `require(loss_ > 0 && loss_ < totalAssets_)` line 376, `totalSupply_ != 0` line 380 | `test_compromised_riskManager_fullLossRejected_nearWipeStillOperates`, `test_compromised_riskManager_realizeLossBoundsAreChecks` |
+| R2-4 Medium: whale cancel at the head reverts the planner | budget is `spUSDC.maxRedeem(vault)` line 784 | `test_cancelQueue_whaleCancelStarvesQueueWhenSpUsdcShort` (now: no revert, whale drip-fed) |
+
+Notes on the fixes. Roles do not bypass the owner check (guardian, rebalancer, admin all get
+`not-authorized`); closed entries are `no-request` for everyone, owner included; the owner can
+still repoint the remainder between partial fills. In `realizeLoss` the `no-shares` branch is
+unreachable (with `totalSupply == 0`, `totalAssets` is 0 and `invalid-loss` fires first); it is
+reachable in `realizeGain`. In the cancel queue the small entry behind a whale still waits in
+FIFO order: with 1_000 USDC of spUSDC liquidity the 10_000_000 USDC whale is paid ~1_000 per
+planner call and the 100 USDC entry behind it gets nothing until the whale is complete; three
+1_000 USDC top-ups pay the whale 4_000 total, the victim still 0.
+
+### Persisting
+
+- C-3 / R2-3 (Medium, trust model): `realizeLoss(totalAssets - 1)` still wipes every holder
+  (`chi = RAY / totalSupply`, alice's 1_000_000 USDC is worth 0, 1_023 wei after ten years at
+  MAX_VSR), no floor below the full loss (`test_compromised_riskManager_realizeLossWipesHolders`).
+  The vault keeps operating afterwards (no panics; redeems pay 0; the next depositor is minted at
+  the dust chi) and `realizeGain` is now the only repair path.
+- Round-1 self-harm with `recipient == address(this)` persists for owners (strand USDC, phantom
+  shares): still not rejected anywhere.
+- Round-1 A-1 owner-side blacklist block persists: an owner who repoints their own redeem to a
+  blacklisted address blocks everyone behind them until the guardian cancels; the owner loses the
+  fee (`test_updateRecipient_strangerCannotBlacklistBlockQueue_ownerStillCan`, second half).
+- R2-5 dust cancel bloat, R2-6 head-walk gas, R2-7 two-step cancel, R2-8 SETTER exposure:
+  unchanged, same tests, same numbers.
+
+### R3-1 High: `realizeGain` can be sandwiched by any user through the instant deposit path
+`realizeGain` `src/SparkPrimeVault.sol:306` sets `chi = (totalAssets + gain) * RAY / totalSupply`
+over whoever holds shares in that block. `_requestDeposit` lines 732-735 fills instantly, with no
+entry delay and no entry fee, whenever nobody is queued. So the admin's honest `realizeGain`
+transaction is a public, front-runnable transfer to the current share set, and the attacker only
+has to be in it for one block.
+
+`test_BUG_realizeGain_sandwichExtractsFromHolders` (1_000_000 USDC of honest holders, admin
+broadcasts `realizeGain(50_000e6)` with the gain's backing delivered as spUSDC, fee 0):
+- attacker front-runs `requestDeposit(1_000_000e6)` instantly, now holds exactly alice's share
+  count; gain lands; attacker's `assetsOf` = 1_024_999.999998 USDC;
+- attacker `requestRedeem` all, the planner pays 1_024_999.999998 USDC from the vault's spUSDC:
+  profit 24_999.999998 USDC, one block of capital at risk, no role, no fee;
+- alice ends at 1_024_999.999998 instead of 1_049_999.999998: loss 25_000.000000 USDC, exactly
+  the attacker's take; what remains in the vault exactly backs her.
+
+Variants:
+- fee 1% (`test_BUG_realizeGain_sandwichSurvivesOnePercentFee`): the fee is 1% of the exit,
+  10_250.000001 USDC, payout 1_014_749.999997, profit 14_749.999997; alice still loses 25_000.
+- capital scales with TVL (`..._sandwichTakeScalesWithCapital_1MvsTVL10M`, `..._10MvsTVL10M`):
+  take = gain * c / (TVL + c). 1M against 10M TVL takes 4_545.454544 of 50_000; 10M against 10M
+  takes 24_999.999998. Capital is only at risk for the planner's turnaround.
+- queued variant (`test_realizeGain_queuedDepositFilledAfterGainGetsNoProfit`): if capacity is
+  full the attacker's deposit is queued and filled after the gain at the new chi: 999_999.999998
+  USDC back, no profit, alice receives the full gain (1_049_999.999997).
+- pause first (`test_realizeGain_pauseBeforeGainKillsSandwich`): guardian pauses, the front-run
+  reverts `SparkPrimeVault/paused`, `realizeGain` works while paused, admin unpauses; alice gets
+  1_049_999.999997; a deposit after the unpause is priced at the new chi and earns nothing.
+
+Severity: High. Any user, one block, profit linear in capital, loss borne by honest holders. The
+only mitigation in the code is the pause (deposits closed) or a full deposit queue; a non-zero fee
+reduces the take by `fee * (c + take)`. Fixes, any one of them: require `paused` in `realizeGain`
+(same as `realizeLoss`, admin then unpauses after); or stream the gain through `vsr`/`drip` over
+time instead of a step (the same sandwich fails against continuous accrual because the attacker's
+one-block exposure earns one block of rate); or keep the step but gate the instant deposit path
+behind a minimum holding time. Related, legitimate (b): escrowed redeemers (shares parked in the
+vault, still in `totalSupply`) receive the gain at fill time, the cancelled-deposit queue does
+not (`test_realizeGain_escrowedRedeemersReceiveGain_cancelledDepositsDoNot`: alice's queued
+redeem is paid 1_049_999.999997, bob's cancelled deposit is refunded 100_000 flat). Phantom shares
+sitting on `address(vault)` take their pro-rata share of every gain too.
+
+### R3-2 Info (out of trust model): admin blast radius of `realizeGain`
+- A gain with no backing behind it is an over-credit, paid first come first served
+  (`test_compromised_admin_realizeGainOverCreditIsInsolvency`: `realizeGain(1_000_000e6)` on two
+  1M holders; alice redeems 1_500_000, bob 500_000, 1_000_000 unpayable).
+- A gain of 114_681_085_459_449_903_921_529_244_645_760_026 units (~1.15e29 USDC on a 1M
+  supply, i.e. `chi > 2^256 / RAY`) is accepted, and one second later `_rpow * chi` in `drip()`
+  line 649 overflows: deposit, redeem, setVSR, realizeGain, realizeLoss all revert; `pause`,
+  `unpause` and `take` still work; only an upgrade repairs it
+  (`test_compromised_admin_realizeGainCanBrickViaDripOverflow`). NEWSURFACE owns the exact
+  `uint192` and overflow thresholds; a `require(chi_ <= some bound)` closes both.
+
+### Properties held (round 3 additions)
+| Property | Test |
+|---|---|
+| Gain/loss pairs in one block, either order, never ratchet `chi` above the start; drift <= 2 units per pair; the holder's round trip never returns more than deposited | `testFuzz_realizeGainLoss_noRatchet` (5000 runs) |
+| `realizeGain`: admin only, `invalid-gain` on 0, `no-shares` on empty supply, works while paused, drips before applying, emits the exact post-gain `chi` | `test_realizeGain_accessAndBounds` |
+| Random 24-step sequences where only owners repoint their own open entries (strangers and closed entries revert): all queue invariants hold | `testFuzz_queueInvariants_randomOps` (5000 runs) |
+| Everything in the round-2 table below | same tests |
+
+### Unsettled
+1. R3-1 is the one item that matters this round: decide whether `realizeGain` is a step under
+   pause or a streamed rate; today it is a public transfer to whoever is holding at that block.
+2. C-3 floor on `realizeLoss` (a per-call drawdown cap) is still open; the brick is gone, the
+   wipe is not.
+3. `recipient == address(this)` still accepted everywhere (self-harm only now).
+4. Launch parameters unchanged from round 2: `minDeposit >= 1e6`, `minRedeem >= 1`.
+5. Not tested: real-USDC behaviour on a fork (blacklist cases use `vm.mockCallRevert`).
+
+---
+
+## Round 2 (0bc9288), historical
 
 Worker: adversarial. File: `test/Adversarial.t.sol` (contract `AdversarialTest is LocalTestBase`),
 76 tests, all passing (`forge test --match-path test/Adversarial.t.sol ...`, fuzz at 1000 and
