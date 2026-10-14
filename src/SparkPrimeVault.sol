@@ -648,21 +648,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         return (request_.owner, request_.recipient, request_.shares);
     }
 
-    function getPendingDepositRequest(uint256 requestId_)
-        external
-        view
-        returns (address owner_, address recipient_, uint256 shares_)
-    {
-        require(
-            requestId_ >= firstPendingDepositId && requestId_ < _depositRequests.length,
-            "SparkPrimeVault/invalid-request-id"
-        );
-
-        Request storage request_ = _depositRequests[requestId_];
-
-        return (request_.owner, request_.recipient, request_.shares);
-    }
-
     function getPendingDepositRequests() external view returns (Request[] memory requests_) {
         uint256 pendingLength_ = _depositRequests.length;
 
