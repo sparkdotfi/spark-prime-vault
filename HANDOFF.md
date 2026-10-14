@@ -3,6 +3,12 @@
 Written 2026-10-14 00:05 UTC for a Claude session with zero context. Everything you need is in
 this repo; paths below are on Lucas's Mac mini unless marked (fork).
 
+> **Status 2026-10-14:** campaign complete. All seven `campaign/*` branches are merged into
+> `review/poc-tests`; the final report is `AUDIT-REPORT.md`; per-worker reports are `test/REPORT-*.md`.
+> Local suite: 373 passed, 1 deliberate failing proof (`test_BUG_processRedeemQueue_batchCeilBurnsExceedSpUsdcBalance`).
+> Worktrees live at `~/code/spprime-campaign/<name>` on Lucas's machine. Not pushed: the
+> `lucas-manuel` GitHub account has no push access to `lucas-clawdbot/spark-prime-vault-1`.
+
 ## 1. What this is
 
 Spark (Lucas) is reviewing **`src/SparkPrimeVault.sol`** (spPRIME), an index-priced vault token
