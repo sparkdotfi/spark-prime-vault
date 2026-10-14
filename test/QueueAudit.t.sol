@@ -16,7 +16,18 @@ contract MockAsset is ERC20 {
 }
 
 contract MockSavings is ERC4626 {
+    uint256 public maxRedeemLimit = type(uint256).max;
+
     constructor(IERC20 asset_) ERC4626(asset_) ERC20("Savings Mock USD", "smUSD") {}
+
+    function setMaxRedeemLimit(uint256 limit) external {
+        maxRedeemLimit = limit;
+    }
+
+    function maxRedeem(address owner) public view virtual override returns (uint256) {
+        uint256 bal = balanceOf(owner);
+        return bal < maxRedeemLimit ? bal : maxRedeemLimit;
+    }
 }
 
 contract QueueAuditTest is Test {
@@ -25,13 +36,18 @@ contract QueueAuditTest is Test {
     SparkPrimeVault internal vault;
 
     address internal admin = makeAddr("admin");
+    address internal guardian = makeAddr("guardian");
     address internal rebalancer = makeAddr("rebalancer");
+    address internal riskManager = makeAddr("riskManager");
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
     address internal charlie = makeAddr("charlie");
     address internal david = makeAddr("david");
+    address internal attacker = makeAddr("attacker");
 
+    bytes32 internal GUARDIAN_ROLE = keccak256("GUARDIAN_ROLE");
     bytes32 internal REBALANCER_ROLE = keccak256("REBALANCER_ROLE");
+    bytes32 internal RISK_MANAGER_ROLE = keccak256("RISK_MANAGER_ROLE");
     bytes32 internal TAKER_ROLE = keccak256("TAKER_ROLE");
 
     function setUp() public {
@@ -47,7 +63,9 @@ contract QueueAuditTest is Test {
 
         vm.startPrank(admin);
         vault.setCapacity(1_000_000e18);
+        vault.grantRole(GUARDIAN_ROLE, guardian);
         vault.grantRole(REBALANCER_ROLE, rebalancer);
+        vault.grantRole(RISK_MANAGER_ROLE, riskManager);
         vault.grantRole(TAKER_ROLE, rebalancer);
         vm.stopPrank();
 
@@ -70,21 +88,18 @@ contract QueueAuditTest is Test {
     }
 
     function test_instantDeposit_consecutiveUsers() public {
-        // Alice deposits 1000
         vm.prank(alice);
         uint256 reqIdAlice = vault.requestDeposit(1000e18, alice);
         assertEq(reqIdAlice, 0);
         assertEq(vault.balanceOf(alice), 1000e18);
         assertEq(vault.depositHead(), 1, "depositHead advanced to 1");
 
-        // Bob deposits 500
         vm.prank(bob);
         uint256 reqIdBob = vault.requestDeposit(500e18, bob);
         assertEq(reqIdBob, 1);
         assertEq(vault.balanceOf(bob), 500e18, "Bob instantly filled!");
         assertEq(vault.depositHead(), 2, "depositHead advanced to 2");
 
-        // Charlie deposits 250
         vm.prank(charlie);
         uint256 reqIdCharlie = vault.requestDeposit(250e18, charlie);
         assertEq(reqIdCharlie, 2);
@@ -93,7 +108,6 @@ contract QueueAuditTest is Test {
     }
 
     function test_instantDeposit_afterPriorRequestCancelled() public {
-        // Cap capacity so deposits don't fill instantly
         vm.prank(admin);
         vault.setCapacity(0);
 
@@ -102,17 +116,13 @@ contract QueueAuditTest is Test {
         assertEq(reqIdAlice, 0);
         assertEq(vault.depositHead(), 0);
 
-        // Alice cancels her deposit
         vm.prank(alice);
         vault.cancelDepositRequest(reqIdAlice, alice);
-        // depositHead should have advanced past slot 0
         assertEq(vault.depositHead(), 1);
 
-        // Now open capacity
         vm.prank(admin);
         vault.setCapacity(1_000_000e18);
 
-        // Bob deposits - Bob should be instantly filled because nobody is queued ahead!
         vm.prank(bob);
         uint256 reqIdBob = vault.requestDeposit(500e18, bob);
         assertEq(reqIdBob, 1);
@@ -121,7 +131,6 @@ contract QueueAuditTest is Test {
     }
 
     function test_depositQueue_batchProcessingAndPartialFill() public {
-        // Set capacity to 0
         vm.prank(admin);
         vault.setCapacity(0);
 
@@ -132,36 +141,25 @@ contract QueueAuditTest is Test {
         vm.prank(charlie);
         vault.requestDeposit(500e18, charlie);
 
-        // Now open capacity for 1250 (fills Alice: 1000, partially fills Bob: 250)
         vm.prank(admin);
         vault.setCapacity(1250e18);
 
-        // Rebalancer processes with maxRequests = 10
         vm.prank(rebalancer);
         vault.processDepositQueue(type(uint256).max, 10);
 
-        // Alice fully filled
         assertEq(vault.balanceOf(alice), 1000e18);
-        // Bob partially filled with 250
         assertEq(vault.balanceOf(bob), 250e18);
-        // Charlie unfilled
         assertEq(vault.balanceOf(charlie), 0);
-        // depositHead stays at Bob (index 1)
         assertEq(vault.depositHead(), 1);
 
-        // Now add more capacity (1000 more)
         vm.prank(admin);
         vault.setCapacity(2250e18);
 
-        // Rebalancer processes again
         vm.prank(rebalancer);
         vault.processDepositQueue(type(uint256).max, 10);
 
-        // Bob gets his remaining 250 -> total 500
         assertEq(vault.balanceOf(bob), 500e18);
-        // Charlie gets his 500
         assertEq(vault.balanceOf(charlie), 500e18);
-        // depositHead moves to 3
         assertEq(vault.depositHead(), 3);
         assertEq(vault.pendingDepositSavingsShares(), 0);
     }
@@ -173,7 +171,6 @@ contract QueueAuditTest is Test {
         vm.prank(alice);
         uint256 reqId = vault.requestDeposit(1000e18, alice);
 
-        // Alice cancels
         vm.prank(alice);
         uint256 cancelReqId = vault.cancelDepositRequest(reqId, alice);
         assertEq(cancelReqId, 0);
@@ -181,7 +178,6 @@ contract QueueAuditTest is Test {
         assertEq(vault.pendingDepositSavingsShares(), 0);
         assertEq(vault.pendingCancelledDepositSavingsShares(), 1000e18);
 
-        // Check refund
         uint256 aliceBalBefore = asset.balanceOf(alice);
         vm.prank(rebalancer);
         vault.processCancelledDepositQueue(type(uint256).max, 10);
@@ -192,31 +188,62 @@ contract QueueAuditTest is Test {
         assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
     }
 
+    function test_processCancelledDepositQueue_respectsMaxRedeem() public {
+        // Alice deposits 1000 while capacity is 0
+        vm.prank(admin);
+        vault.setCapacity(0);
+
+        vm.prank(alice);
+        uint256 reqId = vault.requestDeposit(1000e18, alice);
+
+        vm.prank(alice);
+        vault.cancelDepositRequest(reqId, alice);
+
+        // Savings has maxRedeem limited to 400
+        savings.setMaxRedeemLimit(400e18);
+
+        // Rebalancer processes cancelled queue
+        uint256 balBefore = asset.balanceOf(alice);
+        vm.prank(rebalancer);
+        vault.processCancelledDepositQueue(type(uint256).max, 10);
+
+        // Alice receives only 400 (partial cancellation fill)
+        uint256 balAfter = asset.balanceOf(alice);
+        assertEq(balAfter - balBefore, 400e18);
+        // cancelledDepositHead remains 0 because request is partially filled
+        assertEq(vault.cancelledDepositHead(), 0);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 600e18);
+
+        // Savings liquidity frees up: maxRedeem restored to 1000
+        savings.setMaxRedeemLimit(1000e18);
+
+        vm.prank(rebalancer);
+        vault.processCancelledDepositQueue(type(uint256).max, 10);
+
+        // Alice receives remaining 600
+        assertEq(asset.balanceOf(alice) - balBefore, 1000e18);
+        assertEq(vault.cancelledDepositHead(), 1);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
+    }
+
     function test_redeemQueue_partialFillAndCancel() public {
-        // Alice deposits 10_000
         vm.prank(alice);
         vault.requestDeposit(10_000e18, alice);
         assertEq(vault.balanceOf(alice), 10_000e18);
 
-        // Alice requests redeem of 1000 shares
         vm.prank(alice);
         uint256 reqId = vault.requestRedeem(1000e18, alice);
         assertEq(reqId, 0);
 
-        // Rebalancer takes 9_500 savings shares, leaving 500
         vm.prank(rebalancer);
         vault.take(9_500e18);
 
-        // Rebalancer processes redeem queue
         vm.prank(rebalancer);
         vault.processRedeemQueue(type(uint256).max, 1);
 
-        // Alice gets 500 assets
         assertEq(asset.balanceOf(alice), 90_500e18);
-        // Partial fill stays at redeemHead = 0
         assertEq(vault.redeemHead(), 0);
 
-        // Alice cancels the remaining 500 shares
         uint256 aliceSharesBefore = vault.balanceOf(alice);
         vm.prank(alice);
         vault.cancelRedeemRequest(reqId, alice);
@@ -225,5 +252,85 @@ contract QueueAuditTest is Test {
         assertEq(aliceSharesAfter - aliceSharesBefore, 500e18);
         assertEq(vault.redeemHead(), 1, "redeemHead advanced after cancel");
         assertEq(vault.pendingRedeemShares(), 0);
+    }
+
+    function test_updateRecipient_authorizationEnforced() public {
+        vm.prank(admin);
+        vault.setCapacity(0);
+
+        vm.prank(alice);
+        uint256 depReqId = vault.requestDeposit(1000e18, alice);
+
+        // Attacker attempts to hijack recipient
+        vm.prank(attacker);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vault.updateDepositRecipient(depReqId, attacker);
+
+        // Alice successfully updates recipient to Bob
+        vm.prank(alice);
+        vault.updateDepositRecipient(depReqId, bob);
+
+        // Non-owner (even guardian) cannot update recipient - owner only
+        vm.prank(guardian);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vault.updateDepositRecipient(depReqId, charlie);
+
+        // Cancel deposit and test updateCancelledDepositRecipient
+        vm.prank(alice);
+        uint256 cancelReqId = vault.cancelDepositRequest(depReqId, alice);
+
+        vm.prank(attacker);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vault.updateCancelledDepositRecipient(cancelReqId, attacker);
+
+        vm.prank(alice);
+        vault.updateCancelledDepositRecipient(cancelReqId, david);
+
+        // Redeem queue recipient update
+        vm.prank(admin);
+        vault.setCapacity(100_000e18);
+
+        vm.prank(alice);
+        vault.requestDeposit(1000e18, alice);
+
+        vm.prank(alice);
+        uint256 redReqId = vault.requestRedeem(500e18, alice);
+
+        vm.prank(attacker);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vault.updateRedeemRecipient(redReqId, attacker);
+
+        vm.prank(alice);
+        vault.updateRedeemRecipient(redReqId, bob);
+    }
+
+    function test_realizeGain_and_realizeLoss() public {
+        vm.prank(alice);
+        vault.requestDeposit(10_000e18, alice);
+
+        uint256 assetsBefore = vault.totalAssets();
+        uint192 chiBefore = vault.chi();
+
+        // Admin realizes gain of 1000
+        vm.prank(admin);
+        vault.realizeGain(1000e18);
+
+        assertGt(vault.chi(), chiBefore);
+        assertGt(vault.totalAssets(), assetsBefore);
+
+        // Risk manager realizes loss while paused
+        vm.prank(guardian);
+        vault.pause();
+
+        uint192 chiAfterGain = vault.chi();
+        vm.prank(riskManager);
+        vault.realizeLoss(500e18);
+
+        assertLt(vault.chi(), chiAfterGain);
+
+        // Unpause by admin
+        vm.prank(admin);
+        vault.unpause();
+        assertFalse(vault.paused());
     }
 }
