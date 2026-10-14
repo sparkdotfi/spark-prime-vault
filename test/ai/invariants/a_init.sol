@@ -8,9 +8,8 @@ import { SparkPrimeVault } from "../../../src/SparkPrimeVault.sol";
 
 import { MockUSDC } from "../LocalTestBase.t.sol";
 
-// Handler base for the spPRIME invariant campaign (round 3, `refactor/more-simplifying` @ ff828d2).
-// Holds
-// the actors (read from the roles granted by `LocalTestBase`), N users, and the ghost bookkeeping
+// Handler base for the spPRIME invariant campaign (round 4, `fix/update-guardian-transfer` @ bf93b0d).
+// Holds the actors (read from the roles granted by `LocalTestBase`), N users, and the ghost bookkeeping
 // every invariant reads.
 //
 // Conventions shared by every handler flow:
@@ -90,7 +89,12 @@ contract Init is Test {
     mapping (address user => uint256) public ghostTransferIn;
     mapping (address user => uint256) public ghostTransferOut;
     mapping (address user => uint256) public ghostEscrowed;    // requestRedeem, fee included
-    mapping (address user => uint256) public ghostRefunded;    // cancelRedeemRequest
+
+    // Invariant U: the vault's own share balance (redeem escrow) only ever falls inside
+    // processPendingRedeems. The `counted` modifier compares the balance around every handler call.
+    bool    public escrowFellOutsideRedeemFill;
+    string  public escrowFellIn;
+    uint256 public escrowDecreases;        // processPendingRedeems calls that lowered the escrow
 
     // Capacity / chi / fills
     bool    public mintedAboveCapacity;    // invariant F
@@ -131,6 +135,12 @@ contract Init is Test {
     uint256 public recipientUpdateStrangerAttempts;  // deliberate non-owner attempts
     uint256 public recipientUpdateStrangerReverts;   // ... that reverted with exactly not-authorized
     string  public lastStrangerUpdateRevert;
+
+    // Guardian deposit cancels to a non-owner recipient (must revert `invalid-recipient`, bf93b0d);
+    // asserted inline by the cancel handler, reported in afterInvariant().
+    uint256 public guardianCancelProbes;
+    uint256 public guardianCancelProbeReverts;
+    string  public lastGuardianCancelProbe;
 
     // Revert observations (the handler wraps calls the contract itself may make revert)
     uint256 public redeemProcessReverts;       // "SparkVault/insufficient-balance"
@@ -178,8 +188,23 @@ contract Init is Test {
     modifier counted(string memory name_) {
         if (calls[name_] == 0) callNames.push(name_);
         calls[name_]++;
+        uint256 escrowBefore = vault.balanceOf(address(vault));
         _;
         _chiCheck();
+        _escrowCheck(name_, escrowBefore);
+    }
+
+    // Invariant U bookkeeping: `balanceOf(vault)` may only decrease inside processPendingRedeems
+    // (requestRedeem moves `shares` in and burns `fee <= shares` out of it, a net increase).
+    function _escrowCheck(string memory name_, uint256 escrowBefore) internal {
+        uint256 escrowAfter = vault.balanceOf(address(vault));
+        if (escrowAfter >= escrowBefore) return;
+        if (keccak256(bytes(name_)) == keccak256("processPendingRedeems")) {
+            escrowDecreases++;
+            return;
+        }
+        escrowFellOutsideRedeemFill = true;
+        escrowFellIn                = name_;
     }
 
     // No handler moves time except `warp`, so nowChi() may only change inside the warp (up),

@@ -1,5 +1,120 @@
 # spPRIME invariant campaign report
 
+## Round 4 (bf93b0d)
+
+Branch `campaign-v4/invariants`, files `test/ai/invariants/{a_init,b_flows_user,c_flows_admin}.sol`,
+`test/ai/invariants/d_invariants.t.sol`. Target: upstream `src/SparkPrimeVault.sol` from
+`fix/update-guardian-transfer` @ `bf93b0d` (`cancelRedeemRequest` removed; guardian
+`requestDepositCancellation` requires `recipient_ == owner`; planner entry points
+`processPendingDeposits` / `processPendingRedeems` / `processPendingDepositCancellations`; queue
+reads via `getPending*Requests(start, end)`; heads `firstPending*Id`). Harness:
+`test/ai/LocalTestBase.t.sol` (real spUSDC code, 6-decimal mock USDC, ugly starting indexes
+chi_s = 1.0476e27, chi_p = 1.0097e27).
+
+Final run: `FOUNDRY_INVARIANT_RUNS=100 FOUNDRY_INVARIANT_DEPTH=500 forge test --match-path
+'test/ai/invariants/*.t.sol' -vv` (with the `--skip` list for the review files that do not compile
+against bf93b0d) -> **23 passed, 0 failed** (21 invariants x 100 runs x 500 calls = 50,000 handler
+calls per invariant, 0 handler reverts, plus 2 unit proofs).
+
+### (a) Violations and findings
+
+No invariant A..U was violated in any run. No new finding.
+
+- `cancelRedeemRequest` is gone (`src/SparkPrimeVault.sol`: no such function; the
+  `CancelRedeemRequest` event at `:101` is now dead). The handler and J's refund term are removed;
+  escrowed shares can only leave the vault through `_processPendingRedeems` (`:905`). New
+  `invariant_U`: the vault's own share balance never decreased in any handler call other than
+  `processPendingRedeems` (127 such decreases in the 21 sampled last-runs, 0 elsewhere).
+  `requestRedeem` (`:461`-`:466`) moves `shares` in and burns `fee <= shares` out of the escrow,
+  a net increase, so it never trips U.
+- Guardian deposit cancels (`src/SparkPrimeVault.sol:422`-`:425`): the handler now cancels as the
+  guardian with `recipient_ == owner` in 1 of 3 cancels and, right before each, probes the same
+  cancel with a non-owner recipient: 29 of 29 probes reverted with exactly
+  `SparkPrimeVault/invalid-recipient` (asserted inline in the handler, counts
+  `guardianCancelProbes` / `guardianCancelProbeReverts`). The cancelled entry carries the owner
+  as recipient and the refund (`processPendingDepositCancellations`) pays the owner.
+- N-1 (round 1, `processPendingRedeems` reverts `SparkVault/insufficient-balance` when the vault's
+  spUSDC balance binds and the per-entry ceil burns add up) is **still present** at
+  `src/SparkPrimeVault.sol:886` / `:909`. `test_BUG_processPendingRedeemsRevertsOnCeilBurnWhenBalanceBinds`
+  unchanged and passing; the random walk did not hit it (`redeemProcessReverts` 0).
+- N-2 (round 2) stays fixed: `_processPendingDepositCancellations` budgets by
+  `spUSDC.maxRedeem(vault)` (`:848`), 0 reverts in 50,000 calls (`invariant_P`),
+  `test_processPendingDepositCancellationsPaysUpToSpUsdcLiquidity` passing.
+- `update*Recipient` (`:483`, `:494`, `:508`) owner-only: 25 of 25 stranger attempts reverted
+  `SparkPrimeVault/not-authorized` (`invariant_S`); 119 owner updates moved only the recipient
+  field (`invariant_R`).
+- `realizeGain` (`:293`) 371 calls and `realizeLoss` (`:365`) 125 calls in the sampled last-runs,
+  `totalAssets()` moved by exactly the amount within 1 wei every time (`invariant_T`,
+  `maxGainLossError` 1 in every run).
+
+### (b) Invariants that held (100 runs x depth 500, 50,000 calls each, 0 reverts)
+
+| Name | Claim |
+|---|---|
+| `invariant_A_sumOfBalancesEqualsTotalSupply` | sum of balances over 6 users + vault escrow == totalSupply |
+| `invariant_B_vaultBalanceEqualsPendingRedeemShares` | balanceOf(vault) == pendingRedeemShares |
+| `invariant_C_pendingDepositEqualsSumOfOpenDepositEntries` | pendingDepositSavingsShares == sum of open deposit entries |
+| `invariant_D_pendingRedeemEqualsSumOfOpenRedeemEntries` | pendingRedeemShares == sum of open redeem entries |
+| `invariant_E_headBookkeeping` | every entry strictly before firstPendingDepositId / firstPendingDepositCancellationId / firstPendingRedeemId has shares == 0; heads <= lengths |
+| `invariant_F_totalSupplyNeverExceedsCapacityViaMint` | no mint ever pushed totalSupply above maxCapacity as set at mint time |
+| `invariant_G_chiMonotonicAndDripConsistent` | nowChi() only changes inside warp (up), realizeGain (up) and realizeLoss (down); nowChi() == the handler's last observation, >= stored chi, > 0; drip() == nowChi(), chi/rho updated |
+| `invariant_H_solvencyWhenSpUsdcRateGePrimeRate` | while spUSDC VSR >= spPRIME VSR always held and the taker holds nothing: value(held spUSDC) - value(open deposit entries) - value(open cancelled entries) + epsilon >= totalAssets() - deficit ledger (ledger as in round 3) |
+| `invariant_I_usersNeverExtractMoreThanDepositsPlusYield` | sum of users' USDC <= USDC deposited + USDC minted into spUSDC + taker top-ups, and == USDC paid by redeem fills + cancelled-deposit refunds |
+| `invariant_J_balanceProvenance` | balanceOf(user) == minted (attributed to the entry recipient at fill time) + transfers in - transfers out - escrowed (no refund term: redeems cannot be cancelled) |
+| `invariant_K_backingExistsSomewhere` | USDC in spUSDC + spUSDC taker + users + vault + spPRIME taker == USDC ever minted; vault holds 0 USDC |
+| `invariant_L_availableCapacityFormula` | availableCapacity() == max(0, maxCapacity - totalSupply) |
+| `invariant_M_noMintOfZeroSharesExceptDust` | zero-share fills counted (F-4), reported in afterInvariant() |
+| `invariant_N_spUsdcSharesHeldByVaultAndTaker` | spUSDC totalSupply == vault + taker balances; taker balance == handler ledger |
+| `invariant_O_processPendingRedeemsRevertsOnlyOnCeilBurn` | the only revert reason ever seen from processPendingRedeems is `SparkVault/insufficient-balance` |
+| `invariant_P_processPendingDepositCancellationsNeverReverts` | processPendingDepositCancellations never reverted (any reason is counted and kept) |
+| `invariant_Q_pendingCancelledEqualsSumOfOpenCancelledEntries` | pendingCancelledDepositSavingsShares == sum of open cancelled-deposit entries |
+| `invariant_R_recipientUpdatesNeverChangeTotals` | an owner recipient update leaves totals, pendings, heads, chi/rho, every share and USDC balance, the vault's spUSDC and every entry's owner/shares byte-identical (keccak digest before == after) |
+| `invariant_S_recipientUpdateByNonOwnerAlwaysReverts` | every recipient update attempted by a non-owner on an open entry reverted with exactly `SparkPrimeVault/not-authorized` (attempts == such reverts) |
+| `invariant_T_gainAndLossAccounting` | after every realizeGain / realizeLoss, totalAssets() == before +/- amount within 1 wei (running max error <= 1, out-of-bound count 0) |
+| `invariant_U_redeemEscrowOnlyLeavesThroughFills` | balanceOf(vault) never decreased across any handler call other than processPendingRedeems (checked in the `counted` modifier around every call) |
+
+Handler coverage (foundry selector metrics, `invariant_A`, 100 runs x 500 calls, 0 reverts,
+0 discards): drainSpUsdcLiquidity 2002, pause 1943, processPendingDepositCancellations 2012,
+processPendingDeposits 1953, processPendingRedeems 1933, realizeGain 2019, realizeLoss 2013,
+requestDeposit 2031, requestDepositCancellation 2035, requestDepositWithReferral 1954,
+requestRedeem 2013, returnSpUsdcLiquidity 1997, returnToVault 1963, setCapacity 2018,
+setMinDeposit 1970, setMinRedeem 2010, setPrimeVsr 2013, setRedeemFeeRate 2027, setSpUsdcVsr 2057,
+take 2016, transfer 2044, transferFrom 2025, unpause 2006, updateRecipient 1940, warp 2006.
+
+Ghost counters summed over the 21 sampled last-runs (one 500-call run per invariant test):
+depositQueueLength 647, cancelledQueueLength 90, redeemQueueLength 246, depositFills 457,
+cancelledFills 122, redeemFills 190, escrowDecreases 127 (all inside processPendingRedeems),
+zeroShareFills 3, ghostDepositEntries 67, ghostRedeemEntries 52, recipientUpdates 119,
+strangerUpdateAttempts 25 (all 25 reverted `not-authorized`), guardianCancelProbes 29 (all 29
+reverted `invalid-recipient`), lossRealizations 125 (realizedLossUsdc 1.60e16),
+gainRealizations 371 (realizedGainUsdc 5.99e16), maxGainLossError 1 in every run,
+redeemProcessReverts 0, cancelProcessReverts 0, usersRedeemedUsdc 3.35e16,
+usersRefundedUsdc 2.46e16, rateOrderBroken true in 19 of 21.
+
+Handler changes this round: `cancelRedeemRequest` handler and `ghostRefunded` removed.
+`requestDepositCancellation` passes the owner as recipient whenever it pranks the guardian and
+first probes the guardian cancel with a non-owner recipient (must revert `invalid-recipient`).
+The `counted` modifier snapshots `balanceOf(vault)` around every handler call and flags any
+decrease outside `processPendingRedeems` (invariant U). Everything else as round 3.
+
+### (c) Unsettled
+
+- H is only checked while the taker holds nothing and the rate order never broke; the random walk
+  breaks the order in most runs (19 of 21 sampled), so H's effective coverage is the prefix of
+  each run before the first order break.
+- The deficit ledger is an upper bound (gains are notional, no backing arrives in the harness), so
+  H does not prove the deficit equals the gains exactly.
+- `realizeGain` accepts any `gain_ > 0`; the handler keeps chi below 1e30. Overflow of
+  `(totalAssets + gain) * RAY` or chi past `type(uint192).max` is not exercised.
+- N-1 with large, non-uniform entries was not reproduced in the random walk.
+- With no redeem cancel, shares queued for redeem behind illiquid spUSDC stay escrowed until
+  liquidity returns; the guardian has no lever on the redeem queue. Observed, by design.
+- `afterInvariant()` logs are printed once per invariant test (last run only), so ghost counters
+  are sampled, not totals; the selector table is the exact coverage.
+- Donations of spPRIME to the vault (I-6) are excluded by design.
+
+---
+
 ## Round 3 (ff828d2)
 
 Branch `campaign-v3/invariants`, files `test/invariants/{a_init,b_flows_user,c_flows_admin}.sol`,

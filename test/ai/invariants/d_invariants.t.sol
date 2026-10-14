@@ -5,10 +5,10 @@ import "./c_flows_admin.sol";
 
 import { LocalTestBase } from "../LocalTestBase.t.sol";
 
-// Invariant campaign (round 3, ff828d2) for `SparkPrimeVault` over the local harness (real spUSDC code, 6-decimal
-// mock USDC). Run with:
+// Invariant campaign (round 4, bf93b0d) for `SparkPrimeVault` over the local harness (real spUSDC
+// code, 6-decimal mock USDC). Run with:
 //   FOUNDRY_INVARIANT_RUNS=100 FOUNDRY_INVARIANT_DEPTH=500 \
-//     forge test --match-path 'test/invariants/*.t.sol' -vv
+//     forge test --match-path 'test/ai/invariants/*.t.sol' -vv
 contract SparkPrimeVaultInvariantTest is LocalTestBase {
 
     FlowsAdmin handler;
@@ -38,20 +38,28 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
         assertEq(vault.balanceOf(address(vault)), vault.pendingRedeemShares(), "B: escrow mismatch");
     }
 
-    // J. Each user's balance equals minted + transfers in - transfers out - escrowed + refunds.
-    //    Mints are attributed to whoever held the entry's `recipient` at fill time (anyone can
-    //    repoint it), redeem-cancel refunds to the `recipient_` argument.
+    // J. Each user's balance equals minted + transfers in - transfers out - escrowed. Mints are
+    //    attributed to whoever held the entry's `recipient` at fill time (the owner can repoint
+    //    it). Escrowed shares never come back since bf93b0d (no redeem cancel).
     function invariant_J_balanceProvenance() public view {
         for (uint256 i = 0; i < handler.N(); i++) {
             address user = handler.users(i);
             uint256 expected =
                 handler.ghostMinted(user)
                 + handler.ghostTransferIn(user)
-                + handler.ghostRefunded(user)
                 - handler.ghostTransferOut(user)
                 - handler.ghostEscrowed(user);
             assertEq(vault.balanceOf(user), expected, "J: balance provenance mismatch");
         }
+    }
+
+    // U. The redeem escrow (balanceOf(vault)) only leaves through fills: across every handler
+    //    call other than processPendingRedeems the vault's own balance never decreased.
+    function invariant_U_redeemEscrowOnlyLeavesThroughFills() public view {
+        assertFalse(
+            handler.escrowFellOutsideRedeemFill(),
+            string.concat("U: vault share balance fell in ", handler.escrowFellIn())
+        );
     }
 
     /**********************************************************************************************/
@@ -383,12 +391,15 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
         console.log("depositFills               ", handler.depositFills());
         console.log("cancelledFills             ", handler.cancelledFills());
         console.log("redeemFills                ", handler.redeemFills());
+        console.log("escrowDecreases (U)        ", handler.escrowDecreases());
         console.log("zeroShareFills (F-4)       ", handler.zeroShareFills());
         console.log("ghostDepositEntries (F-5)  ", handler.ghostDepositEntries());
         console.log("ghostRedeemEntries (F-5)   ", handler.ghostRedeemEntries());
         console.log("recipientUpdates           ", handler.recipientUpdates());
         console.log("strangerUpdateAttempts     ", handler.recipientUpdateStrangerAttempts());
         console.log("strangerUpdateReverts      ", handler.recipientUpdateStrangerReverts());
+        console.log("guardianCancelProbes       ", handler.guardianCancelProbes());
+        console.log("guardianCancelProbeReverts ", handler.guardianCancelProbeReverts());
         console.log("lossRealizations           ", handler.lossRealizations());
         console.log("realizedLossUsdc           ", handler.realizedLossUsdc());
         console.log("gainRealizations           ", handler.gainRealizations());
