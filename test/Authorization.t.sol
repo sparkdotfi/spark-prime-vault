@@ -308,7 +308,18 @@ contract TakeTests is AuthorizationTestBase {
         vault.take(1_000_000e6);
     }
 
-    // TODO: test_take_insufficientSharesBoundary
+    function test_take_insufficientSharesBoundary() external {
+        uint256 expectedSavingsShares = spUsdc.convertToShares(1_000_000e6);
+
+        _requestDeposit(user1, 1_000_000e6);  // Instant fill
+
+        vm.expectRevert("SparkPrimeVault/insufficient-shares");
+        vm.prank(taker);
+        vault.take(expectedSavingsShares + 1);
+
+        vm.prank(taker);
+        vault.take(expectedSavingsShares);
+    }
 
     // Success tests
 
@@ -493,9 +504,240 @@ contract SetRedeemFeeRateTests is AuthorizationTestBase {
 
 }
 
-// TODO: RealizeGainTests
+contract RealizeGainTests is AuthorizationTestBase {
 
-// TODO: RealizeLossTests
+    // Failure tests
+
+    function test_realizeGain_notAdmin() external {
+        vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
+        vm.prank(unauthorized);
+        vault.realizeGain(1);
+    }
+
+    function test_realizeGain_invalidGainBoundary() external {
+        _requestDeposit(user1, 1_000_000e6);  // Instant fill
+
+        vm.expectRevert("SparkPrimeVault/invalid-gain");
+        vm.prank(admin);
+        vault.realizeGain(0);
+
+        vm.prank(admin);
+        vault.realizeGain(1);
+    }
+
+    function test_realizeGain_noShares() external {
+        vm.expectRevert("SparkPrimeVault/no-shares");
+        vm.prank(admin);
+        vault.realizeGain(1);
+    }
+
+    // Success tests
+
+    function test_realizeGain() external {
+        _requestDeposit(user1, 1_000_000e6);  // Instant fill
+
+        uint256 shares = vault.balanceOf(user1);
+        uint256 assets = vault.totalAssets();
+
+        assertEq(shares, 1_000_000e6 - 1);  // Rounding
+        assertEq(assets, 1_000_000e6 - 1);  // Rounding
+
+        assertEq(uint256(vault.chi()),  RAY);
+        assertEq(vault.totalSupply(),   shares);
+        assertEq(vault.assetsOf(user1), assets);
+
+        uint256 expectedChi = ((assets + 100_000e6) * RAY) / shares;
+
+        assertEq(expectedChi, 1.100000000000100000000000100e27);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.GainRealized(uint192(expectedChi), 100_000e6);
+
+        vm.prank(admin);
+        vault.realizeGain(100_000e6);
+
+        assertEq(uint256(vault.chi()),  expectedChi);
+        assertEq(uint256(vault.rho()),  block.timestamp);
+        assertEq(vault.totalSupply(),   shares);
+        assertEq(vault.totalAssets(),   (shares * expectedChi) / RAY);
+        assertEq(vault.assetsOf(user1), (shares * expectedChi) / RAY);
+
+        assertApproxEqAbs(vault.totalAssets(), assets + 100_000e6, 1);
+    }
+
+    function test_realizeGain_dripsFirst() external {
+        _requestDeposit(user1, 1_000_000e6);  // Instant fill
+
+        uint256 startAssets = vault.totalAssets();
+
+        vm.prank(admin);
+        vault.setVSRBounds(ONE_PCT_VSR, FOUR_PCT_VSR);
+
+        vm.prank(setter);
+        vault.setVSR(FOUR_PCT_VSR);
+
+        skip(365 days);
+
+        uint256 nowChi        = vault.nowChi();
+        uint256 accruedAssets = vault.totalAssets();
+
+        assertEq(nowChi, 1.039999999999999999955174055e27);
+
+        uint256 expectedChi = ((accruedAssets + 100_000e6) * RAY) / vault.totalSupply();
+
+        assertEq(expectedChi, 1.139999999999139999999999139e27);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.Drip(uint192(nowChi), accruedAssets - startAssets);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.GainRealized(uint192(expectedChi), 100_000e6);
+
+        vm.prank(admin);
+        vault.realizeGain(100_000e6);
+
+        assertEq(uint256(vault.chi()), expectedChi);
+        assertEq(uint256(vault.rho()), block.timestamp);
+        assertEq(vault.totalAssets(),  (vault.totalSupply() * expectedChi) / RAY);
+
+        assertApproxEqAbs(vault.totalAssets(), accruedAssets + 100_000e6, 1);
+    }
+
+}
+
+contract RealizeLossTests is AuthorizationTestBase {
+
+    function _pause() internal {
+        vm.prank(guardian);
+        vault.pause();
+    }
+
+    // Failure tests
+
+    function test_realizeLoss_notRiskManager() external {
+        vm.expectRevert(_notAuthorized(unauthorized, RISK_MANAGER_ROLE));
+        vm.prank(unauthorized);
+        vault.realizeLoss(1);
+    }
+
+    function test_realizeLoss_notPaused() external {
+        _requestDeposit(user1, 1_000_000e6);  // Instant fill
+
+        vm.expectRevert("SparkPrimeVault/not-paused");
+        vm.prank(riskManager);
+        vault.realizeLoss(1);
+    }
+
+    function test_realizeLoss_zeroLoss() external {
+        _requestDeposit(user1, 1_000_000e6);  // Instant fill
+        _pause();
+
+        vm.expectRevert("SparkPrimeVault/invalid-loss");
+        vm.prank(riskManager);
+        vault.realizeLoss(0);
+
+        vm.prank(riskManager);
+        vault.realizeLoss(1);
+    }
+
+    function test_realizeLoss_lossTooHighBoundary() external {
+        _requestDeposit(user1, 1_000_000e6);  // Instant fill
+        _pause();
+
+        uint256 totalAssets = vault.totalAssets();
+
+        vm.expectRevert("SparkPrimeVault/invalid-loss");
+        vm.prank(riskManager);
+        vault.realizeLoss(totalAssets);
+
+        vm.prank(riskManager);
+        vault.realizeLoss(totalAssets - 1);
+    }
+
+    function test_realizeLoss_noShares() external {
+        _pause();
+
+        vm.expectRevert("SparkPrimeVault/invalid-loss");
+        vm.prank(riskManager);
+        vault.realizeLoss(1);
+    }
+
+    // Success tests
+
+    function test_realizeLoss() external {
+        _requestDeposit(user1, 1_000_000e6);  // Instant fill
+        _pause();
+
+        uint256 shares = vault.balanceOf(user1);
+        uint256 assets = vault.totalAssets();
+
+        assertEq(shares, 1_000_000e6 - 1);  // Rounding
+        assertEq(assets, 1_000_000e6 - 1);  // Rounding
+
+        assertEq(uint256(vault.chi()),  RAY);
+        assertEq(vault.totalSupply(),   shares);
+        assertEq(vault.assetsOf(user1), assets);
+
+        uint256 expectedChi = ((assets - 100_000e6) * RAY) / shares;
+
+        assertEq(expectedChi, 0.899999999999899999999999899e27);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.LossRealized(uint192(expectedChi), 100_000e6);
+
+        vm.prank(riskManager);
+        vault.realizeLoss(100_000e6);
+
+        assertEq(uint256(vault.chi()),  expectedChi);
+        assertEq(uint256(vault.rho()),  block.timestamp);
+        assertEq(vault.totalSupply(),   shares);
+        assertEq(vault.totalAssets(),   (shares * expectedChi) / RAY);
+        assertEq(vault.assetsOf(user1), (shares * expectedChi) / RAY);
+
+        assertApproxEqAbs(vault.totalAssets(), assets - 100_000e6, 1);
+    }
+
+    function test_realizeLoss_dripsFirst() external {
+        _requestDeposit(user1, 1_000_000e6);  // Instant fill
+
+        uint256 startAssets = vault.totalAssets();
+
+        vm.prank(admin);
+        vault.setVSRBounds(ONE_PCT_VSR, FOUR_PCT_VSR);
+
+        vm.prank(setter);
+        vault.setVSR(FOUR_PCT_VSR);
+
+        skip(365 days);
+
+        _pause();
+
+        uint256 nowChi        = vault.nowChi();
+        uint256 accruedAssets = vault.totalAssets();
+
+        assertEq(nowChi, 1.039999999999999999955174055e27);
+
+        uint256 expectedChi = ((accruedAssets - 100_000e6) * RAY) / vault.totalSupply();
+
+        assertEq(expectedChi, 0.939999999998939999999998939e27);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.Drip(uint192(nowChi), accruedAssets - startAssets);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.LossRealized(uint192(expectedChi), 100_000e6);
+
+        vm.prank(riskManager);
+        vault.realizeLoss(100_000e6);
+
+        assertEq(uint256(vault.chi()), expectedChi);
+        assertEq(uint256(vault.rho()), block.timestamp);
+        assertEq(vault.totalAssets(),  (vault.totalSupply() * expectedChi) / RAY);
+
+        assertApproxEqAbs(vault.totalAssets(), accruedAssets - 100_000e6, 1);
+    }
+
+}
 
 contract PauseTests is AuthorizationTestBase {
 
