@@ -13,7 +13,8 @@ contract SparkPrimeVaultTests is TestBase {
         spPRIME.grantRole(GUARDIAN_ROLE, guardian);
 
         spPRIME.setCapacity(VAULT_CAPACITY);
-        spPRIME.setMinimums(MINIMUM_DEPOSIT, MINIMUM_WITHDRAW);
+        spPRIME.setMinDeposit(MINIMUM_DEPOSIT);
+        spPRIME.setMinRedeem(MINIMUM_REDEEM);
         vm.stopPrank();
 
         // Deal USDC to user
@@ -71,18 +72,20 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         usdc.approve(address(spPRIME), 1_000_000e6);
 
         AssertVaultStateParams memory vaultState = AssertVaultStateParams({
-            totalSupply                  : 0,
-            totalAssets                  : 0,
-            availableCapacity            : VAULT_CAPACITY,
-            availableLiquidAssets        : 0,
-            unencumberedSparkVaultShares : 0,
-            chi                          : RAY,
-            rho                          : block.timestamp
+            totalSupply                          : 0,
+            totalAssets                          : 0,
+            availableCapacity                    : VAULT_CAPACITY,
+            availableLiquidAssets                : 0,
+            pendingDepositSavingsShares          : 0,
+            pendingCancelledDepositSavingsShares : 0,
+            pendingRedeemShares                  : 0,
+            chi                                  : RAY,
+            rho                                  : block.timestamp
         });
 
         AssertQueueStateParams memory depositQueueState = AssertQueueStateParams({
-            encumberedShares : 0,
-            head             : 0
+            pendingShares : 0,
+            head          : 0
         });
 
         AssertBalancesParams memory userBalances = AssertBalancesParams({
@@ -114,7 +117,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         emit ISparkVaultLike.Deposit(address(spPRIME), address(spPRIME), 1_000_000e6, expectedSavingsShares);
 
         vm.expectEmit(address(spPRIME));
-        emit SparkPrimeVault.DepositRequest(user, user, 0, 1_000_000e6);
+        emit SparkPrimeVault.DepositRequest(user, user, 0, 1_000_000e6, expectedSavingsShares);
 
         vm.expectEmit(address(spPRIME));
         emit SparkPrimeVault.Deposit(user, user, 1_000_000e6 - 1, 1_000_000e6 - 1); // Rounding
@@ -126,11 +129,11 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         assertEq(usdc.allowance(user, address(spPRIME)), 0);
 
-        vaultState.totalSupply                  = 1_000_000e6 - 1; // Rounding
-        vaultState.totalAssets                  = 1_000_000e6 - 1; // Rounding
-        vaultState.availableCapacity            = VAULT_CAPACITY - 1_000_000e6 + 1; // Rounding
-        vaultState.availableLiquidAssets        = 1_000_000e6 - 1; // Rounding
-        vaultState.unencumberedSparkVaultShares = expectedSavingsShares;
+        vaultState.totalSupply                 = 1_000_000e6 - 1; // Rounding
+        vaultState.totalAssets                 = 1_000_000e6 - 1; // Rounding
+        vaultState.availableCapacity           = VAULT_CAPACITY - 1_000_000e6 + 1; // Rounding
+        vaultState.availableLiquidAssets       = 1_000_000e6 - 1; // Rounding
+        vaultState.pendingDepositSavingsShares = expectedSavingsShares;
 
         depositQueueState.head = 1;
 
@@ -155,18 +158,20 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         usdc.approve(address(spPRIME), 1_000_000e6);
 
         AssertVaultStateParams memory vaultState = AssertVaultStateParams({
-            totalSupply                  : 0,
-            totalAssets                  : 0,
-            availableCapacity            : VAULT_CAPACITY,
-            availableLiquidAssets        : 0,
-            unencumberedSparkVaultShares : 0,
-            chi                          : RAY,
-            rho                          : deployTimestamp
+            totalSupply                          : 0,
+            totalAssets                          : 0,
+            availableCapacity                    : VAULT_CAPACITY,
+            availableLiquidAssets                : 0,
+            pendingDepositSavingsShares          : 0,
+            pendingCancelledDepositSavingsShares : 0,
+            pendingRedeemShares                  : 0,
+            chi                                  : RAY,
+            rho                                  : deployTimestamp
         });
 
         AssertQueueStateParams memory depositQueueState = AssertQueueStateParams({
-            encumberedShares : 0,
-            head             : 0
+            pendingShares : 0,
+            head          : 0
         });
 
         AssertBalancesParams memory userBalances = AssertBalancesParams({
@@ -208,7 +213,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         emit ISparkVaultLike.Deposit(address(spPRIME), address(spPRIME), 1_000_000e6, expectedSavingsShares);
 
         vm.expectEmit(address(spPRIME));
-        emit SparkPrimeVault.DepositRequest(user, user, 0, 1_000_000e6);
+        emit SparkPrimeVault.DepositRequest(user, user, 0, 1_000_000e6, expectedSavingsShares);
 
         vm.expectEmit(address(spPRIME));
         emit SparkPrimeVault.Deposit(user, user, expectedAssets, expectedShares);
@@ -220,13 +225,13 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         assertEq(usdc.allowance(user, address(spPRIME)), 0);
 
-        vaultState.totalSupply                  = expectedShares;
-        vaultState.totalAssets                  = expectedShares * expectedChi / RAY;
-        vaultState.availableCapacity            = VAULT_CAPACITY - expectedShares;
-        vaultState.availableLiquidAssets        = expectedAssets;
-        vaultState.unencumberedSparkVaultShares = expectedSavingsShares;
-        vaultState.chi                          = expectedChi;
-        vaultState.rho                          = block.timestamp;
+        vaultState.totalSupply                 = expectedShares;
+        vaultState.totalAssets                 = expectedShares * expectedChi / RAY;
+        vaultState.availableCapacity           = VAULT_CAPACITY - expectedShares;
+        vaultState.availableLiquidAssets       = expectedAssets;
+        vaultState.pendingDepositSavingsShares = expectedSavingsShares;
+        vaultState.chi                         = expectedChi;
+        vaultState.rho                         = block.timestamp;
 
         depositQueueState.head = 1;
 
@@ -251,18 +256,20 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         usdc.approve(address(spPRIME), 1_000_000e6);
 
         AssertVaultStateParams memory vaultState = AssertVaultStateParams({
-            totalSupply                  : 0,
-            totalAssets                  : 0,
-            availableCapacity            : VAULT_CAPACITY,
-            availableLiquidAssets        : 0,
-            unencumberedSparkVaultShares : 0,
-            chi                          : RAY,
-            rho                          : deployTimestamp
+            totalSupply                          : 0,
+            totalAssets                          : 0,
+            availableCapacity                    : VAULT_CAPACITY,
+            availableLiquidAssets                : 0,
+            pendingDepositSavingsShares          : 0,
+            pendingCancelledDepositSavingsShares : 0,
+            pendingRedeemShares                  : 0,
+            chi                                  : RAY,
+            rho                                  : deployTimestamp
         });
 
         AssertQueueStateParams memory depositQueueState = AssertQueueStateParams({
-            encumberedShares : 0,
-            head             : 0
+            pendingShares : 0,
+            head          : 0
         });
 
         AssertBalancesParams memory userBalances = AssertBalancesParams({
@@ -308,7 +315,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         emit ISparkVaultLike.Deposit(address(spPRIME), address(spPRIME), 500_000e6, expectedSavingsShares);
 
         vm.expectEmit(address(spPRIME));
-        emit SparkPrimeVault.DepositRequest(user, user, 0, 500_000e6);
+        emit SparkPrimeVault.DepositRequest(user, user, 0, 500_000e6, expectedSavingsShares);
 
         vm.expectEmit(address(spPRIME));
         emit SparkPrimeVault.Deposit(user, user, expectedAssets, expectedShares);
@@ -320,13 +327,13 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         assertEq(usdc.allowance(user, address(spPRIME)), 500_000e6);
 
-        vaultState.totalSupply                  = expectedShares;
-        vaultState.totalAssets                  = expectedShares * expectedChi / RAY;
-        vaultState.availableCapacity            = VAULT_CAPACITY - expectedShares;
-        vaultState.availableLiquidAssets        = expectedAssets;
-        vaultState.unencumberedSparkVaultShares = expectedSavingsShares;
-        vaultState.chi                          = expectedChi;
-        vaultState.rho                          = block.timestamp;
+        vaultState.totalSupply                 = expectedShares;
+        vaultState.totalAssets                 = expectedShares * expectedChi / RAY;
+        vaultState.availableCapacity           = VAULT_CAPACITY - expectedShares;
+        vaultState.availableLiquidAssets       = expectedAssets;
+        vaultState.pendingDepositSavingsShares = expectedSavingsShares;
+        vaultState.chi                         = expectedChi;
+        vaultState.rho                         = block.timestamp;
 
         depositQueueState.head = 1;
 
@@ -347,7 +354,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         emit ISparkVaultLike.Deposit(address(spPRIME), address(spPRIME), 500_000e6, expectedSavingsShares);
 
         vm.expectEmit(address(spPRIME));
-        emit SparkPrimeVault.DepositRequest(user, user, 1, 500_000e6);
+        emit SparkPrimeVault.DepositRequest(user, user, 1, 500_000e6, expectedSavingsShares);
 
         vm.expectEmit(address(spPRIME));
         emit SparkPrimeVault.Deposit(user, user, expectedAssets, expectedShares);
@@ -357,11 +364,11 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         assertEq(requestId, 1);
 
-        vaultState.totalSupply                  = 2 * expectedShares;
-        vaultState.totalAssets                  = 2 * expectedShares * expectedChi / RAY;
-        vaultState.availableCapacity            = VAULT_CAPACITY - 2 * expectedShares;
-        vaultState.availableLiquidAssets        = 2 * expectedAssets;
-        vaultState.unencumberedSparkVaultShares = 2 * expectedSavingsShares;
+        vaultState.totalSupply                 = 2 * expectedShares;
+        vaultState.totalAssets                 = 2 * expectedShares * expectedChi / RAY;
+        vaultState.availableCapacity           = VAULT_CAPACITY - 2 * expectedShares;
+        vaultState.availableLiquidAssets       = 2 * expectedAssets;
+        vaultState.pendingDepositSavingsShares = 2 * expectedSavingsShares;
 
         depositQueueState.head = 2;
 
@@ -407,28 +414,30 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         // Cancel request 0, which leaves no shares encumbered by deposits
         vm.expectEmit(address(spPRIME));
-        emit SparkPrimeVault.CancelDepositRequest(0, expectedAssets);
+        emit SparkPrimeVault.DepositCancellationRequest(0, 0, user);
 
         vm.prank(user);
-        spPRIME.cancelDepositRequest(0, user);
+        spPRIME.requestDepositCancellation(0, user);
 
         vm.prank(admin);
         spPRIME.setCapacity(VAULT_CAPACITY);
 
         // Request 0 already updated chi in this block
         AssertVaultStateParams memory vaultState = AssertVaultStateParams({
-            totalSupply                  : 0,
-            totalAssets                  : 0,
-            availableCapacity            : VAULT_CAPACITY,
-            availableLiquidAssets        : 0,
-            unencumberedSparkVaultShares : 0,
-            chi                          : expectedChi,
-            rho                          : block.timestamp
+            totalSupply                          : 0,
+            totalAssets                          : 0,
+            availableCapacity                    : VAULT_CAPACITY,
+            availableLiquidAssets                : 0,
+            pendingDepositSavingsShares          : 0,
+            pendingCancelledDepositSavingsShares : 0,
+            pendingRedeemShares                  : 0,
+            chi                                  : expectedChi,
+            rho                                  : block.timestamp
         });
 
         AssertQueueStateParams memory depositQueueState = AssertQueueStateParams({
-            encumberedShares : 0,
-            head             : 0
+            pendingShares : 0,
+            head          : 0
         });
 
         AssertBalancesParams memory userBalances = AssertBalancesParams({
@@ -457,7 +466,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         emit ISparkVaultLike.Deposit(address(spPRIME), address(spPRIME), 500_000e6, expectedSavingsShares);
 
         vm.expectEmit(address(spPRIME));
-        emit SparkPrimeVault.DepositRequest(user, user, 1, 500_000e6);
+        emit SparkPrimeVault.DepositRequest(user, user, 1, 500_000e6, expectedSavingsShares);
 
         vm.expectEmit(address(spPRIME));
         emit SparkPrimeVault.Deposit(user, user, expectedAssets, expectedShares);
@@ -470,11 +479,11 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         assertEq(usdc.allowance(user, address(spPRIME)), 0);
 
-        vaultState.totalSupply                  = expectedShares;
-        vaultState.totalAssets                  = expectedShares * expectedChi / RAY;
-        vaultState.availableCapacity            = VAULT_CAPACITY - expectedShares;
-        vaultState.availableLiquidAssets        = expectedAssets;
-        vaultState.unencumberedSparkVaultShares = expectedSavingsShares;
+        vaultState.totalSupply                 = expectedShares;
+        vaultState.totalAssets                 = expectedShares * expectedChi / RAY;
+        vaultState.availableCapacity           = VAULT_CAPACITY - expectedShares;
+        vaultState.availableLiquidAssets       = expectedAssets;
+        vaultState.pendingDepositSavingsShares = expectedSavingsShares;
 
         depositQueueState.head = 2;
 
@@ -499,18 +508,20 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         usdc.approve(address(spPRIME), 1_000_000e6);
 
         AssertVaultStateParams memory vaultState = AssertVaultStateParams({
-            totalSupply                  : 0,
-            totalAssets                  : 0,
-            availableCapacity            : 500_000e6,
-            availableLiquidAssets        : 0,
-            unencumberedSparkVaultShares : 0,
-            chi                          : RAY,
-            rho                          : block.timestamp
+            totalSupply                          : 0,
+            totalAssets                          : 0,
+            availableCapacity                    : 500_000e6,
+            availableLiquidAssets                : 0,
+            pendingDepositSavingsShares          : 0,
+            pendingCancelledDepositSavingsShares : 0,
+            pendingRedeemShares                  : 0,
+            chi                                  : RAY,
+            rho                                  : block.timestamp
         });
 
         AssertQueueStateParams memory depositQueueState = AssertQueueStateParams({
-            encumberedShares : 0,
-            head             : 0
+            pendingShares : 0,
+            head          : 0
         });
 
         AssertBalancesParams memory userBalances = AssertBalancesParams({
@@ -544,7 +555,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         emit ISparkVaultLike.Deposit(address(spPRIME), address(spPRIME), 1_000_000e6, expectedSavingsShares);
 
         vm.expectEmit(address(spPRIME));
-        emit SparkPrimeVault.DepositRequest(user, user, 0, 1_000_000e6);
+        emit SparkPrimeVault.DepositRequest(user, user, 0, 1_000_000e6, expectedSavingsShares);
 
         vm.expectEmit(address(spPRIME));
         emit SparkPrimeVault.Deposit(user, user, 500_000e6, 500_000e6);
@@ -554,14 +565,14 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         assertEq(requestId, 0);
 
-        vaultState.totalSupply                  = 500_000e6;
-        vaultState.totalAssets                  = 500_000e6;
-        vaultState.availableCapacity            = 0;
-        vaultState.availableLiquidAssets        = spUSDC.convertToAssets(filledSavingsShares);
-        vaultState.unencumberedSparkVaultShares = filledSavingsShares;
+        vaultState.totalSupply                 = 500_000e6;
+        vaultState.totalAssets                 = 500_000e6;
+        vaultState.availableCapacity           = 0;
+        vaultState.availableLiquidAssets       = spUSDC.convertToAssets(filledSavingsShares);
+        vaultState.pendingDepositSavingsShares = filledSavingsShares;
 
         // Partial fill, the request stays at the head with the rest of its spUSDC
-        depositQueueState.encumberedShares = queuedSavingsShares;
+        depositQueueState.pendingShares = queuedSavingsShares;
 
         userBalances.asset  = 0;
         userBalances.shares = 500_000e6;
@@ -587,18 +598,20 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         usdc.approve(address(spPRIME), 1_000_000e6);
 
         AssertVaultStateParams memory vaultState = AssertVaultStateParams({
-            totalSupply                  : 0,
-            totalAssets                  : 0,
-            availableCapacity            : 500_000e6,
-            availableLiquidAssets        : 0,
-            unencumberedSparkVaultShares : 0,
-            chi                          : RAY,
-            rho                          : deployTimestamp
+            totalSupply                          : 0,
+            totalAssets                          : 0,
+            availableCapacity                    : 500_000e6,
+            availableLiquidAssets                : 0,
+            pendingDepositSavingsShares          : 0,
+            pendingCancelledDepositSavingsShares : 0,
+            pendingRedeemShares                  : 0,
+            chi                                  : RAY,
+            rho                                  : deployTimestamp
         });
 
         AssertQueueStateParams memory depositQueueState = AssertQueueStateParams({
-            encumberedShares : 0,
-            head             : 0
+            pendingShares : 0,
+            head          : 0
         });
 
         AssertBalancesParams memory userBalances = AssertBalancesParams({
@@ -649,7 +662,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         emit ISparkVaultLike.Deposit(address(spPRIME), address(spPRIME), 1_000_000e6, expectedSavingsShares);
 
         vm.expectEmit(address(spPRIME));
-        emit SparkPrimeVault.DepositRequest(user, user, 0, 1_000_000e6);
+        emit SparkPrimeVault.DepositRequest(user, user, 0, 1_000_000e6, expectedSavingsShares);
 
         vm.expectEmit(address(spPRIME));
         emit SparkPrimeVault.Deposit(user, user, expectedAssets, expectedShares);
@@ -659,16 +672,16 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         assertEq(requestId, 0);
 
-        vaultState.totalSupply                  = expectedShares;
-        vaultState.totalAssets                  = expectedShares * expectedChi / RAY;
-        vaultState.availableCapacity            = 1;  // Rounding
-        vaultState.availableLiquidAssets        = 525_000e6;
-        vaultState.unencumberedSparkVaultShares = filledSavingsShares;
-        vaultState.chi                          = expectedChi;
-        vaultState.rho                          = block.timestamp;
+        vaultState.totalSupply                 = expectedShares;
+        vaultState.totalAssets                 = expectedShares * expectedChi / RAY;
+        vaultState.availableCapacity           = 1;  // Rounding
+        vaultState.availableLiquidAssets       = 525_000e6;
+        vaultState.pendingDepositSavingsShares = filledSavingsShares;
+        vaultState.chi                         = expectedChi;
+        vaultState.rho                         = block.timestamp;
 
         // Partial fill, the request stays at the head with the rest of its spUSDC
-        depositQueueState.encumberedShares = queuedSavingsShares;
+        depositQueueState.pendingShares = queuedSavingsShares;
 
         userBalances.asset  = 0;
         userBalances.shares = expectedShares;
@@ -698,18 +711,20 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         assertEq(expectedSavingsShares, 482_096.620802e6);
 
         AssertVaultStateParams memory vaultState = AssertVaultStateParams({
-            totalSupply                  : 500_000e6 - 1, // Rounding
-            totalAssets                  : 500_000e6 - 1, // Rounding
-            availableCapacity            : 1,             // Rounding
-            availableLiquidAssets        : 500_000e6 - 1, // Rounding
-            unencumberedSparkVaultShares : expectedSavingsShares,
-            chi                          : RAY,
-            rho                          : block.timestamp
+            totalSupply                          : 500_000e6 - 1, // Rounding
+            totalAssets                          : 500_000e6 - 1, // Rounding
+            availableCapacity                    : 1,             // Rounding
+            availableLiquidAssets                : 500_000e6 - 1, // Rounding
+            pendingDepositSavingsShares          : expectedSavingsShares,
+            pendingCancelledDepositSavingsShares : 0,
+            pendingRedeemShares                  : 0,
+            chi                                  : RAY,
+            rho                                  : block.timestamp
         });
 
         AssertQueueStateParams memory depositQueueState = AssertQueueStateParams({
-            encumberedShares : 0,
-            head             : 1
+            pendingShares : 0,
+            head          : 1
         });
 
         AssertBalancesParams memory userBalances = AssertBalancesParams({
@@ -732,7 +747,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         _assertBalances(vaultBalances);
 
         vm.expectEmit(address(spPRIME));
-        emit SparkPrimeVault.DepositRequest(user, user, 1, 500_000e6);
+        emit SparkPrimeVault.DepositRequest(user, user, 1, 500_000e6, expectedSavingsShares);
 
         // The 1 share of leftover capacity is filled from request 1
         vm.expectEmit(address(spPRIME));
@@ -744,13 +759,13 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         assertEq(requestId, 1);
 
         // 1 wei of value is worth less than one spUSDC share, so 1 share is taken (rounded up)
-        vaultState.totalSupply                  = 500_000e6;
-        vaultState.totalAssets                  = 500_000e6;
-        vaultState.availableCapacity            = 0;
-        vaultState.availableLiquidAssets        = spUSDC.convertToAssets(expectedSavingsShares + 1);
-        vaultState.unencumberedSparkVaultShares = expectedSavingsShares + 1;
+        vaultState.totalSupply                 = 500_000e6;
+        vaultState.totalAssets                 = 500_000e6;
+        vaultState.availableCapacity           = 0;
+        vaultState.availableLiquidAssets       = spUSDC.convertToAssets(expectedSavingsShares + 1);
+        vaultState.pendingDepositSavingsShares = expectedSavingsShares + 1;
 
-        depositQueueState.encumberedShares = expectedSavingsShares - 1;
+        depositQueueState.pendingShares = expectedSavingsShares - 1;
 
         userBalances.asset  = 0;
         userBalances.shares = 500_000e6;
@@ -776,18 +791,20 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         usdc.approve(address(spPRIME), 1_000_000e6);
 
         AssertVaultStateParams memory vaultState = AssertVaultStateParams({
-            totalSupply                  : 0,
-            totalAssets                  : 0,
-            availableCapacity            : 0,
-            availableLiquidAssets        : 0,
-            unencumberedSparkVaultShares : 0,
-            chi                          : RAY,
-            rho                          : deployTimestamp
+            totalSupply                          : 0,
+            totalAssets                          : 0,
+            availableCapacity                    : 0,
+            availableLiquidAssets                : 0,
+            pendingDepositSavingsShares          : 0,
+            pendingCancelledDepositSavingsShares : 0,
+            pendingRedeemShares                  : 0,
+            chi                                  : RAY,
+            rho                                  : deployTimestamp
         });
 
         AssertQueueStateParams memory depositQueueState = AssertQueueStateParams({
-            encumberedShares : 0,
-            head             : 0
+            pendingShares : 0,
+            head          : 0
         });
 
         AssertBalancesParams memory userBalances = AssertBalancesParams({
@@ -825,7 +842,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         emit ISparkVaultLike.Deposit(address(spPRIME), address(spPRIME), 1_000_000e6, expectedSavingsShares);
 
         vm.expectEmit(address(spPRIME));
-        emit SparkPrimeVault.DepositRequest(user, user, 0, 1_000_000e6);
+        emit SparkPrimeVault.DepositRequest(user, user, 0, 1_000_000e6, expectedSavingsShares);
 
         vm.prank(user);
         uint256 requestId = spPRIME.requestDeposit(1_000_000e6, user);
@@ -836,7 +853,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         vaultState.chi = expectedChi;
         vaultState.rho = block.timestamp;
 
-        depositQueueState.encumberedShares = expectedSavingsShares;
+        depositQueueState.pendingShares = expectedSavingsShares;
 
         userBalances.asset = 0;
 
@@ -873,7 +890,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         uint256 expectedSavingsShares = spUSDC.convertToShares(500_000e6);
 
-        ( , , uint256 queuedSavingsShares ) = spPRIME.depositQueue(0);
+        ( , , uint256 queuedSavingsShares ) = spPRIME.getPendingDepositRequest(0);
 
         uint256 filledSavingsShares = expectedSavingsShares - queuedSavingsShares;
 
@@ -883,18 +900,20 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         // Request 0 already updated chi in this block
         AssertVaultStateParams memory vaultState = AssertVaultStateParams({
-            totalSupply                  : 250_000e6 - 1, // Rounding
-            totalAssets                  : (250_000e6 - 1) * expectedChi / RAY,
-            availableCapacity            : VAULT_CAPACITY - 250_000e6 + 1, // Rounding
-            availableLiquidAssets        : 262_500e6 - 1, // Rounding
-            unencumberedSparkVaultShares : filledSavingsShares,
-            chi                          : expectedChi,
-            rho                          : block.timestamp
+            totalSupply                          : 250_000e6 - 1, // Rounding
+            totalAssets                          : (250_000e6 - 1) * expectedChi / RAY,
+            availableCapacity                    : VAULT_CAPACITY - 250_000e6 + 1, // Rounding
+            availableLiquidAssets                : 262_500e6 - 1, // Rounding
+            pendingDepositSavingsShares          : filledSavingsShares,
+            pendingCancelledDepositSavingsShares : 0,
+            pendingRedeemShares                  : 0,
+            chi                                  : expectedChi,
+            rho                                  : block.timestamp
         });
 
         AssertQueueStateParams memory depositQueueState = AssertQueueStateParams({
-            encumberedShares : queuedSavingsShares,
-            head             : 0
+            pendingShares : queuedSavingsShares,
+            head          : 0
         });
 
         AssertBalancesParams memory userBalances = AssertBalancesParams({
@@ -920,7 +939,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         emit ISparkVaultLike.Deposit(address(spPRIME), address(spPRIME), 500_000e6, expectedSavingsShares);
 
         vm.expectEmit(address(spPRIME));
-        emit SparkPrimeVault.DepositRequest(user, user, 1, 500_000e6);
+        emit SparkPrimeVault.DepositRequest(user, user, 1, 500_000e6, expectedSavingsShares);
 
         vm.prank(user);
         uint256 requestId = spPRIME.requestDeposit(500_000e6, user);
@@ -928,7 +947,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         assertEq(requestId, 1);
 
         // Queued behind request 0 (FIFO), nothing is filled
-        depositQueueState.encumberedShares = queuedSavingsShares + expectedSavingsShares;
+        depositQueueState.pendingShares = queuedSavingsShares + expectedSavingsShares;
 
         userBalances.asset = 0;
 
@@ -954,18 +973,20 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         usdc.approve(address(spPRIME), 1_000_000e6);
 
         AssertVaultStateParams memory vaultState = AssertVaultStateParams({
-            totalSupply                  : 0,
-            totalAssets                  : 0,
-            availableCapacity            : 1,
-            availableLiquidAssets        : 0,
-            unencumberedSparkVaultShares : 0,
-            chi                          : RAY,
-            rho                          : deployTimestamp
+            totalSupply                          : 0,
+            totalAssets                          : 0,
+            availableCapacity                    : 1,
+            availableLiquidAssets                : 0,
+            pendingDepositSavingsShares          : 0,
+            pendingCancelledDepositSavingsShares : 0,
+            pendingRedeemShares                  : 0,
+            chi                                  : RAY,
+            rho                                  : deployTimestamp
         });
 
         AssertQueueStateParams memory depositQueueState = AssertQueueStateParams({
-            encumberedShares : 0,
-            head             : 0
+            pendingShares : 0,
+            head          : 0
         });
 
         AssertBalancesParams memory userBalances = AssertBalancesParams({
@@ -1003,7 +1024,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         emit SparkPrimeVault.Drip(uint192(expectedChi), 0);  // No supply yet, so no diff
 
         vm.expectEmit(address(spPRIME));
-        emit SparkPrimeVault.DepositRequest(user, user, 0, 500_000e6);
+        emit SparkPrimeVault.DepositRequest(user, user, 0, 500_000e6, expectedSavingsShares);
 
         vm.prank(user);
         uint256 requestId = spPRIME.requestDeposit(500_000e6, user);
@@ -1014,7 +1035,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         vaultState.chi = expectedChi;
         vaultState.rho = block.timestamp;
 
-        depositQueueState.encumberedShares = expectedSavingsShares;
+        depositQueueState.pendingShares = expectedSavingsShares;
 
         userBalances.asset = 500_000e6;
 
@@ -1042,7 +1063,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         }
 
         for (uint256 i; i < 500; ++i) {
-            spPRIME.cancelDepositRequest(i, user);
+            spPRIME.requestDepositCancellation(i, user);
         }
         vm.stopPrank();
 
@@ -1050,8 +1071,8 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         spPRIME.setCapacity(VAULT_CAPACITY);
 
         AssertQueueStateParams memory depositQueueState = AssertQueueStateParams({
-            encumberedShares : 0,
-            head             : 0
+            pendingShares : 0,
+            head          : 0
         });
 
         _assertDepositQueueState(depositQueueState);
@@ -1066,7 +1087,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         assertEq(requestId, 500);
 
         // The walk stops at the 500th cancelled entry, before it reaches request 500
-        depositQueueState.encumberedShares = expectedSavingsShares;
+        depositQueueState.pendingShares = expectedSavingsShares;
         depositQueueState.head             = 499;
 
         _assertDepositQueueState(depositQueueState);
@@ -1085,18 +1106,20 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         usdc.approve(address(spPRIME), 1_000_000e6);
 
         AssertVaultStateParams memory vaultState = AssertVaultStateParams({
-            totalSupply                  : 0,
-            totalAssets                  : 0,
-            availableCapacity            : VAULT_CAPACITY,
-            availableLiquidAssets        : 0,
-            unencumberedSparkVaultShares : 0,
-            chi                          : RAY,
-            rho                          : deployTimestamp
+            totalSupply                          : 0,
+            totalAssets                          : 0,
+            availableCapacity                    : VAULT_CAPACITY,
+            availableLiquidAssets                : 0,
+            pendingDepositSavingsShares          : 0,
+            pendingCancelledDepositSavingsShares : 0,
+            pendingRedeemShares                  : 0,
+            chi                                  : RAY,
+            rho                                  : deployTimestamp
         });
 
         AssertQueueStateParams memory depositQueueState = AssertQueueStateParams({
-            encumberedShares : 0,
-            head             : 0
+            pendingShares : 0,
+            head          : 0
         });
 
         AssertBalancesParams memory userBalances = AssertBalancesParams({
@@ -1141,7 +1164,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         emit ISparkVaultLike.Deposit(address(spPRIME), address(spPRIME), 1_000_000e6, expectedSavingsShares);
 
         vm.expectEmit(address(spPRIME));
-        emit SparkPrimeVault.DepositRequest(user, user, 0, 1_000_000e6);
+        emit SparkPrimeVault.DepositRequest(user, user, 0, 1_000_000e6, expectedSavingsShares);
 
         vm.expectEmit(address(spPRIME));
         emit SparkPrimeVault.Deposit(user, user, expectedAssets, expectedShares);
@@ -1153,13 +1176,13 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         assertEq(usdc.allowance(user, address(spPRIME)), 0);
 
-        vaultState.totalSupply                  = expectedShares;
-        vaultState.totalAssets                  = expectedShares * expectedChi / RAY;
-        vaultState.availableCapacity            = VAULT_CAPACITY - expectedShares;
-        vaultState.availableLiquidAssets        = expectedAssets;
-        vaultState.unencumberedSparkVaultShares = expectedSavingsShares;
-        vaultState.chi                          = expectedChi;
-        vaultState.rho                          = block.timestamp;
+        vaultState.totalSupply                 = expectedShares;
+        vaultState.totalAssets                 = expectedShares * expectedChi / RAY;
+        vaultState.availableCapacity           = VAULT_CAPACITY - expectedShares;
+        vaultState.availableLiquidAssets       = expectedAssets;
+        vaultState.pendingDepositSavingsShares = expectedSavingsShares;
+        vaultState.chi                         = expectedChi;
+        vaultState.rho                         = block.timestamp;
 
         depositQueueState.head = 1;
 
