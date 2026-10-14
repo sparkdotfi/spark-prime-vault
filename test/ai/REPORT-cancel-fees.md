@@ -1,3 +1,99 @@
+# CANCEL-FEES worker report, round 4: `test/ai/CancelAndFees.t.sol` @ `bf93b0d`
+
+63 tests, all passing (62 unit + 1 fuzz at 5000 runs) against `src/SparkPrimeVault.sol` on
+`fix/update-guardian-transfer` at `bf93b0d`. No `test_BUG_` test is left in this file: B-1 is
+fixed and B-2 is removed with its function. Line numbers in this section refer to bf93b0d.
+Harness indexes and the 100e6 / 1_000_000e6 constants are unchanged.
+
+## Fixed at bf93b0d
+
+- B-1 (F-1 deposit side, Medium): `requestDepositCancellation` (`src/SparkPrimeVault.sol:409-449`)
+  now requires `recipient_ == request_.owner` when the caller is not the owner (`:424`,
+  `SparkPrimeVault/invalid-recipient`), after the guardian check (`:423`, `not-authorized`) and
+  after the generic zero check (`:414`). The owner path is unchanged (any non-zero recipient).
+  Regression tests:
+  - `test_requestDepositCancellation_guardianMustRefundOwner`: guardian naming itself, a
+    stranger, or `address(0)` reverts `invalid-recipient`; a stranger naming the owner reverts
+    `not-authorized`; nothing moves on the failed attempts; guardian naming alice succeeds,
+    emits `DepositCancellationRequest(id, 0)`, the cancelled entry is `(alice, alice, SS_1M)`,
+    settlement emits `DepositCancellation(alice, alice, SS_1M, 999_999_999_999)` and pays alice
+    `999_999_999_999`, guardian 0.
+  - `test_requestDepositCancellation_guardianRefundsOwnerNotFillRecipient`: alice deposits for
+    bob; the guardian cannot name bob (`invalid-recipient`), must name alice; alice is paid
+    `99_999_999`, bob 0.
+  - `test_requestDepositCancellation_ownerCanRepointAfterGuardianCancel`: after a guardian cancel
+    the owner repoints to bob (`DepositCancellationRecipientUpdated`), guardian and stranger get
+    `not-authorized`, zero gets `invalid-recipient`, a second guardian cancel of the spent id is
+    `no-request`, settlement pays bob `99_999_999`, the settled entry rejects further updates.
+  - Replaces `test_BUG_requestDepositCancellation_guardianCanRedirectRefund`,
+    `..._guardianRedirectRepairedByOwnerBeforeSettlement`, `..._guardianRedirectNotRepairableAfterSettlement`.
+
+## Removed at bf93b0d
+
+- B-2 (F-1 redeem side, High) and F-8 (guardian cancel keeps the fee): `cancelRedeemRequest` no
+  longer exists, so no function moves escrowed redeem shares to anyone but the fill recipient.
+  `test_requestRedeem_guardianCannotTouchEscrow` (old selector fails for guardian, admin and
+  owner; guardian `updateRedeemRecipient` reverts `not-authorized`; escrow `SH_1M` unchanged;
+  fill pays alice `999_999_999_998`, guardian 0),
+  `test_requestRedeem_noCancel_feeOnlyChargedOnceAndNetIsPaid` (1% fee, fill pays
+  `989_999_999_997`, no shares ever return).
+- The cancel / re-request cycle on the redeem side is gone: a second request needs the first to
+  be paid (`test_requestRedeem_noCycleWithoutAFill`: `requestRedeem(1)` after a full-balance
+  request reverts `insufficient-balance`; after the fill `SS_1M - 944_987_364_230` spUSDC of fee
+  surplus remain). The round-3 "3 cycles cost 3 fees" test is retired.
+- Redeem-side head walking never existed and the cancel-time walk is gone with the cancel:
+  `test_processPendingRedeems_headDoesNotWalkOverGhosts` (two ghosts in front of carol cost two
+  slots; the deposit head walks over dead entries, the redeem head does not).
+- Every other redeem-cancel test was rewritten as a finality or fill test with the same numbers:
+  partial fill of `39_999_999` then the remainder `59_424_310` shares stays escrowed and pays
+  `59_999_998` when liquidity returns (`99_999_997` total, 1 wei under one fill)
+  (`test_requestRedeem_partialFillRemainderStaysQueuedUntilPaid`); `realizeLoss(50e6)` while
+  queued pays `49_999_997` with no way out and leaves the cancelled deposit's `99_999_999` intact
+  (`test_realizeLoss_escrowedRedeemTakesLoss_cancelledDepositDoesNot`); a year at 5% on a 1%
+  escrow pays `1_039_499_999_997` at fill (`test_requestRedeem_escrowAccruesVsrUntilFill`);
+  the fee lowered to 0 after the request does not refund it (`test_requestRedeem_feeIsSunkAtRequest`:
+  `10_000_000_001` USDC of claim is final); pause blocks new requests and the planner but not the
+  owner's repoint (`test_requestRedeem_revertsWhilePaused_repointDoesNot`); donated shares at the
+  vault survive fills untouched (`test_transfer_toVaultStrandsSharesWithoutBreakingQueues`);
+  `updateRedeemRecipient(id, vault)` strands `99_999_998` USDC in the vault
+  (`test_updateRedeemRecipient_recipientVaultStrandsUsdc`, C-6 remnant, owner self-harm).
+
+## New in this area
+
+- The cost of the redeem-side blacklist jam (REDEEM-QUEUE's RQ-10, High) in fee terms: the only
+  sunk cost is the fee on `minRedeem` shares; the escrow comes back on release. With `minRedeem`
+  0 and fee 0 (launch defaults) a jam costs 1 share. Owned and proven in `RedeemQueue.t.sol`.
+- `requestDepositCancellation` ordering for the guardian: `:414` zero check, `:420` `no-request`,
+  `:423` role, `:424` owner match. A guardian naming `address(0)` therefore gets
+  `invalid-recipient` from `:414`, a stranger naming the owner gets `not-authorized`, a guardian
+  naming anyone but the owner gets `invalid-recipient` from `:424`. All three pinned.
+
+## Properties re-checked and held at bf93b0d
+
+Everything in the round-2 section (c) that does not involve a redeem cancel re-ran unchanged
+(same exact values; gas unchanged: 2_328 / 2_408 per ghost entry on the deposit / redeem queue,
+`99_354` for one settled cancellation, 22_931 marginal per settled entry). B-3 fix, B-4, N-1,
+F-2, F-5, F-7, I-2, I-4, I-6, C-6 (deposit side), N-3, the fee fuzz (ceil, 5000 runs), fee locked
+at request, `realizeGain` fee-surplus distribution (`101.978466055462937456192802386e27`,
+bob `10_100_000_000`, 1 wei dust), `realizeGain` with no holders (`no-shares`), the notional
+gain (`2.019375545061017805470462154e27`), and the spUSDC-yield-while-queued tests all reproduce.
+Line references moved: `_processPendingDepositCancellations` budget `:848`, loop `continue`
+`:860`; `_processPendingDeposits` `continue` `:818`; `_processPendingRedeems` budget `:886`,
+`withdraw` `:909`; `take` `:325-334`; `requestDepositCancellation` delete / push `:427` / `:431`.
+
+## Unsettled
+
+- Whether the guardian should also get a repoint-to-owner on the REDEEM queue (the mirror of the
+  bf93b0d deposit-cancel rule) is the fix question for RQ-10; this file only shows the guardian
+  has nothing on that side.
+- `requestDepositCancellation` by the guardian still lets the guardian move a queued deposit
+  into the cancelled queue against the depositor's will (refund to the owner, settlement timing
+  the planner's). That is the intended emergency tool; noted as a trust assumption, not a finding.
+- The 1 wei of spUSDC that `maxRedeem` leaves behind per liquidity-constrained settlement is
+  unchanged.
+
+---
+
 # CANCEL-FEES worker report, round 3: `test/CancelAndFees.t.sol` @ `ff828d2`
 
 68 tests, all passing (67 unit + 1 fuzz at 5000 runs) against `src/SparkPrimeVault.sol` on

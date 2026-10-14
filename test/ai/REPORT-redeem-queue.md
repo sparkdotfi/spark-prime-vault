@@ -1,3 +1,78 @@
+# Round 4 (bf93b0d)
+
+Worker: REDEEM-CANCEL-FEES. File: `test/ai/RedeemQueue.t.sol` (`RedeemQueueTest is LocalTestBase`), branch `campaign-v4/redeem-cancel-fees`, source `src/SparkPrimeVault.sol` at upstream `fix/update-guardian-transfer` `bf93b0d`.
+Result: 49 tests, 49 pass (44 unit, 5 fuzz at 5000 runs). Six `test_BUG_*` tests pass by asserting the revert or the exact buggy state. Harness indexes and reference conversions unchanged (chi_s `1.047633055711877768967605062e27`, chi_p `1.009687768242461209408770821e27`, 100_000e6 = `95_453_269_114` spUSDC / `99_040_518_410` spPRIME, 1_000_000e6 = `954_532_691_143` / `990_405_184_109`).
+
+Line remap (ff828d2 -> bf93b0d): `requestRedeem` 481-507 -> 451-477 (recipient :456, `minRedeem` :457, escrow transfer :461, fee burn :466); `updateRedeemRecipient` 537-546 -> 508-517 (owner check :514); `_processPendingRedeems` 819-853 -> 883-917 (budget :886, loop :891-914, `continue` :896, `withdraw` :909, `delete` :913); `realizeLoss` 369-385 -> 365-381; `realizeGain` 297-309 -> 293-305; `take` 329-338 -> 325-334; `CancelRedeemRequest` event decl :101. `cancelRedeemRequest` (was 509-535): removed.
+
+## Removed since round 3
+
+- `cancelRedeemRequest` is gone. A redeem request is now a commitment: the only user action on a queued entry is `updateRedeemRecipient` (owner only). Consequences, each proven:
+  - F-1 redeem side (B-2 in CANCEL-FEES) and F-8 (guardian cancel keeps the fee) are closed by removal: no function moves escrowed shares to anyone but the fill recipient. `test_cancelRedeemRequest_selectorRemovedAndEventDead` (the old selector fails for owner, guardian and admin; escrow unchanged).
+  - E-2 "free option" is closed: a loss realised after the request is taken by the escrow with no way out. `test_requestRedeem_isFinal_cannotStepOutOfARealizedLoss` (alice paid `94_999_999_998` after `realizeLoss(10_000e6)`, the removed selector fails, her balance stays 0).
+  - C-10 "free capacity hog via redeem request" is closed: escrowed shares stay in `totalSupply` until the fill burns them, so the capacity a request occupies is released only by exiting. `test_requestRedeem_capacityStaysOccupiedUntilFill` (capacity == supply, alice queues, `availableCapacity` stays 0, bob is queued, the fill frees `99_040_518_410` of capacity and bob fills `99_040_518_408`; the 2-wei shortfall is the deposit-side capacity round-trip).
+  - Round 3 properties 15-18 (head advance on cancel, partial-then-cancel refund, cancel of the last entry, zero-recipient cancel) no longer have a code path; replaced by the finality properties 25-31 below.
+  - The redeem head never walks: there is no cancel-time walk and `requestRedeem` has none (the deposit queue walks at :438-446 and :782-787). A ghost at the head now costs a `maxRequests_` slot, same as a ghost behind it. `test_processPendingRedeems_ghostEntryCountsTowardMaxRequests` (two head ghosts then bob: `(max, 2)` pays nobody, head 3 -> 5; `(max, 1)` pays bob).
+- The `CancelRedeemRequest` event (`src/SparkPrimeVault.sol:101`) is still declared but nothing emits it. Info, dead code; `test_cancelRedeemRequest_selectorRemovedAndEventDead` records every log of a request / repoint / fill lifecycle and finds no log with its topic.
+
+## New finding
+
+### RQ-10 (escalates RQ-6 / C-2) · High · A blacklisted recipient blocks the redeem queue PERMANENTLY; only the entry owner can clear it
+
+- **Location:** `src/SparkPrimeVault.sol:909` (`spUSDC.withdraw(assets_, request_.recipient, ...)` inside the strict FIFO loop :891-914, no skip-on-failure) combined with `:514` (`updateRedeemRecipient` requires `msg.sender == request_.owner`) and the removal of `cancelRedeemRequest`.
+- **What changed:** in round 3 the guardian could cancel the jamming entry (shares back to the owner, head advanced). That tool is gone. The set of addresses that can unblock a jam is now exactly one: the owner of the jamming request. A hostile owner never repoints; an honest owner whose address gets blacklisted after queueing can.
+- **Scenario, `test_BUG_blacklistedRecipientBlocksRedeemQueuePermanently`:** attacker deposits 1e6 (990_404 shares), queues 1 share to a USDC-blacklisted address (`vm.mockCallRevert` on `usdc.transfer(blacklisted, *)`), alice queues 990_405_184_109 and bob 99_040_518_410 behind. Then: (1) `processPendingRedeems` reverts `Blacklistable: account is blacklisted` for `(max, 10)`, `(max, 1)`, `(1, 1)`, `(1, max)`; `(0, 10)` is a silent no-op; head stays 0. (2) guardian, admin and rebalancer all get `not-authorized` on `updateRedeemRecipient(0, ...)`; the old cancel selector fails for guardian and admin. (3) pause adds `paused` on top; after unpause the jam is intact. (4) `take`, `realizeLoss`, `realizeGain` do not move the queue. (5) alice cannot leave the queue (finality) and her own repoint changes nothing. (6) a year later still blocked, alice and bob paid 0. (7) the attacker repoints to a clean address and the next pass pays the attacker 1 wei and clears alice and bob (head 3). (8) the attacker re-queues 1 share to the blacklisted address; carol, queued behind, is locked again; attacker balance 990_402.
+- **Cost to the attacker:** `minRedeem` shares escrowed (returned in full when they choose to release, step 7) plus the burned fee plus gas. With launch defaults (`minRedeem` 0, fee 0) the jam costs 1 share = 1e-6 USDC and is repeatable. With `minRedeem = 1_000e6` shares and a 1% fee the sunk cost is 10e6 shares = `10_096_877` wei USDC (~10.10 USDC) and 990e6 shares are parked, not lost: `test_BUG_blacklistedRecipientBlocksRedeemQueuePermanently_withMinRedeemAndFee` (attacker gets `999_590_890` USDC back on release, alice `989_999_999_997`).
+- **Latent variant, `test_BUG_blacklistedRecipient_latentJamForcesExactBatchSizing`:** a jam at index 1 behind a live alice at 0: `(max, 10)` reverts as one transaction, so alice is NOT paid either; `(max, 1)` pays alice; everything after is locked. The planner has to size `maxRequests_` to stop exactly before each jam.
+- **Honest-victim variant, `test_updateRedeemRecipient_blacklistedOwnerSelfRescuesQueue`:** alice blacklisted after queueing; bob locked; mallory, bob, guardian, admin and rebalancer all `not-authorized`; alice repoints to carol during a pause (`updateRedeemRecipient` has no `whenNotPaused`), `RedeemRecipientUpdated(0, carol)`, then `Redeem(alice, carol, 99_040_518_410, 99_999_999_998)`, carol and bob each paid `99_999_999_998`, head 2.
+- **Impact:** every exit behind the jam is locked until an upgrade. Combined with finality (section 12), the honest users behind the jam cannot withdraw their requests either. Round 3 rated C-2 Medium because the guardian had a one-transaction fix; that is no longer true.
+- **Fix options:** (a) a guardian/admin-callable `updateRedeemRecipient(id, request_.owner)` (recipient forced to the owner, mirroring the new deposit-cancel guardian rule at :422-425); or (b) a role-gated "skip and refund to owner" that transfers the entry's shares back to `request_.owner` and deletes the entry; or (c) pay with a try/catch and park failed entries. (a) is the smallest and keeps the escrow model; it does not help when the owner itself is blacklisted and the owner key is lost, which (b) does.
+
+## Persisting (re-confirmed at bf93b0d)
+
+- RQ-1 (= C-1) · Medium · multi-request batch reverts on spUSDC ceil-rounding: budget once at `:886`, `spUSDC.withdraw(assets_)` per fill at `:909`. Both `test_BUG_processPendingRedeems_batchRevertsOnCeilRounding_*` pass by asserting `SparkVault/insufficient-balance` (same numbers as round 2); the payout fuzz still reaches the revert branch. New angle, `test_processPendingRedeems_manyPartialFills_sumNeverExceedsOneFill`: 13 chunks of 7_777_777_777 shares on a 99_040_518_410 request pay `99_999_999_990` (one fill: `99_999_999_998`), and the per-chunk ceil burns leave 1 wei of spUSDC behind 2 queued shares, which are a no-op until 2 spUSDC wei of backing arrive; then `99_999_999_992` total. The redeemer, not the vault, pays for chunking.
+- RQ-7 · Low · `requestRedeem(0)` ghosts (`:457` with `minRedeem` 0). `test_BUG_requestRedeem_zeroSharesCreatesGhostEntry` (updated: the ghost rejects `updateRedeemRecipient` with `no-request`; `setMinRedeem(1)` closes it). Ghosts cannot jam (0 shares -> `continue`), checked in the fuzz.
+- RQ-2 · Low · USDC to `recipient == address(vault)` stuck, `:456` only rejects zero. Unchanged tests.
+- RQ-3 · Info · dead entries consume `maxRequests_` (`:889`, `:896`), now including dead entries at the head (see Removed).
+- RQ-4 · Info · pause freezes redeemers and new requests, `take` (`:325-334`) keeps working; `updateRedeemRecipient` is not pause-gated. `test_processPendingRedeems_pausedBlocksRedeemsNotTake`.
+- RQ-5 / RQ-9 · Info · notional index both directions (`realizeLoss` :365-381, `realizeGain` :293-305) with the round-3 values.
+- F-5 fee ghosts (`test_requestRedeem_oneWeiWithFee_ghostEntry_F5`): the burned wei is unrecoverable; the dead entry rejects the updater.
+
+## Design property established: exits are 100% planner-dependent
+
+`test_requestRedeem_isFinal_noPathRecoversEscrow`: after `requestRedeem` the shares sit at `address(vault)`. `transferFrom(vault, alice, 1)` reverts `insufficient-allowance` (the vault never approves); `permit(owner = vault, ...)` reverts `invalid-permit` (ecrecover cannot yield the proxy address, and the proxy has no `isValidSignature`, so the ERC-1271 staticcall fails); `updateRedeemRecipient` moves the recipient, never the shares; `take` moves spUSDC only; pause does nothing to the escrow; a year without a planner call leaves the escrow in place and accruing (`104_999_999_998` claim at 5%); only `processPendingRedeems` releases it, paying `floor(shares * chi / RAY)` at fill time. The random-ops fuzz asserts on every step that the removed selector fails and that `balanceOf(vault)` only decreases inside `processPendingRedeems`.
+
+## Hunt notes (no new bug)
+
+- `requestRedeem` ordering: `_transfer` to the vault, then `_burn` of the fee from the vault, then push. A 1-share request at a 1% fee burns the share and queues 0 (F-5); a 2-share request queues 1 share (enough to jam, see RQ-10). `minRedeem` is gross of fee (unchanged).
+- `_processPendingRedeems` is CEI-clean: `pendingRedeemShares`, `request_.shares`, `remaining_` and `_burn` are all updated before `spUSDC.withdraw` (`:901-909`). A reverting recipient rolls back the whole call (the jam), it cannot desynchronise state.
+- `delete` after a full fill (`:913`) happens after the external call; with the state already reduced to 0 this is only a refund of gas. A repoint of a deleted entry reverts `no-request` for everyone (`test_updateRedeemRecipient_deadEntryAndOutOfRange`, `test_processPendingRedeems_fullFillDeletesEntry`).
+- Repoint on the head mid-fill: `test_requestRedeem_afterPartialFill_remainderStaysQueued_repointMidFill` (alice paid `299_999_999_999` to herself, repoints, bob gets `699_999_999_998`, sum `999_999_999_997`, head then stops on the ghost at 1 because nothing walks it).
+- Nothing pays more than `floor(shares * chi / RAY)`: `testFuzz_processPendingRedeems_neverPaysMoreThanSharesTimesChi` and `..._singleFillRoundingBounds` re-held at 5000 runs; chunking only loses.
+- `withdraw(0)` (1 share after a loss takes chi below RAY) is accepted by spUSDC and by the mock USDC; on mainnet USDC a 0-value transfer to a blacklisted address still reverts (`notBlacklisted`), so a 0-value jam is the same jam.
+
+## Properties held (round 4)
+
+Properties 1-14 and 19-24 of the round-2/round-3 sections re-held with the same exact values (5000 fuzz runs); 13 restated: the random-ops fuzz has no cancel action, adds third-party-recipient requests, asserts the removed selector fails for owner and guardian on every such request, and asserts the escrow is non-increasing across every planner call. Properties 15-18 (cancel) are retired. New:
+
+25. The `cancelRedeemRequest` selector fails for owner, guardian and admin; no `CancelRedeemRequest` log is ever emitted. `test_cancelRedeemRequest_selectorRemovedAndEventDead`.
+26. No ERC20, permit, role or time path recovers escrowed shares; only a fill does. `test_requestRedeem_isFinal_noPathRecoversEscrow`.
+27. A realised loss after the request is borne by the escrow with no exit. `test_requestRedeem_isFinal_cannotStepOutOfARealizedLoss`.
+28. Capacity occupied by a queued redeem is released only by its fill. `test_requestRedeem_capacityStaysOccupiedUntilFill`.
+29. The remainder of a partial fill stays queued; the owner can repoint it mid-fill; old and new recipient sum to one fill. `test_requestRedeem_afterPartialFill_remainderStaysQueued_repointMidFill`.
+30. Chunked fills never pay more than one fill, lose at most one wei per chunk, and can strand up to a few shares behind ceil-burn dust until backing arrives. `test_processPendingRedeems_manyPartialFills_sumNeverExceedsOneFill`.
+31. Ghosts at the head cost a slot (no head walk in the redeem queue). `test_processPendingRedeems_ghostEntryCountsTowardMaxRequests`, `test_processPendingRedeems_fifo_skipsGhosts`.
+32. `updateRedeemRecipient` works while paused and is the owner's rescue from a blacklisted address. `test_updateRedeemRecipient_blacklistedOwnerSelfRescuesQueue`, `test_processPendingRedeems_pausedBlocksRedeemsNotTake`.
+
+## Unsettled
+
+- RQ-10 severity assumes mainnet USDC blacklist semantics (proven with `vm.mockCallRevert`); a fork test against real `FiatTokenV2` `Blacklistable` is still recommended. Any other reason the recipient cannot receive (none exists for a plain USDC `transfer` apart from the blacklist) would have the same effect.
+- Whether the fix should be a guardian repoint-to-owner (keeps the owner's capital in the queue) or a guardian skip-and-refund (returns it) is a product decision; both close RQ-10.
+- RQ-1 frequency numbers remain the round-1 model; the code path is unchanged.
+- The product questions from round 3 (queue-time payouts funded from others' backing, `realizeGain` ordering) are unchanged and owned by ADVERSARIAL.
+
+---
+
 # Round 3 (ff828d2)
 
 Worker: QUEUES. File: `test/RedeemQueue.t.sol` (`RedeemQueueTest is LocalTestBase`), branch `campaign-v3/queues`, source `src/SparkPrimeVault.sol` at upstream `refactor/more-simplifying` `ff828d2`.

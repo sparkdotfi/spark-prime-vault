@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
+import { VmSafe } from "../../lib/forge-std/src/Vm.sol";
+
 import { LocalTestBase } from "./LocalTestBase.t.sol";
 
-/// @dev Redeem-queue campaign: `requestRedeem`, `cancelRedeemRequest`, `processPendingRedeems`.
+/// @dev Redeem-queue campaign: `requestRedeem`, `updateRedeemRecipient`, `processPendingRedeems`.
 ///
 ///      Harness state after setUp (both VSRs frozen at RAY):
 ///        chi_s (spUSDC)  = 1.047633055711877768967605062e27
@@ -16,12 +18,17 @@ import { LocalTestBase } from "./LocalTestBase.t.sol";
 ///      rem = floor(A * RAY / chi_p) (the share budget `_processPendingRedeems` computes once).
 ///
 ///      Round 2: ported to upstream `refactor/more-simplifying` (`minRedeem` in shares, no
-///      `shares_ != 0` check, `cancelRedeemRequest` advances the head and requires a recipient,
-///      entries are `delete`d after a full fill, `realizeLoss` instead of `setChi`,
-///      `Redeem(owner, recipient, shares, assets)`).
+///      `shares_ != 0` check, entries are `delete`d after a full fill, `realizeLoss` instead of
+///      `setChi`, `Redeem(owner, recipient, shares, assets)`).
 ///      Round 3 (ff828d2): `updateRedeemRecipient` is owner-only on a live entry
 ///      (src/SparkPrimeVault.sol:537-546); `realizeLoss` requires 0 < loss < totalAssets
 ///      (:369-385); new `realizeGain` (:297-309) mirrored in section 16.
+///      Round 4 (bf93b0d): `cancelRedeemRequest` is removed. A redeem request is final: the
+///      escrow leaves only through `_processPendingRedeems` (src/SparkPrimeVault.sol:883-917)
+///      and the only user action on a queued entry is `updateRedeemRecipient` (:508-517, owner
+///      only). The redeem head never walks (no cancel, no walk in `requestRedeem` :451-477), so
+///      every dead entry costs one `maxRequests_` slot. Section 12 proves finality, section 14
+///      the permanent blacklist jam that finality creates.
 contract RedeemQueueTest is LocalTestBase {
 
     event Redeem(address indexed owner, address indexed recipient, uint256 shares, uint256 assets);
@@ -33,8 +40,6 @@ contract RedeemQueueTest is LocalTestBase {
         uint256         shares,
         uint256         fee
     );
-
-    event CancelRedeemRequest(uint256 indexed requestId, uint256 shares);
 
     event RedeemRecipientUpdated(uint256 indexed requestId, address indexed recipient);
 
@@ -88,13 +93,43 @@ contract RedeemQueueTest is LocalTestBase {
         return _redeemQueueLength();
     }
 
+    // A zero-share request: pushes a dead entry (RQ-7) without moving shares. Used in place of
+    // the removed cancel wherever a hole in the queue is needed.
+    function _ghost(address who) internal returns (uint256 id) {
+        vm.prank(who);
+        id = vault.requestRedeem(0, who);
+    }
+
+    // Mainnet USDC reverts transfers to blacklisted addresses; mock that for `to`.
+    function _blacklist(address to) internal {
+        vm.mockCallRevert(
+            address(usdc),
+            abi.encodeWithSelector(usdc.transfer.selector, to),
+            "Blacklistable: account is blacklisted"
+        );
+    }
+
+    function _expectBlocked(uint256 maxShares, uint256 maxRequests) internal {
+        vm.prank(rebalancer);
+        vm.expectRevert("Blacklistable: account is blacklisted");
+        vault.processPendingRedeems(maxShares, maxRequests);
+    }
+
+    // The removed `cancelRedeemRequest(uint256,address)` selector.
+    bytes4 constant CANCEL_REDEEM_SELECTOR = bytes4(keccak256("cancelRedeemRequest(uint256,address)"));
+
+    function _tryCancel(address who, uint256 id, address to) internal returns (bool ok) {
+        vm.prank(who);
+        (ok, ) = address(vault).call(abi.encodeWithSelector(CANCEL_REDEEM_SELECTOR, id, to));
+    }
+
     /**********************************************************************************************/
     /*** 1. Batch fills over-burn spUSDC (ceil per fill, budget computed once)                  ***/
     /**********************************************************************************************/
 
     // BUG (C-1, re-confirmed on refactor/more-simplifying): `_processPendingRedeems` sizes the share
-    // budget once from `spUSDC.maxWithdraw(vault)` (src/SparkPrimeVault.sol:822) but each fill calls
-    // `spUSDC.withdraw(assets_)` (line 845), which burns ceil(assets * RAY / chi_s) spUSDC. Across
+    // budget once from `spUSDC.maxWithdraw(vault)` (src/SparkPrimeVault.sol:886) but each fill calls
+    // `spUSDC.withdraw(assets_)` (line 909), which burns ceil(assets * RAY / chi_s) spUSDC. Across
     // N fills the burned total can exceed the vault's spUSDC balance by up to N-1 wei, so the last
     // fill reverts inside spUSDC with "SparkVault/insufficient-balance" and the batch rolls back.
     //
@@ -393,7 +428,7 @@ contract RedeemQueueTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** 3. FIFO, cancelled entries, maxRequests_, maxShares_                                   ***/
+    /*** 3. FIFO, dead entries, maxRequests_, maxShares_                                        ***/
     /**********************************************************************************************/
 
     function _threeDepositorsQueued() internal returns (uint256 idA, uint256 idB, uint256 idC) {
@@ -410,11 +445,18 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(_vaultSpUsdc(),              3 * DEPOSIT_100K_SPUSDC);
     }
 
-    function test_processPendingRedeems_fifo_skipsCancelled() public {
-        (uint256 idA, uint256 idB, uint256 idC) = _threeDepositorsQueued();
-
-        vm.prank(bob);
-        vault.cancelRedeemRequest(idB, bob);
+    // The only dead entries left in the redeem queue are zero-share ghosts (RQ-7) and fully
+    // filled slots; both are `continue`d (src/SparkPrimeVault.sol:896).
+    function test_processPendingRedeems_fifo_skipsGhosts() public {
+        _deposit(alice, 100_000e6);
+        _deposit(bob,   100_000e6);
+        _deposit(carol, 100_000e6);
+        uint256 idA = _requestRedeem(alice, DEPOSIT_100K_SHARES);
+        uint256 idB = _ghost(bob);
+        uint256 idC = _requestRedeem(carol, DEPOSIT_100K_SHARES);
+        assertEq(idA, 0);
+        assertEq(idB, 1);
+        assertEq(idC, 2);
 
         assertEq(_queued(idB),                0);
         assertEq(vault.balanceOf(bob),        DEPOSIT_100K_SHARES);
@@ -657,9 +699,10 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(vault.pendingRedeemShares(), 0);
         assertEq(vault.totalSupply(),         DEPOSIT_100K_SHARES - 1);
 
+        // The burned wei is gone: there is no cancel, and the dead entry rejects the only updater.
         vm.prank(alice);
         vm.expectRevert("SparkPrimeVault/no-request");
-        vault.cancelRedeemRequest(id, alice);
+        vault.updateRedeemRecipient(id, alice);
 
         // The ghost is skipped by processing and the head moves past it.
         _processRedeems(type(uint256).max, 10);
@@ -748,7 +791,16 @@ contract RedeemQueueTest is LocalTestBase {
 
         vm.prank(alice);
         vm.expectRevert("SparkPrimeVault/paused");
-        vault.cancelRedeemRequest(id, alice);
+        vault.requestRedeem(1, alice);
+
+        // `updateRedeemRecipient` (src/SparkPrimeVault.sol:508-517) is not pause-gated: the
+        // owner keeps the self-rescue of section 14 during a pause.
+        vm.prank(alice);
+        vault.updateRedeemRecipient(id, bob);
+        (, address r, ) = _redeemRequest(id);
+        assertEq(r, bob);
+        vm.prank(alice);
+        vault.updateRedeemRecipient(id, alice);
 
         // The taker drains the whole backing while alice is frozen.
         assertEq(_vaultSpUsdc(), DEPOSIT_100K_SPUSDC);
@@ -914,9 +966,9 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(vault.balanceOf(alice), 0);
     }
 
-    // BUG (Low): the `shares_ != 0` check is gone (src/SparkPrimeVault.sol:487 only requires
+    // BUG (Low, RQ-7): the `shares_ != 0` check is gone (src/SparkPrimeVault.sol:457 only requires
     // `shares_ >= minRedeem`). With `minRedeem == 0` (the initial value) `requestRedeem(0)` succeeds,
-    // moves nothing, burns no fee and pushes a 0-share ghost entry that cannot be cancelled and
+    // moves nothing, burns no fee and pushes a 0-share ghost entry that rejects the updater and
     // consumes a `maxRequests_` slot on every pass until the head moves past it.
     function test_BUG_requestRedeem_zeroSharesCreatesGhostEntry() public {
         _deposit(alice, 100_000e6);
@@ -938,7 +990,7 @@ contract RedeemQueueTest is LocalTestBase {
 
         vm.prank(alice);
         vm.expectRevert("SparkPrimeVault/no-request");
-        vault.cancelRedeemRequest(ghost, alice);
+        vault.updateRedeemRecipient(ghost, alice);
 
         // Anyone can push ghosts for gas only: 10 more from carol, who holds no shares at all.
         for (uint256 i; i < 10; ++i) {
@@ -966,7 +1018,7 @@ contract RedeemQueueTest is LocalTestBase {
         vault.requestRedeem(0, carol);
     }
 
-    // `minRedeem` is denominated in SHARES (src/SparkPrimeVault.sol:199, 487): minRedeem - 1
+    // `minRedeem` is denominated in SHARES (src/SparkPrimeVault.sol:192, 457): minRedeem - 1
     // reverts, exactly minRedeem passes, independent of chi.
     function test_requestRedeem_minRedeemBoundary_inShares() public {
         _deposit(alice, 100_000e6);
@@ -1010,55 +1062,64 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(_queued(id), 1_000e6);
     }
 
-    // Non-head cancelled (and F-5 ghost) entries are skipped but still consume `maxRequests_`
-    // (src/SparkPrimeVault.sol:825 sizes `end_` by index, line 832 `continue`s past them). A
-    // cancelled HEAD entry no longer costs a slot because the cancel advances the head (line 527).
-    function test_processPendingRedeems_cancelledEntryCountsTowardMaxRequests() public {
-        (uint256 idA, uint256 idB, uint256 idC) = _threeDepositorsQueued();
-
-        vm.prank(bob);
-        vault.cancelRedeemRequest(idB, bob);  // non-head hole at index 1
+    // Dead entries (RQ-7 ghosts, F-5 fee ghosts) are skipped but still consume `maxRequests_`
+    // (src/SparkPrimeVault.sol:889 sizes `end_` by index, :896 `continue`s past them). Since
+    // bf93b0d nothing walks the redeem head (the deposit queue walks at :438-446 and :782-787;
+    // the redeem queue has no equivalent), so a ghost AT the head also costs a slot: the
+    // round-3 "head cancel is free" contrast is gone with the cancel.
+    function test_processPendingRedeems_ghostEntryCountsTowardMaxRequests() public {
+        _deposit(alice, 100_000e6);
+        _deposit(bob,   100_000e6);
+        _deposit(carol, 100_000e6);
+        uint256 idA = _requestRedeem(alice, DEPOSIT_100K_SHARES);
+        uint256 idB = _ghost(bob);  // non-head hole at index 1
+        uint256 idC = _requestRedeem(carol, DEPOSIT_100K_SHARES);
 
         assertEq(vault.balanceOf(bob),            DEPOSIT_100K_SHARES);
         assertEq(vault.balanceOf(address(vault)), 2 * DEPOSIT_100K_SHARES);
         assertEq(vault.pendingRedeemShares(),     2 * DEPOSIT_100K_SHARES);
         assertEq(_queued(idB),                    0);
-        assertEq(vault.firstPendingRedeemId(),              0);
+        assertEq(vault.firstPendingRedeemId(),    0);
 
         _processRedeems(type(uint256).max, 2);  // slot 1: alice, slot 2: the hole
 
         assertEq(usdc.balanceOf(alice), 99_999_999_998);
         assertEq(usdc.balanceOf(carol), 0);
         assertEq(_queued(idA),          0);
-        assertEq(vault.firstPendingRedeemId(),    2);
+        assertEq(vault.firstPendingRedeemId(), 2);
 
         _processRedeems(type(uint256).max, 1);  // fills carol
 
         assertEq(usdc.balanceOf(carol), 99_999_999_998);
         assertEq(_queued(idC),          0);
-        assertEq(vault.firstPendingRedeemId(),    3);
+        assertEq(vault.firstPendingRedeemId(), 3);
 
-        // Contrast: a head cancel is free for the planner. alice re-queues, bob re-queues, alice
-        // cancels at the head; one slot reaches bob.
-        _deposit(alice, 100_000e6);
-        uint256 idA2 = _requestRedeem(alice, DEPOSIT_100K_SHARES);
-        _requestRedeem(bob, DEPOSIT_100K_SHARES);
-        vm.prank(alice);
-        vault.cancelRedeemRequest(idA2, alice);
-        assertEq(vault.firstPendingRedeemId(), 4);
+        // Ghosts at the head cost a slot each: two ghosts then bob; (max, 2) pays nobody.
+        _ghost(carol);
+        _ghost(carol);
+        uint256 idB2 = _requestRedeem(bob, DEPOSIT_100K_SHARES);
+        assertEq(idB2, 5);
+        assertEq(vault.firstPendingRedeemId(), 3);
+
+        _processRedeems(type(uint256).max, 2);
+        assertEq(usdc.balanceOf(bob),          0);
+        assertEq(vault.firstPendingRedeemId(), 5);
+
         _processRedeems(type(uint256).max, 1);
-        assertEq(usdc.balanceOf(bob), 99_999_999_998);
-        assertEq(vault.firstPendingRedeemId(),  5);
+        assertEq(usdc.balanceOf(bob),          99_999_999_998);
+        assertEq(vault.firstPendingRedeemId(), 6);
     }
 
     /**********************************************************************************************/
     /*** 11. Invariant-style fuzz                                                               ***/
     /**********************************************************************************************/
 
-    // Random sequence of deposits, requests, ghosts, cancels, owner repoints (strangers and dead
-    // entries assert the revert), drains, takes and partial processing.
+    // Random sequence of deposits, requests (own and third-party recipient), ghosts, owner
+    // repoints (strangers and dead entries assert the revert), calls to the removed cancel
+    // selector (must fail and move nothing), drains, takes and partial processing.
     // After every step: balanceOf(vault) == pendingRedeemShares == sum of open request shares,
-    // and every entry before redeemHead is settled or cancelled.
+    // every entry before the head is settled or a ghost, and shares only ever leave escrow
+    // through a fill (the escrow is monotone outside of `processPendingRedeems`).
     function testFuzz_processPendingRedeems_balanceOfVaultEqualsPendingRedeemShares(uint256 seed)
         public
     {
@@ -1102,19 +1163,25 @@ contract RedeemQueueTest is LocalTestBase {
                 uint256 bal = vault.balanceOf(u);
                 if (bal != 0) _requestRedeem(u, bound(amt, 1, bal));
             } else if (action == 2) {
-                uint256 qlen = _queueLength();
-                if (qlen != 0) {
-                    uint256 id = (r >> 40) % qlen;
-                    (address owner, , uint256 sh) = _redeemRequest(id);
-                    if (sh != 0) { vm.prank(owner); vault.cancelRedeemRequest(id, owner); }
+                // Request to a third-party recipient, then prove the escrow cannot be undone:
+                // the removed selector fails and the escrow is unchanged.
+                uint256 bal = vault.balanceOf(u);
+                if (bal != 0) {
+                    uint256 id = _requestRedeemTo(u, bound(amt, 1, bal), users[(r >> 72) % 3]);
+                    uint256 escrow = vault.balanceOf(address(vault));
+                    assertFalse(_tryCancel(u, id, u));
+                    assertFalse(_tryCancel(guardian, id, u));
+                    assertEq(vault.balanceOf(address(vault)), escrow);
                 }
             } else if (action == 3) {
+                uint256 escrowBefore = vault.balanceOf(address(vault));
                 uint256 maxShares = (r >> 40) % 2 == 0 ? type(uint256).max : amt;
                 vm.prank(rebalancer);
                 try vault.processPendingRedeems(maxShares, (r >> 48) % 4) {}
                 catch Error(string memory reason) {
                     assertEq(reason, "SparkVault/insufficient-balance");  // known over-burn (C-1)
                 }
+                assertLe(vault.balanceOf(address(vault)), escrowBefore);  // fills only shrink it
             } else if (action == 4) {
                 uint256 liq = usdc.balanceOf(address(spUsdc));
                 if (liq != 0) _drainSpUsdcLiquidity(bound(amt, 1, liq));
@@ -1228,136 +1295,243 @@ contract RedeemQueueTest is LocalTestBase {
 
 
     /**********************************************************************************************/
-    /*** 12. Cancel: head advance, zero recipient, delete-after-fill                             ***/
+    /*** 12. Finality: a redeem request cannot be undone (cancelRedeemRequest removed)           ***/
     /**********************************************************************************************/
 
-    // Cancelling the head entry advances `redeemHead` past it AND past every zero-share entry
-    // behind it (src/SparkPrimeVault.sol:527-532), so the next pass starts at the first live one.
-    function test_cancelRedeemRequest_headCancelSkipsGhostsBehindIt() public {
+    // The selector is gone from the ABI: the proxy forwards to an implementation with no
+    // matching function and the call fails for the owner, the guardian and the admin. The
+    // `CancelRedeemRequest` event (src/SparkPrimeVault.sol:101) is still declared but no code
+    // path emits it: a full request / repoint / fill lifecycle emits no log with its topic.
+    function test_cancelRedeemRequest_selectorRemovedAndEventDead() public {
         _deposit(alice, 100_000e6);
-        _deposit(carol, 100_000e6);
+        uint256 id = _requestRedeem(alice, DEPOSIT_100K_SHARES);
 
-        uint256 idA = _requestRedeem(alice, DEPOSIT_100K_SHARES);  // 0
-        vm.prank(bob);  vault.requestRedeem(0, bob);                 // 1, ghost (no shares needed)
-        vm.prank(bob);  vault.requestRedeem(0, bob);                 // 2, ghost
-        uint256 idC = _requestRedeem(carol, DEPOSIT_100K_SHARES);  // 3
-        assertEq(idA, 0);
-        assertEq(idC, 3);
-        assertEq(vault.firstPendingRedeemId(), 0);
+        vm.recordLogs();
 
-        vm.expectEmit(true, true, true, true, address(vault));
-        emit CancelRedeemRequest(idA, DEPOSIT_100K_SHARES);
+        assertFalse(_tryCancel(alice,    id, alice));
+        assertFalse(_tryCancel(guardian, id, alice));
+        assertFalse(_tryCancel(admin,    id, alice));
+
+        assertEq(vault.balanceOf(address(vault)), DEPOSIT_100K_SHARES);
+        assertEq(vault.balanceOf(alice),          0);
+        assertEq(_queued(id),                     DEPOSIT_100K_SHARES);
+
         vm.prank(alice);
-        vault.cancelRedeemRequest(idA, alice);
+        vault.updateRedeemRecipient(id, bob);
+        _processRedeems(type(uint256).max, 10);
+        assertEq(usdc.balanceOf(bob), 99_999_999_998);
 
-        assertEq(vault.firstPendingRedeemId(),          3);  // jumped over 0, 1, 2
-        assertEq(vault.balanceOf(alice),      DEPOSIT_100K_SHARES);
-        assertEq(vault.pendingRedeemShares(), DEPOSIT_100K_SHARES);
-
-        // The cancelled entry is fully zeroed (owner too), so it reads as "no request".
-        (address o, address r, uint256 sh) = _redeemRequest(idA);
-        assertEq(o,  address(0));
-        assertEq(r,  address(0));
-        assertEq(sh, 0);
-        vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/no-request");
-        vault.cancelRedeemRequest(idA, alice);
-
-        // One slot is now enough to reach carol (the ghosts no longer cost `maxRequests_`).
-        _processRedeems(type(uint256).max, 1);
-        assertEq(usdc.balanceOf(carol), 99_999_999_998);
-        assertEq(vault.firstPendingRedeemId(),    4);
+        bytes32 cancelTopic = keccak256("CancelRedeemRequest(uint256,uint256)");
+        VmSafe.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i; i < logs.length; ++i) assertTrue(logs[i].topics[0] != cancelTopic);
     }
 
-    // Cancelling a non-head entry leaves the head alone; the hole is skipped later (and still
-    // costs a `maxRequests_` slot, RQ-3).
-    function test_cancelRedeemRequest_nonHeadCancelLeavesHead() public {
-        (uint256 idA, uint256 idB, uint256 idC) = _threeDepositorsQueued();
-
-        vm.prank(idB == 1 ? bob : bob);
-        vault.cancelRedeemRequest(idB, bob);
-        assertEq(vault.firstPendingRedeemId(), 0);
-
-        vm.prank(carol);
-        vault.cancelRedeemRequest(idC, carol);
-        assertEq(vault.firstPendingRedeemId(), 0);
-
-        _processRedeems(type(uint256).max, 1);  // pays alice, head lands on the hole at 1
-        assertEq(usdc.balanceOf(alice), 99_999_999_998);
-        assertEq(_queued(idA),          0);
-        assertEq(vault.firstPendingRedeemId(),    1);
-
-        _processRedeems(type(uint256).max, 10);  // walks over the two holes
-        assertEq(vault.firstPendingRedeemId(),          3);
-        assertEq(vault.pendingRedeemShares(), 0);
-    }
-
-    // Cancelling the only (last) entry leaves head == queue length; a later request is at the
-    // head immediately.
-    function test_cancelRedeemRequest_lastEntryCancelMovesHeadToLength() public {
+    // Design property (closes E-2 "free option" and C-10 "free capacity hog"): once queued, the
+    // shares sit at `address(vault)` and nothing but a fill moves them. The owner has no
+    // function, no allowance and no signature that reaches them; the guardian and the admin
+    // have none either; pause does not release them; time does not release them. Exits are
+    // 100% planner-dependent.
+    function test_requestRedeem_isFinal_noPathRecoversEscrow() public {
         _deposit(alice, 100_000e6);
         _deposit(bob,   100_000e6);
-        uint256 idA = _requestRedeem(alice, DEPOSIT_100K_SHARES);
+        uint256 id = _requestRedeem(alice, DEPOSIT_100K_SHARES);
+
+        assertEq(vault.balanceOf(address(vault)), DEPOSIT_100K_SHARES);
+        assertEq(vault.balanceOf(alice),          0);
+
+        // ERC20 paths: the vault never approves anyone, and nobody can sign for it.
+        assertEq(vault.allowance(address(vault), alice), 0);
+        vm.prank(alice);
+        vm.expectRevert("SparkPrimeVault/insufficient-allowance");
+        vault.transferFrom(address(vault), alice, 1);
 
         vm.prank(alice);
-        vault.cancelRedeemRequest(idA, alice);
+        vm.expectRevert("SparkPrimeVault/insufficient-allowance");
+        vault.transferFrom(address(vault), alice, DEPOSIT_100K_SHARES);
 
-        assertEq(_queueLength(),              1);
-        assertEq(vault.firstPendingRedeemId(),          1);
-        assertEq(vault.pendingRedeemShares(), 0);
+        // permit(owner = vault): ecrecover cannot yield the proxy address and the proxy has no
+        // `isValidSignature`, so the ERC-1271 staticcall fails -> `invalid-permit`.
+        (uint8 v, bytes32 r_, bytes32 s) = vm.sign(1, keccak256("anything"));
+        vm.prank(alice);
+        vm.expectRevert("SparkPrimeVault/invalid-permit");
+        vault.permit(address(vault), alice, type(uint256).max, block.timestamp + 1, v, r_, s);
+        assertEq(vault.allowance(address(vault), alice), 0);
 
-        _processRedeems(type(uint256).max, 10);  // nothing to do, no revert
-        assertEq(vault.firstPendingRedeemId(), 1);
+        // The updater moves the recipient, never the shares.
+        vm.prank(alice);
+        vault.updateRedeemRecipient(id, alice);
+        assertEq(vault.balanceOf(address(vault)), DEPOSIT_100K_SHARES);
 
-        uint256 idB = _requestRedeem(bob, DEPOSIT_100K_SHARES);
-        assertEq(idB, 1);
+        // Roles: no function on the vault moves escrowed shares. `take` moves spUSDC only.
+        _takeAll();
+        assertEq(vault.balanceOf(address(vault)), DEPOSIT_100K_SHARES);
+        _returnToVault(2 * DEPOSIT_100K_SPUSDC);
+        _pause();
+        assertEq(vault.balanceOf(address(vault)), DEPOSIT_100K_SHARES);
+        _unpause();
+
+        // Time: a year without a planner call leaves the escrow in place (and accruing).
+        _setPrimeVsr(FIVE_PCT_VSR);
+        _warpAndDrip(365 days);
+        assertEq(vault.balanceOf(address(vault)),            DEPOSIT_100K_SHARES);
+        assertEq(_queued(id),                                DEPOSIT_100K_SHARES);
+        assertEq(vault.convertToAssets(DEPOSIT_100K_SHARES), 104_999_999_998);
+        assertEq(usdc.balanceOf(alice),                      0);
+
+        // Only the planner releases it, and it pays floor(shares * chi / RAY) at fill time.
         _processRedeems(type(uint256).max, 1);
-        assertEq(usdc.balanceOf(bob), 99_999_999_998);
-        assertEq(vault.firstPendingRedeemId(),  2);
+        assertEq(usdc.balanceOf(alice),           104_999_999_998);
+        assertEq(vault.balanceOf(address(vault)), 0);
+        assertEq(_queued(id),                     0);
     }
 
-    // Partial fill (liquidity bound) leaves the entry at the head; the owner cancels the
-    // remainder, gets exactly the unfilled shares back and the head advances (past a ghost too).
-    function test_cancelRedeemRequest_afterPartialFill_refundsRemainderAndAdvancesHead() public {
+    // E-2 closed: the request is a commitment on the downside too. A loss realised after the
+    // request is taken by the escrow and the owner cannot step out of the queue to avoid it.
+    function test_requestRedeem_isFinal_cannotStepOutOfARealizedLoss() public {
+        _deposit(alice, 100_000e6);
+        _deposit(bob,   100_000e6);
+        uint256 id = _requestRedeem(alice, DEPOSIT_100K_SHARES);
+
+        _pause();
+        _realizeLoss(10_000e6);
+        _unpause();
+
+        assertFalse(_tryCancel(alice, id, alice));
+        assertEq(vault.balanceOf(alice),          0);
+        assertEq(vault.balanceOf(address(vault)), DEPOSIT_100K_SHARES);
+
+        _processRedeems(type(uint256).max, 1);
+        assertEq(usdc.balanceOf(alice), 94_999_999_998);  // same as section 15, no way around it
+    }
+
+    // C-10 closed: escrowed shares stay in `totalSupply` (src/SparkPrimeVault.sol:461 transfers,
+    // :466 burns only the fee), so a redeem request keeps the capacity it occupies until the
+    // fill burns it (:905). The owner cannot release it, so queueing a redeem costs the exit
+    // itself: no free hold on capacity.
+    function test_requestRedeem_capacityStaysOccupiedUntilFill() public {
+        _deposit(alice, 100_000e6);
+        _setCapacity(vault.totalSupply());
+        assertEq(vault.availableCapacity(), 0);
+
+        uint256 id = _requestRedeem(alice, DEPOSIT_100K_SHARES);
+        assertEq(vault.totalSupply(),       DEPOSIT_100K_SHARES);
+        assertEq(vault.availableCapacity(), 0);
+
+        // bob is queued behind the occupied capacity.
+        uint256 did = _deposit(bob, 100_000e6);
+        assertEq(vault.balanceOf(bob), 0);
+        (, , uint256 bobQueued) = _depositRequest(did);
+        assertEq(bobQueued, DEPOSIT_100K_SPUSDC);
+
+        // alice cannot give the capacity back without exiting.
+        assertFalse(_tryCancel(alice, id, alice));
+        assertEq(vault.availableCapacity(), 0);
+
+        // The fill burns the escrow and frees the capacity for bob.
+        _processRedeems(type(uint256).max, 1);
+        assertEq(usdc.balanceOf(alice),     99_999_999_998);
+        assertEq(vault.totalSupply(),       0);
+        assertEq(vault.availableCapacity(), DEPOSIT_100K_SHARES);
+
+        _processDeposits(type(uint256).max, 1);
+        // The capacity round-trip (shares -> USDC -> spUSDC, two floors) admits 2 spUSDC wei
+        // less than bob's request; the 2 wei stay queued (deposit-side rounding, not this area).
+        assertEq(vault.balanceOf(bob), 99_040_518_408);
+        (, , uint256 bobLeft) = _depositRequest(did);
+        assertEq(bobLeft, 2);
+    }
+
+    // Partial fill (liquidity bound) leaves the entry at the head with owner, recipient and the
+    // remainder; the remainder cannot be withdrawn from the queue. The owner can still repoint
+    // the remainder mid-fill: the part already paid stays with the old recipient, the rest goes
+    // to the new one, and the two parts sum to one full fill to the wei.
+    function test_requestRedeem_afterPartialFill_remainderStaysQueued_repointMidFill() public {
         _deposit(alice, 1_000_000e6);
         _deposit(carol, 100_000e6);
         uint256 idA = _requestRedeem(alice, DEPOSIT_1M_SHARES);  // 0
-        vm.prank(bob); vault.requestRedeem(0, bob);                // 1, ghost
+        _ghost(bob);                                              // 1
         uint256 idC = _requestRedeem(carol, DEPOSIT_100K_SHARES); // 2
         _drainSpUsdcLiquidity(usdc.balanceOf(address(spUsdc)) - 300_000e6);
 
         _processRedeems(type(uint256).max, 10);
 
-        assertEq(usdc.balanceOf(alice),       299_999_999_999);
-        assertEq(_queued(idA),                693_283_628_876);
-        assertEq(vault.firstPendingRedeemId(),          0);
-        assertEq(vault.pendingRedeemShares(), 693_283_628_876 + DEPOSIT_100K_SHARES);
+        assertEq(usdc.balanceOf(alice),        299_999_999_999);
+        assertEq(_queued(idA),                 693_283_628_876);
+        assertEq(vault.firstPendingRedeemId(), 0);
+        assertEq(vault.pendingRedeemShares(),  693_283_628_876 + DEPOSIT_100K_SHARES);
 
+        (address o, address r, ) = _redeemRequest(idA);
+        assertEq(o, alice);
+        assertEq(r, alice);
+
+        // No way out for the remainder.
+        assertFalse(_tryCancel(alice, idA, alice));
+        assertEq(vault.balanceOf(alice),          0);
+        assertEq(vault.balanceOf(address(vault)), 693_283_628_876 + DEPOSIT_100K_SHARES);
+
+        // Repoint the live head mid-fill.
+        vm.expectEmit(true, true, true, true, address(vault));
+        emit RedeemRecipientUpdated(idA, bob);
         vm.prank(alice);
-        vault.cancelRedeemRequest(idA, alice);
+        vault.updateRedeemRecipient(idA, bob);
 
-        assertEq(vault.balanceOf(alice),          693_283_628_876);
-        assertEq(vault.balanceOf(address(vault)), DEPOSIT_100K_SHARES);
-        assertEq(vault.pendingRedeemShares(),     DEPOSIT_100K_SHARES);
-        assertEq(vault.firstPendingRedeemId(),              2);  // past 0 (cancelled) and 1 (ghost)
-        assertEq(_queued(idA),                    0);
-
-        _returnSpUsdcLiquidity(100_000e6);
+        _returnSpUsdcLiquidity(800_000e6);
+        vm.expectEmit(true, true, true, true, address(vault));
+        emit Redeem(alice, bob, 693_283_628_876, 699_999_999_998);
         _processRedeems(type(uint256).max, 1);
-        assertEq(usdc.balanceOf(carol), 99_999_999_998);
-        assertEq(_queued(idC),          0);
-        assertEq(vault.firstPendingRedeemId(),    3);
+
+        assertEq(usdc.balanceOf(bob),          699_999_999_998);
+        assertEq(usdc.balanceOf(alice),        299_999_999_999);
+        assertEq(usdc.balanceOf(alice) + usdc.balanceOf(bob), 999_999_999_997);
+        assertEq(_queued(idA),                 0);
+        assertEq(vault.firstPendingRedeemId(), 1);  // the ghost at 1 is not walked
+
+        _processRedeems(type(uint256).max, 2);  // slot for the ghost, slot for carol
+        assertEq(usdc.balanceOf(carol),        99_999_999_998);
+        assertEq(_queued(idC),                 0);
+        assertEq(vault.firstPendingRedeemId(), 3);
     }
 
-    function test_cancelRedeemRequest_revertsRecipientZero() public {
+    // Same partial / resume shape across many small planner calls (`maxShares_` chunks). Each
+    // piece pays floor(piece * chi_p / RAY) and burns ceil(paid * RAY / chi_s) spUSDC, so the sum
+    // of the pieces never exceeds the single-fill floor, loses at most one wei per call, and the
+    // per-piece ceil burns (RQ-1 shape) eat the backing of the last shares: after 13 chunks the
+    // vault's spUSDC is worth 0 shares and the final 2 shares stay queued with nothing behind
+    // them until new backing arrives. One fill would have left 1 wei of spUSDC instead.
+    function test_processPendingRedeems_manyPartialFills_sumNeverExceedsOneFill() public {
         _deposit(alice, 100_000e6);
         uint256 id = _requestRedeem(alice, DEPOSIT_100K_SHARES);
-        vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
-        vault.cancelRedeemRequest(id, address(0));
+
+        uint256 piece = 7_777_777_777;  // shares per call, not a divisor of the request
+        for (uint256 calls; calls < 13; ++calls) {
+            assertEq(_queued(id), DEPOSIT_100K_SHARES - calls * piece);
+            _processRedeems(piece, 1);
+        }
+
+        uint256 oneFill = DEPOSIT_100K_SHARES * CHI_P / RAY;
+        assertEq(oneFill, 99_999_999_998);
+        assertLe(usdc.balanceOf(alice), oneFill);
+        assertGe(usdc.balanceOf(alice), oneFill - 13);
+        assertEq(usdc.balanceOf(alice), 99_999_999_990);  // 6 wei of floors, 2 shares (2 wei) unpaid
+
+        // Stranded: 2 shares queued, the spUSDC left converts to 0 shares, calls are no-ops.
+        assertEq(_queued(id),                   2);
+        assertEq(vault.firstPendingRedeemId(),  0);
+        assertEq(_vaultSpUsdc(),                1);
+        assertEq(vault.availableLiquidAssets(), 1);
+        assertEq(vault.convertToShares(1),      0);
+        _processRedeems(type(uint256).max, 1);
+        assertEq(_queued(id), 2);
+
+        // New backing completes it.
+        _returnToVault(2);
+        _processRedeems(type(uint256).max, 1);
+        assertEq(_queued(id),                  0);
+        assertEq(usdc.balanceOf(alice),        99_999_999_992);  // 2 shares -> 2 wei
+        assertEq(vault.firstPendingRedeemId(), 1);
     }
 
-    // A fully filled entry is `delete`d (src/SparkPrimeVault.sol:849): the getter returns zeros,
+    // A fully filled entry is `delete`d (src/SparkPrimeVault.sol:913): the getter returns zeros,
     // a partial fill keeps owner and recipient.
     function test_processPendingRedeems_fullFillDeletesEntry() public {
         _deposit(alice, 100_000e6);
@@ -1380,10 +1554,10 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(usdc.balanceOf(bob), 1);
         assertEq(vault.firstPendingRedeemId(),  1);
 
-        // The deleted entry is dead for cancel; the slot still exists in the array.
+        // The deleted entry is dead for the updater; the slot still exists in the array.
         vm.prank(alice);
         vm.expectRevert("SparkPrimeVault/no-request");
-        vault.cancelRedeemRequest(idA, alice);
+        vault.updateRedeemRecipient(idA, alice);
         assertEq(_queueLength(), 2);
     }
 
@@ -1425,110 +1599,15 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(usdc.balanceOf(alice), 0);
     }
 
-    // C-2 unblock path since ff828d2: `updateRedeemRecipient` (src/SparkPrimeVault.sol:537-546)
-    // is owner-only, so a stranger cannot repoint a blacklisted head. The queue stays blocked for
-    // everyone behind it; the only third-party unblock left is the guardian cancel. Here alice is
-    // an honest user blacklisted after queueing 100k, bob is stuck behind her.
-    function test_updateRedeemRecipient_strangerCannotRepointBlacklistedHead() public {
-        address mallory = makeAddr("mallory");
-        _deposit(alice, 100_000e6);
-        _deposit(bob,   100_000e6);
-        uint256 idA = _requestRedeem(alice, DEPOSIT_100K_SHARES);
-        uint256 idB = _requestRedeem(bob,   DEPOSIT_100K_SHARES);
-
-        // alice gets blacklisted while queued.
-        vm.mockCallRevert(
-            address(usdc),
-            abi.encodeWithSelector(usdc.transfer.selector, alice),
-            "Blacklistable: account is blacklisted"
-        );
-
-        vm.prank(rebalancer);
-        vm.expectRevert("Blacklistable: account is blacklisted");
-        vault.processPendingRedeems(type(uint256).max, 10);
-
-        // Neither an outsider, nor the stuck redeemer behind her, nor the guardian can repoint.
-        address[3] memory callers = [mallory, bob, guardian];
-        for (uint256 i; i < 3; ++i) {
-            vm.prank(callers[i]);
-            vm.expectRevert("SparkPrimeVault/not-authorized");
-            vault.updateRedeemRecipient(idA, callers[i]);
-        }
-
-        (address o, address r, uint256 sh) = _redeemRequest(idA);
-        assertEq(o,  alice);
-        assertEq(r,  alice);
-        assertEq(sh, DEPOSIT_100K_SHARES);
-
-        // Still blocked.
-        vm.prank(rebalancer);
-        vm.expectRevert("Blacklistable: account is blacklisted");
-        vault.processPendingRedeems(type(uint256).max, 10);
-        assertEq(usdc.balanceOf(bob), 0);
-        assertEq(vault.firstPendingRedeemId(),  0);
-
-        // Guardian cancel (shares back to the owner) remains the planner's unblock for C-2.
-        vm.prank(guardian);
-        vault.cancelRedeemRequest(idA, alice);
-        assertEq(vault.balanceOf(alice), DEPOSIT_100K_SHARES);
-        assertEq(vault.firstPendingRedeemId(),     1);
-
-        _processRedeems(type(uint256).max, 10);
-        assertEq(usdc.balanceOf(bob),         99_999_999_998);
-        assertEq(usdc.balanceOf(mallory),     0);
-        assertEq(_queued(idB),                0);
-        assertEq(vault.firstPendingRedeemId(),          2);
-        assertEq(vault.pendingRedeemShares(), 0);
-    }
-
-    // The owner of a blacklisted head can self-rescue by repointing to a clean address: the queue
-    // flows again and the payout lands where the owner says.
-    function test_updateRedeemRecipient_ownerSelfRescuesBlacklistedHead() public {
-        _deposit(alice, 100_000e6);
-        _deposit(bob,   100_000e6);
-        uint256 idA = _requestRedeem(alice, DEPOSIT_100K_SHARES);
-        uint256 idB = _requestRedeem(bob,   DEPOSIT_100K_SHARES);
-
-        vm.mockCallRevert(
-            address(usdc),
-            abi.encodeWithSelector(usdc.transfer.selector, alice),
-            "Blacklistable: account is blacklisted"
-        );
-
-        vm.prank(rebalancer);
-        vm.expectRevert("Blacklistable: account is blacklisted");
-        vault.processPendingRedeems(type(uint256).max, 10);
-        assertEq(usdc.balanceOf(bob), 0);
-
-        vm.expectEmit(true, true, true, true, address(vault));
-        emit RedeemRecipientUpdated(idA, carol);
-        vm.prank(alice);
-        vault.updateRedeemRecipient(idA, carol);
-
-        vm.expectEmit(true, true, true, true, address(vault));
-        emit Redeem(alice, carol, DEPOSIT_100K_SHARES, 99_999_999_998);
-        _processRedeems(type(uint256).max, 10);
-
-        assertEq(usdc.balanceOf(carol),       99_999_999_998);  // alice's payout, her choice
-        assertEq(usdc.balanceOf(alice),       0);
-        assertEq(usdc.balanceOf(bob),         99_999_999_998);  // queue unblocked
-        assertEq(_queued(idA),                0);
-        assertEq(_queued(idB),                0);
-        assertEq(vault.firstPendingRedeemId(),          2);
-        assertEq(vault.pendingRedeemShares(), 0);
-    }
-
-    // Repointing a dead (filled or cancelled) entry reverts `no-request` (src/SparkPrimeVault.sol:542)
+    // Repointing a dead (filled or ghost) entry reverts `no-request` (src/SparkPrimeVault.sol:513)
     // for everyone, the former owner included; an index past the array reverts with an
     // out-of-bounds panic.
     function test_updateRedeemRecipient_deadEntryAndOutOfRange() public {
         _deposit(alice, 100_000e6);
         _deposit(bob,   100_000e6);
-        uint256 filled    = _requestRedeem(alice, DEPOSIT_100K_SHARES);
-        uint256 cancelled = _requestRedeem(bob,   DEPOSIT_100K_SHARES);
+        uint256 filled = _requestRedeem(alice, DEPOSIT_100K_SHARES);
+        uint256 ghost  = _ghost(bob);
         _processRedeems(type(uint256).max, 1);
-        vm.prank(bob);
-        vault.cancelRedeemRequest(cancelled, bob);
 
         vm.prank(alice);
         vm.expectRevert("SparkPrimeVault/no-request");
@@ -1540,7 +1619,7 @@ contract RedeemQueueTest is LocalTestBase {
 
         vm.prank(bob);
         vm.expectRevert("SparkPrimeVault/no-request");
-        vault.updateRedeemRecipient(cancelled, carol);
+        vault.updateRedeemRecipient(ghost, carol);
 
         (address o, address r, uint256 sh) = _redeemRequest(filled);
         assertEq(o,  address(0));
@@ -1549,79 +1628,239 @@ contract RedeemQueueTest is LocalTestBase {
 
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSignature("Panic(uint256)", 0x32));
-        vault.updateRedeemRecipient(cancelled + 1, carol);
+        vault.updateRedeemRecipient(ghost + 1, carol);
 
         _processRedeems(type(uint256).max, 10);
         assertEq(usdc.balanceOf(carol), 0);
-        assertEq(vault.firstPendingRedeemId(),    2);
+        assertEq(vault.firstPendingRedeemId(), 2);
     }
 
     /**********************************************************************************************/
-    /*** 14. C-2: blacklisted recipient blocks the queue (re-confirmed)                          ***/
+    /*** 14. C-2 escalated: a blacklisted recipient blocks the redeem queue PERMANENTLY          ***/
     /**********************************************************************************************/
 
-    // BUG (C-2, re-confirmed): src/SparkPrimeVault.sol:845 pays inside the strict FIFO loop with
-    // no skip-on-failure. Mainnet USDC reverts transfers to blacklisted addresses, so one 1-share
-    // request to such an address at the head reverts every `processPendingRedeems` call.
-    function test_BUG_blacklistedRecipientBlocksRedeemQueue() public {
+    // BUG (High, was Medium C-2). src/SparkPrimeVault.sol:909 pays inside the strict FIFO loop
+    // (:891-914) with no skip-on-failure, and since bf93b0d the only function that can change a
+    // live entry is `updateRedeemRecipient` (:508-517), gated by `msg.sender == request_.owner`
+    // (:514). Round 3's third-party unblock (guardian `cancelRedeemRequest`) is gone. So a
+    // request whose recipient cannot receive USDC blocks every redeem queued behind it until its
+    // OWNER repoints. A hostile owner never does. Nothing a role holder can do changes that:
+    // `maxShares_` / `maxRequests_` cannot jump the head, pause only freezes the planner, the
+    // guardian, admin and rebalancer are `not-authorized` on the entry, and `take` / `realize*`
+    // do not touch the queue. Every exit is locked until an upgrade.
+    //
+    // Attacker cost: `minRedeem` shares escrowed (returned in full when the attacker chooses to
+    // repoint) plus the burned fee plus gas. With the launch defaults (`minRedeem` 0, fee 0) the
+    // jam costs 1 share, i.e. 1e-6 USDC. USDC blacklisting is modelled with `vm.mockCallRevert`
+    // on `usdc.transfer(blacklisted, *)`.
+    function test_BUG_blacklistedRecipientBlocksRedeemQueuePermanently() public {
         address attacker    = makeAddr("attacker");
         address blacklisted = makeAddr("blacklisted");
-        vm.mockCallRevert(
-            address(usdc),
-            abi.encodeWithSelector(usdc.transfer.selector, blacklisted),
-            "Blacklistable: account is blacklisted"
-        );
+        _blacklist(blacklisted);
 
         _deposit(attacker, 1e6);
         _deposit(alice, 1_000_000e6);
+        _deposit(bob,   100_000e6);
         uint256 attackerShares = vault.balanceOf(attacker);
+        assertEq(attackerShares, 990_404);
 
         vm.prank(attacker);
         uint256 jamId = vault.requestRedeem(1, blacklisted);
-        _requestRedeem(alice, DEPOSIT_1M_SHARES);
+        uint256 idA   = _requestRedeem(alice, DEPOSIT_1M_SHARES);
+        uint256 idB   = _requestRedeem(bob,   DEPOSIT_100K_SHARES);
+        assertEq(jamId, 0);
 
+        // 1. Every planner call reverts: the head cannot be skipped by either bound.
+        _expectBlocked(type(uint256).max, 10);
+        _expectBlocked(type(uint256).max, 1);
+        _expectBlocked(1, 1);
+        _expectBlocked(1, type(uint256).max);
+        _processRedeems(0, 10);  // maxShares_ 0 is a silent no-op, not progress
+        assertEq(vault.firstPendingRedeemId(), 0);
+        assertEq(usdc.balanceOf(alice),        0);
+
+        // 2. No role can touch the entry.
+        address[3] memory roles = [guardian, admin, rebalancer];
+        for (uint256 i; i < 3; ++i) {
+            vm.prank(roles[i]);
+            vm.expectRevert("SparkPrimeVault/not-authorized");
+            vault.updateRedeemRecipient(jamId, roles[i]);
+        }
+        assertFalse(_tryCancel(guardian, jamId, attacker));  // round-3 tool, removed
+        assertFalse(_tryCancel(admin,    jamId, attacker));
+
+        // 3. Pause does not help: it adds `paused` on top, and the jam is intact after unpause.
+        _pause();
         vm.prank(rebalancer);
-        vm.expectRevert("Blacklistable: account is blacklisted");
+        vm.expectRevert("SparkPrimeVault/paused");
         vault.processPendingRedeems(type(uint256).max, 10);
+        _unpause();
+        _expectBlocked(type(uint256).max, 10);
 
-        // No way to skip: maxShares/maxRequests cannot jump over the head entry.
-        vm.prank(rebalancer);
-        vm.expectRevert("Blacklistable: account is blacklisted");
-        vault.processPendingRedeems(type(uint256).max, 1);
-        vm.prank(rebalancer);
-        vm.expectRevert("Blacklistable: account is blacklisted");
-        vault.processPendingRedeems(1, 1);
+        // 4. Admin levers that exist do not move the queue: take, realizeLoss, realizeGain.
+        _take(1);
+        _returnToVault(1);
+        _pause();
+        _realizeLoss(1);
+        _unpause();
+        vm.prank(admin);
+        vault.realizeGain(1);
+        _expectBlocked(type(uint256).max, 10);
 
-        assertEq(usdc.balanceOf(alice), 0);
-        assertEq(vault.firstPendingRedeemId(),    0);
+        // 5. The honest users behind cannot leave either (finality, section 12).
+        assertFalse(_tryCancel(alice, idA, alice));
+        vm.prank(alice);
+        vault.updateRedeemRecipient(idA, carol);  // allowed, but changes nothing for the jam
+        _expectBlocked(type(uint256).max, 10);
 
-        // Guardian cancel (refund to the owner) unblocks; the attacker is made whole and can
-        // re-jam for gas only. The head now advances on cancel, so alice is reachable with 1 slot.
-        vm.prank(guardian);
-        vault.cancelRedeemRequest(jamId, attacker);
-        assertEq(vault.balanceOf(attacker), attackerShares);
-        assertEq(vault.firstPendingRedeemId(),        1);
+        // 6. Time changes nothing.
+        _warpAndDrip(365 days);
+        _expectBlocked(type(uint256).max, 10);
+        assertEq(vault.firstPendingRedeemId(), 0);
+        assertEq(usdc.balanceOf(alice),        0);
+        assertEq(usdc.balanceOf(bob),          0);
+
+        // 7. Only the attacker can release it, and gets their share paid in full when they do.
+        vm.prank(attacker);
+        vault.updateRedeemRecipient(jamId, attacker);
+        _processRedeems(type(uint256).max, 10);
+        assertEq(usdc.balanceOf(attacker),     1);  // 1 share -> 1 wei at chi ~1.0097
+        assertEq(vault.firstPendingRedeemId(), 3);
+        assertGt(usdc.balanceOf(carol), 0);
+        assertGt(usdc.balanceOf(bob),   0);
+        assertEq(_queued(idA), 0);
+        assertEq(_queued(idB), 0);
+
+        // 8. Re-jam for the same price; the next honest redeemer is locked again.
+        vm.prank(attacker);
+        vault.requestRedeem(1, blacklisted);
+        _deposit(carol, 10e6);
+        _requestRedeem(carol, vault.balanceOf(carol));
+        _expectBlocked(type(uint256).max, 10);
+        assertEq(vault.balanceOf(attacker), attackerShares - 2);
+    }
+
+    // The same jam at non-default parameters: `minRedeem` 1_000e6 shares and a 1% fee. The
+    // attacker burns 10e6 shares (the fee, the only sunk cost) and parks 990e6 shares that come
+    // back the moment they repoint. Everything behind is still locked.
+    function test_BUG_blacklistedRecipientBlocksRedeemQueuePermanently_withMinRedeemAndFee() public {
+        address attacker    = makeAddr("attacker");
+        address blacklisted = makeAddr("blacklisted");
+        _blacklist(blacklisted);
+        _setMinRedeem(1_000e6);
+        _setRedeemFeeRate(0.01e18);
+
+        _deposit(attacker, 1_100e6);
+        _deposit(alice,    1_000_000e6);
 
         vm.prank(attacker);
-        vault.requestRedeem(1, blacklisted);  // id 2, behind alice
+        uint256 jamId = vault.requestRedeem(1_000e6, blacklisted);
+        _requestRedeem(alice, DEPOSIT_1M_SHARES);
 
-        _processRedeems(type(uint256).max, 1);
-        assertEq(usdc.balanceOf(alice), 999_999_999_998);
-        assertEq(vault.firstPendingRedeemId(),    2);
+        assertEq(_queued(jamId),              990_000_000);  // fee 10_000_000 burned
+        assertEq(vault.convertToAssets(10e6), 10_096_877);   // sunk cost: ~10.10 USDC
 
-        // The next honest redeemer is stuck behind the new jam again.
-        _deposit(bob, 10e6);
-        _requestRedeem(bob, vault.balanceOf(bob));
-        vm.prank(rebalancer);
-        vm.expectRevert("Blacklistable: account is blacklisted");
-        vault.processPendingRedeems(type(uint256).max, 10);
+        _expectBlocked(type(uint256).max, 10);
+        _expectBlocked(1, 1);
+
+        vm.prank(guardian);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vault.updateRedeemRecipient(jamId, attacker);
+
+        assertEq(usdc.balanceOf(alice), 0);
+
+        vm.prank(attacker);
+        vault.updateRedeemRecipient(jamId, attacker);
+        _processRedeems(type(uint256).max, 10);
+        assertEq(usdc.balanceOf(attacker), 990_000_000 * CHI_P / RAY);
+        assertEq(usdc.balanceOf(attacker), 999_590_890);  // the parked capital, back in USDC
+        assertEq(usdc.balanceOf(alice),    989_999_999_997);
+    }
+
+    // Honest-victim variant: alice is blacklisted AFTER queueing. Bob behind her is locked, no
+    // role can help him, and alice (the only key that can) rescues both by repointing to a
+    // clean address. The repoint also works while paused (src/SparkPrimeVault.sol:508 has no
+    // `whenNotPaused`), so a guardian pause never removes the owner's way out.
+    function test_updateRedeemRecipient_blacklistedOwnerSelfRescuesQueue() public {
+        _deposit(alice, 100_000e6);
+        _deposit(bob,   100_000e6);
+        uint256 idA = _requestRedeem(alice, DEPOSIT_100K_SHARES);
+        uint256 idB = _requestRedeem(bob,   DEPOSIT_100K_SHARES);
+
+        _blacklist(alice);
+
+        _expectBlocked(type(uint256).max, 10);
+        _expectBlocked(type(uint256).max, 1);
+        assertEq(usdc.balanceOf(bob), 0);
+
+        // Neither an outsider, nor the stuck redeemer behind her, nor any role can repoint.
+        address[5] memory callers = [makeAddr("mallory"), bob, guardian, admin, rebalancer];
+        for (uint256 i; i < 5; ++i) {
+            vm.prank(callers[i]);
+            vm.expectRevert("SparkPrimeVault/not-authorized");
+            vault.updateRedeemRecipient(idA, callers[i]);
+        }
+        assertFalse(_tryCancel(guardian, idA, alice));
+
+        (address o, address r, uint256 sh) = _redeemRequest(idA);
+        assertEq(o,  alice);
+        assertEq(r,  alice);
+        assertEq(sh, DEPOSIT_100K_SHARES);
+        _expectBlocked(type(uint256).max, 10);
+
+        // alice repoints during a pause.
+        _pause();
+        vm.expectEmit(true, true, true, true, address(vault));
+        emit RedeemRecipientUpdated(idA, carol);
+        vm.prank(alice);
+        vault.updateRedeemRecipient(idA, carol);
+        _unpause();
+
+        vm.expectEmit(true, true, true, true, address(vault));
+        emit Redeem(alice, carol, DEPOSIT_100K_SHARES, 99_999_999_998);
+        _processRedeems(type(uint256).max, 10);
+
+        assertEq(usdc.balanceOf(carol),        99_999_999_998);  // alice's payout, her choice
+        assertEq(usdc.balanceOf(alice),        0);
+        assertEq(usdc.balanceOf(bob),          99_999_999_998);  // queue unblocked
+        assertEq(_queued(idA),                 0);
+        assertEq(_queued(idB),                 0);
+        assertEq(vault.firstPendingRedeemId(), 2);
+        assertEq(vault.pendingRedeemShares(),  0);
+    }
+
+    // A jam behind a live head is latent: it only bites once the head is paid. (max, 10) pays
+    // alice at index 0 then reverts at index 1 as one transaction, so alice is NOT paid either:
+    // the planner must size `maxRequests_` to stop right before the jam.
+    function test_BUG_blacklistedRecipient_latentJamForcesExactBatchSizing() public {
+        address attacker    = makeAddr("attacker");
+        address blacklisted = makeAddr("blacklisted");
+        _blacklist(blacklisted);
+
+        _deposit(alice,    100_000e6);
+        _deposit(attacker, 1e6);
+        _deposit(bob,      100_000e6);
+        _requestRedeem(alice, DEPOSIT_100K_SHARES);              // 0
+        vm.prank(attacker);
+        vault.requestRedeem(1, blacklisted);                      // 1
+        _requestRedeem(bob, DEPOSIT_100K_SHARES);                 // 2
+
+        _expectBlocked(type(uint256).max, 10);  // alice's fill is rolled back with the revert
+        assertEq(usdc.balanceOf(alice), 0);
+
+        _processRedeems(type(uint256).max, 1);  // exactly up to the jam
+        assertEq(usdc.balanceOf(alice),        99_999_999_998);
+        assertEq(vault.firstPendingRedeemId(), 1);
+
+        _expectBlocked(type(uint256).max, 1);   // bob is locked from here on
+        assertEq(usdc.balanceOf(bob), 0);
     }
 
     /**********************************************************************************************/
     /*** 15. realizeLoss while queued (mirror of RQ-5)                                          ***/
     /**********************************************************************************************/
 
-    // `realizeLoss` (src/SparkPrimeVault.sol:369-385, paused only, 0 < loss < totalAssets since
+    // `realizeLoss` (src/SparkPrimeVault.sol:365-381, paused only, 0 < loss < totalAssets since
     // ff828d2) sets chi = floor((totalAssets - loss) * RAY / totalSupply) for everyone, escrowed
     // shares included: a queued redeemer is paid at the reduced chi and takes the loss pro rata.
     function test_processPendingRedeems_realizeLossWhileQueued_escrowTakesLossProRata() public {
@@ -1661,7 +1900,7 @@ contract RedeemQueueTest is LocalTestBase {
     /*** 16. realizeGain while queued (mirror of RQ-5, new at ff828d2)                          ***/
     /**********************************************************************************************/
 
-    // `realizeGain` (src/SparkPrimeVault.sol:297-309, DEFAULT_ADMIN, no pause required) sets
+    // `realizeGain` (src/SparkPrimeVault.sol:293-305, DEFAULT_ADMIN, no pause required) sets
     // chi = floor((totalAssets + gain) * RAY / totalSupply) for everyone, escrowed shares included:
     // a queued redeemer is paid MORE after a gain, pro rata with the holders.
     function test_processPendingRedeems_realizeGainWhileQueued_escrowSharesGainProRata() public {
