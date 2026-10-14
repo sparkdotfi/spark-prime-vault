@@ -1,156 +1,170 @@
-# spPRIME adversarial campaign: report
+# spPRIME adversarial campaign: round 2 report
 
 Worker: adversarial. File: `test/Adversarial.t.sol` (contract `AdversarialTest is LocalTestBase`),
-59 tests, all passing (`forge test --match-path test/Adversarial.t.sol`, fuzz at 1000 and 5000
-runs). Line numbers refer to `src/SparkPrimeVault.sol` on `campaign/adversarial` (carries review
-patches F-1 and F-3). Known findings F-1..F-8 / I-1..I-8 are not re-reported.
+76 tests, all passing (`forge test --match-path test/Adversarial.t.sol ...`, fuzz at 1000 and
+5000 runs). Line numbers refer to `src/SparkPrimeVault.sol` on `campaign-v2/adversarial` after
+merging `review/poc-tests-v2` (upstream `refactor/more-simplifying` @ 0bc9288: `pause()` back on
+GUARDIAN_ROLE, `realizeLoss` via `totalAssets()`). Round-1 attacks were all ported and re-pinned;
+only what is new or changed is written up in (a). Round-1 numbers that did not move (A-2 SETTER
+over-credit, A-4 capacity hog, A-7 planner ghost skips, A-8, A-9) are re-asserted by the same tests.
 
-Counts: new findings 1 Medium, 3 Low, 5 Info. Everything else held as a property.
+Counts: new findings 1 Critical, 1 High, 2 Medium, 1 Low, 3 Info. Everything else held as a property.
 
 ## (a) Successful or partially successful attacks
 
-### A-1 Medium: a redeem whose recipient cannot receive USDC blocks the whole redeem queue
-`_processRedeemQueue` line 698: `IERC4626Like(savings).withdraw(assets_, request.recipient, address(this))`.
-Mainnet USDC reverts on transfers to blacklisted addresses. The loop is strict FIFO with no
-skip-on-failure, so once such an entry is at `redeemHead` every `processRedeemQueue` call reverts
-and nobody behind it can be paid.
+### R2-1 Critical: anyone can repoint any queued request to themselves and the honest planner pays them
+`updateDepositRecipient` line 423, `updateCancelledDepositRecipient` line 467,
+`updateRedeemRecipient` line 534: the only check is `recipient_ != address(0)`. The fill paths read
+`request_.recipient` from storage at fill time (lines 729, 765, 805).
 
-Scenario (test `test_BUG_blacklistedRecipientBlocksRedeemQueue`): attacker deposits 1 USDC,
-calls `requestRedeem(1, <blacklisted address>)`; Alice queues 1_000_000 USDC behind. Both
-`processRedeemQueue(max, 10)` and `(max, 1)` revert with `Blacklistable: account is blacklisted`;
-`redeemHead` stays 0, Alice receives 0. A guardian `cancelRedeemRequest` unblocks it; the attacker
-gets the 1 share back (F-1 patch refunds the owner) and resubmits at once; the next honest
-redeemer (Bob) is blocked again.
-Cost to attacker: gas only (~105k per request, the share is refunded on cancel; with a non-zero
-fee the cost is the fee on 1 share, i.e. 1 wei). Impact: repeatable DoS of the only exit path,
-needing a guardian transaction per occurrence; also hits honest users who get blacklisted while
-queued. Fix: on fill, if the spUSDC `withdraw` to the recipient fails, skip or park the entry
-(or pay to `request.owner`), and reject `recipient_` for which `USDC.isBlacklisted()` is true at
-request time.
+Scenarios (all attacker cost: one ~30k-gas call, no capital, no role):
+- Front-run the planner (`test_BUG_updateRecipient_frontRunPlannerStealsRedeemPayout`): alice
+  queues a 1_000_000 USDC redeem; mallory sees `processRedeemQueue` in the mempool and calls
+  `updateRedeemRecipient(id, mallory)` in the same block; the planner pays mallory 1_009_687.768242
+  USDC, alice's shares are burned, she gets 0.
+- Deposit queue (`test_BUG_updateRecipient_stealsQueuedDepositShares`): victim's queued 1_000_000
+  USDC is minted to mallory on fill; mallory redeems at once at fee 0 and walks away with
+  999_999.999998 USDC.
+- Cancel queue (`test_BUG_updateRecipient_stealsCancelledDepositRefund`): victim cancels to
+  themselves, mallory repoints the cancelled entry, planner's `spUSDC.redeem` pays mallory.
+- No safe exit (`test_BUG_updateRecipient_victimHasNoSafeExitFromDepositQueue`): victim notices the
+  repoint, cancels to a fresh address; mallory repoints the cancelled entry too. Whichever queue the
+  money is in, the last writer before the planner's call gets it. The victim's only defence is to
+  win a same-block race on every planner call, forever.
+- Last write wins, including across partial fills
+  (`test_updateRecipient_raceLastWriteWinsAtFill`): a half fill pays the current recipient, the
+  remainder follows the next write. The owner has no priority over a stranger.
 
-### A-2 Low: compromised SETTER at the admin bound MAX_VSR drains vault equity through honest fills
-`setVSR` lines 285-292 (bound `maxVSR`, harness sets it to MAX_VSR = 100% APY).
-On 1_000_000 USDC the over-credit is exactly 1_900.837678 USDC per day and 58_625.111031 USDC per
-30 days (`test_compromised_setter_maxVsrOverCreditsPerDay`); at a 10% bound it is 261.157876 USDC
-per day (7.28x less). The over-credit becomes real on the first honest fill: after 7 days at
-MAX_VSR Alice is owed 1_013_381.981440 USDC, the planner pays everything the vault holds
-(1_000_000 minus 2 wei), the vault's spUSDC drops to 1 share and 13_381.981442 USDC of her
-request is unpayable forever (`test_compromised_setter_overCreditRealisedOnRedeem`). Recommend
-`maxVSR` of at most ~10-15% APY, so a key compromise is bounded to ~0.03%/day.
+Impact: every queued deposit, cancel and redeem is stealable by anyone. Fix: `require(msg.sender ==
+request.owner)` (or owner-or-guardian) in all three, and reject `recipient_ == address(this)`.
 
-### A-3 Low: compromised RISK_MANAGER during an honest pause can wipe every holder with `setChi(1)`
-`setChi` lines 327-332: only `chi_ > 0 && chi_ < drip()`. `test_compromised_riskManager_setChiToOneWeiWipesHolders`:
-Alice's 1_000_000 USDC position becomes 0 (`shares * 1 / 1e27`), `totalAssets() == 0`, and
-nothing can raise chi back: 10 years at MAX_VSR afterwards gives chi 1024 (wei), still 0 assets.
-The spUSDC backing (1_000_000 USDC) is untouched and takeable. Recommend a floor per call
-(e.g. `chi_ >= chi * 0.9`), a two-step/timelocked loss realisation, or admin-only.
-(Loss realisation is out of scope for the campaign; reported here only for the compromised-role bound.)
+### R2-2 High: the same three functions turn round-1 self-harm griefs into attacks on victims
+- Queue block for free (`test_BUG_updateRecipient_blacklistBlocksRedeemQueueAtZeroCost`): repoint
+  alice's redeem to a USDC-blacklisted address; every `processRedeemQueue` reverts
+  (`Blacklistable: account is blacklisted`), bob behind her is stuck. Round-1 A-1 / C-2 needed the
+  attacker's own share; now it needs nothing. Alice repoints back, the attacker repoints again
+  before each planner call. The guardian ends it with `cancelRedeemRequest`, which costs alice the
+  1% fee she already paid (F-8): 9_904.051842 shares, about 10_000 USDC, inflicted on the victim at
+  zero cost to the attacker.
+- Strand a victim's redeem in the vault (`test_BUG_updateRecipient_strandsVictimRedeemInVault`):
+  repoint to `address(vault)`; the fill sends 100_968.776824 USDC into the contract where nothing
+  counts or moves it (`take` moves spUSDC only). Round-1 A-6 / C-6 was self-harm; it is now
+  third-party destruction of funds.
+- Burn a victim's deposit into dead capacity
+  (`test_BUG_updateRecipient_burnsVictimDepositIntoDeadCapacity`): repoint a queued deposit to
+  `address(vault)`; the fill mints 99_040.518410 phantom shares to the vault that no path can burn
+  (escrow accounting ignores them, `pendingRedeemShares == 0`), still there after 100 years, and
+  they consume capacity permanently.
+Fix: same authorization as R2-1 plus `recipient_ != address(this)` in requests and updates.
 
-### A-4 Low: capacity hogging at zero cost when `redeemFee == 0`
-Lines 432-445 escrow redeem shares inside `totalSupply`; capacity stays full until the planner
-pays (I-7 touches this). `test_capacityHog_depositThenRedeemHoldsCapacityForFree`: attacker
-deposits the entire free capacity (1_000_000 USDC) and requests a redeem in the same block; the
-victim's 1_000 USDC deposit is queued; after the planner pays, the attacker is refunded in full
-(fee 0, within 4 wei) and re-deposits, needing another planner cycle. Cost: time value only.
-The fee is the only deterrent (1% at the cap). Recommend netting (TODO line 48) or a non-zero
-launch fee.
+### R2-3 Medium (trust model): compromised RISK_MANAGER during a pause can zero chi and permanently disable redeems
+`realizeLoss` line 357: `chi = (totalAssets() - loss) * RAY / totalSupply`, no floor.
+- `loss = totalAssets - 1` leaves `chi = RAY / totalSupply` (1e15 on 1M USDC): every holder is at
+  0 assets; after 10 years at MAX_VSR alice's 1_000_000 USDC is worth 1_023 wei
+  (`test_compromised_riskManager_realizeLossWipesHolders`).
+- `loss = totalAssets` sets `chi == 0` exactly (`test_compromised_riskManager_fullLossBricksVault`).
+  Effects, all permanent (no chi setter; `0 * rpow = 0`; `realizeLoss(1)` now underflows):
+  `convertToShares` panics (0x12), so `processRedeemQueue` can never run again; deposits do not
+  revert but can never be filled (the budget `spUSDC.convertToShares(convertToAssets(capacity))`
+  is 0), so they queue until cancelled; cancels still refund; `take` still works. Only an upgrade
+  repairs it.
+- Bounds are arithmetic only: `totalSupply == 0` and `loss > totalAssets` both revert with
+  Panic(0x11), not a designed check (`test_compromised_riskManager_realizeLossBoundsArePanics`).
+Round-1 A-3 / C-3 stands with the formula changed; recommend a per-call floor set by the admin,
+or admin-only.
 
-### A-5 Info: instant-path jam for 2 wei
-`requestDeposit` line 357 (`depositInstantly_ = pendingDepositSavingsShares == 0`).
-With capacity exactly full, `requestDeposit(2 wei)` leaves 1 spUSDC share queued (1 wei would
-round to 0 shares and jam nothing). From then on every deposit is queued even after redeems
-free capacity (`test_jam_fullCapacityTwoWeiDepositBlocksInstantPath`: Alice redeems 10%, the
-victim's 50_000 USDC is queued). The jam clears on the first planner call that has capacity:
-the share converts to 1 USDC and 0 spPRIME shares (F-4 path) and the entry closes, the victim is
-filled in the same call (`test_jam_clearedByOnePlannerCall`). Re-jamming with capacity > 0
-requires the attacker to fill the free capacity with their own capital first
-(`test_jam_rejamRequiresFillingFreeCapacity`). Attacker cost 2 wei + gas (1 wei comes back on
-cancel). Not a bug beyond F-4/F-5; it does mean "instant deposits" are only reliable while the
-planner runs regularly.
+### R2-4 Medium: cancel-queue FIFO starvation by a whale when spUSDC is short
+`_processCancelledDepositQueue` line 744: budget is `spUSDC.balanceOf(vault)`, not spUSDC's
+liquidity; line 765 `spUSDC.redeem` reverts `SparkVault/insufficient-liquidity` at the head.
+`test_cancelQueue_whaleCancelStarvesQueueWhenSpUsdcShort`: a 10_000_000 USDC cancel at the head
+with 1_000 USDC of liquidity in spUSDC makes `processCancelledDepositQueue(max, n)` revert; the
+100 USDC cancel behind it gets nothing. The planner can drip-feed the whale with partial fills
+(`maxSavingsShares_`), but the small entry stays behind until liquidity covers the whole whale.
+Cost to a griefer: deposit then cancel; capital is returned over time, no fee. NEWSURFACE owns the
+revert itself; the starvation is recorded here. Fix: clamp the per-call budget to spUSDC
+liquidity and skip/park entries that exceed it.
 
-### A-6 Info: `recipient_ == address(vault)` burns the user's money and consumes capacity forever
-`requestDeposit(x, address(vault))` mints to the vault: 100_000 USDC becomes ~99_026 phantom
-shares inside `totalSupply`, never burnable (the redeem loop burns at most `request.shares`),
-still there after 100 years, capacity reduced by that amount until the admin raises it
-(`test_escrow_depositRecipientVaultPermanentlyConsumesCapacity`, `test_escrow_phantomSharesCannotBeBurnedByRedeemQueue`).
-`requestRedeem(x, address(vault))` pays USDC to the vault where nothing counts it or can move it
-(`test_escrow_redeemRecipientVaultStrandsUsdcInVault`). Attacker pays full principal, so it is
-self-harm plus a capacity grief. Recommend `require(recipient_ != address(this))` in both.
+### R2-5 Low: cancel-queue bloat with dust deposits
+`test_cancelQueue_dustCancelsGasPerEntry`: each `requestDeposit(2 wei)` + `cancelDepositRequest`
+costs the attacker 250_123 gas and creates a real cancelled entry (1 spUSDC share) that costs the
+planner 17_840 gas (warm; ~20k cold) to settle via `spUSDC.redeem`, about 1_681 per 30M block.
+500 dust cancels push a victim's refund behind one full planner call. The attacker gets 1 wei back
+per 2 wei in. `minDeposit >= 1e6` removes it (the cycle then costs 1 USDC of capital per entry,
+still refundable). No ghosts are possible in this queue (cancel requires `shares != 0`).
 
-### A-7 Info: ghost entries are gas griefing only, planner always makes progress when it can
-Lines 643-648 / 680-685 (`continue` on zero entries, head updated at loop end).
-Measured (`test_griefing_*`): attacker pays 75_122 gas per `requestDeposit(0)` ghost and
-105_356 gas per `requestRedeem(1)` ghost (1% fee); the planner pays 493 / 518 gas per skipped
-ghost with warm slots (one test tx), about 2_500 cold on mainnet, i.e. ~12_000 ghosts per 30M
-block, and the head advances across calls (`maxRequests` 1001 then 1000 then 1 reaches the victim).
-A 1-wei real redeem (fee 0) costs the planner 20_313 gas per fill (warm). Ghost deposits made
-while the queue is empty are skipped instantly by the head reset (line 379). The head cannot
-advance past ghosts while `availableCapacity()==0` / liquidity is 0, but nothing could be
-processed then anyway (`test_griefing_headDoesNotAdvanceWithoutCapacityOrLiquidity`).
-`setMinimums(1e6, 1e6)` blocks both ghost types (`test_griefing_ghostsBlockedByMinimums`).
+### R2-6 Info: deposit head walk is a one-time gas charge, not a block-limit DoS
+Lines 393-398 (walk in `_requestDeposit`), 459 and 526 (walks in the cancels).
+- Ghosts behind an open head entry are not walked until that entry closes. If the planner closes
+  it exactly (budget or `maxRequests` ends there, line 738 `depositHead = i_`), the head lands on
+  the first ghost and the next depositor pays the whole walk
+  (`test_griefing_headWalkChargedToNextDepositorAfterPlannerClosesHead`): 798 gas per ghost warm,
+  ~2_800 cold; 1_000 ghosts add ~0.8M (warm) to a 142_728-gas deposit. Pushing one
+  `requestDeposit` over 30M needs ~10_721 ghosts, i.e. ~804M gas (~27 full blocks) of attacker
+  spend, placed in advance behind an open entry; it is paid once, by whoever deposits next, and
+  the planner can pre-walk them at 493 gas each. A wallet that estimated gas before the ghosts
+  landed reverts out of gas once (~50 ghosts exceed a 100k buffer).
+- Same-block front-running cannot inflate the walk: when the head is already on zero entries
+  each new ghost walks the ones before it, so the attacker pays incrementally and the victim pays
+  one step (`test_griefing_ghostsWalkThemselvesWhenHeadIsOnZeroEntries`: 133_784 gas behind 300
+  ghosts).
+- An owner cancelling the entry at the head pays the walk over every ghost behind it, in either
+  queue (`test_griefing_ownerCancelAtHeadPaysWalkOverGhosts`: 994_119 gas deposit-side, 927_578
+  redeem-side, for 1_000 ghosts, warm).
+- `requestRedeem(0)` is a free ghost: no shares, no fee, 89_139 gas, 518 gas for the planner to
+  skip, cannot be cancelled (`test_griefing_zeroRedeemGhostsAreFree`). `minRedeem >= 1` blocks it.
+Re-confirmed from round 1: a 1-share dust entry at the head still queues everybody
+(`test_jam_fullCapacityTwoWeiDepositBlocksInstantPath`), one planner call clears it
+(`test_jam_clearedByOnePlannerCall`), re-jamming needs the free capacity filled first.
 
-### A-8 Info: external dependencies on spUSDC make deposits/cancels revert
-`requestDeposit` reverts with `SparkVault/deposit-cap-exceeded` when spUSDC's cap is hit, nothing
-is queued (`test_requestDeposit_revertsWhenSpUsdcCapHit`). `cancelDepositRequest` reverts with
-`SparkVault/insufficient-liquidity` when spUSDC has no USDC even though the vault still holds the
-spUSDC (`test_cancelDepositRequest_revertsWhenSpUsdcIlliquid`); distinct cause from F-2.
+### R2-7 Info: cancel is now a two-step, planner-dependent refund
+`cancelDepositRequest` line 430 moves the entry to `cancelledDepositQueue`; the refund waits for
+REBALANCER. Consequences recorded in ported tests: a starved depositor can cancel but still cannot
+get money without the planner (`test_compromised_rebalancer_cannotExtractValue`: partial
+settlements pay exactly `spUSDC.redeem(shares)`, at most one floor each); the caller-chosen
+`recipient_` is back for the guardian (F-1, CANCEL-FEES owns); no callback reaches a contract
+recipient on settlement (`test_reentrancy_noCallbackToRecipient`).
 
-### A-9 Info: `drip()` overflow bound (comment on line 574 is right, but there is a brick)
-chi is capped by the checked product `_rpow(vsr, dt) * chi < 2^256`, i.e. chi < 1.16e50 = 2^76.6
-growth: 76 cumulative years at 100% APY work, 77 revert (`test_extremes_chiLimit_76YearsAtMaxVsrOk`,
-`..._77YearsAtMaxVsrReverts`). uint192 truncation is unreachable (`test_extremes_chiCannotExceedUint192`).
-With `totalSupply` near `uint128.max`, line 579 `totalSupply_ * nChi_` overflows earlier: 38 years
-at MAX_VSR drips, 39 reverts with Panic(0x11), and because every entry point drips first
-(including `setVSR`) the vault is bricked (`test_extremes_dripOverflowBoundAtMaxSupply`). Since
-`shares_ <= totalSupply`, drip is always the first thing to overflow; no user-level product can
-overflow before it. Unreachable with a sane `maxVSR`; recorded for completeness.
-Also: a malicious ERC-1271 signer that writes state inside `isValidSignature` consumes all
-forwarded gas before the staticcall fails (test gas 992M); the permit caller pays. Inherent.
+### R2-8 Info: pause is GUARDIAN again
+`pause` line 362. Hot-wallet roles cannot pause (`test_pause_hotWalletRolesCannot`); unpause stays
+admin-only (`test_unpause_guardianCannot`). The round-1 exposure numbers for a compromised SETTER
+are unchanged: 1_900.837678 USDC per day on 1M at MAX_VSR, 261.157876 at a 10% bound
+(`test_compromised_setter_maxVsrOverCreditsPerDay`), realised on the first honest fill
+(`test_compromised_setter_overCreditRealisedOnRedeem`: 13_381.981442 USDC unpayable after 7 days).
 
 ## (b) Attacks that failed, as properties
 
 | Property | Test |
 |---|---|
-| Instant deposit + redeem round trip never returns more than deposited; loss <= chi_s/RAY + chi_p/RAY + 4 wei (observed max 4 wei with chi up to ~2.1) over random amounts and ugly indexes | `testFuzz_roundTrip_userNeverProfits` |
-| Queued deposit + cancel (up to 5 cycles) never refunds more than put in; loss <= 1 spUSDC share (observed max 2 wei) | `testFuzz_depositCancelCycle_userNeverProfits` |
-| Three consecutive round trips: cumulative out <= in | `testFuzz_roundTrip_repeatedCyclesNeverProfit` |
-| 1 wei deposit gives 0 spUSDC shares: ghost, no jam, `no-request` on cancel | `test_jam_oneWeiDepositGivesZeroSavingsSharesNoJam` |
-| 1-share free capacity converts to 0 spUSDC shares: nothing processable, clears once capacity >= 3 | `test_jam_capacityOneShareRemainderIsNotProcessable` |
-| spUSDC donations raise `availableLiquidAssets` by exactly `convertToAssets(donated)`, mint nothing, are takeable, leave `pendingDepositSavingsShares` and queued fills unchanged | `test_donation_spUsdcRaisesLiquidityAndIsTakeable`, `test_donation_doesNotAffectDepositQueueAccounting` |
-| First-come wins the last capacity; the loser (and any later depositor) stays queued after a redeem frees capacity until the planner runs | `test_race_firstComeWins_loserQueuedEvenAfterRedeemFreesCapacity` |
-| Capacity lowered below supply with an open queue: processing no-op, cancel and redeems work, `availableCapacity` floors at 0 | `test_race_capacityLoweredBelowSupplyWhileQueueOpen` |
-| Front-running a deposit requires locking capital equal to the free capacity; victim queued, attacker exits via the queue at fee 0 | `test_race_frontRunJamQueuesVictim` |
-| Permit: valid sig accepted (nonce 0 -> 1, Approval emitted); replay, expired (`deadline == now` accepted), wrong signer, wrong spender/value/nonce, zero owner all rejected with exact strings | `test_permit_validSignature`, `test_permit_replayRejected`, `test_permit_expiredRejected`, `test_permit_wrongSignerRejected` |
-| ERC-1271: accepted on magic value (non-65-byte sig path), rejected on wrong value, 65-byte garbage, 64-byte return, EOA with short sig | `test_permit_erc1271Accepted`, `test_permit_erc1271Rejected` |
-| ERC-1271 signer runs under staticcall: state writes make the check fail, nonce untouched | `test_reentrancy_erc1271SignerCannotMutateState` |
-| `transferFrom`: max allowance not decremented; finite allowance decrements exactly; `insufficient-allowance`, `insufficient-balance`, `invalid-address` strings; self-transferFrom needs no allowance | `test_transferFrom_*` |
-| Standard approve race exists (info) | `test_approve_raceStandard` |
-| `uint128.max` USDC deposit, 1% fee redeem and payout all fit; payout <= deposit | `test_extremes_maxCapacityDepositAndRedeem` |
-| 10 years at MAX_VSR: chi = 1024x within 1e-9, `totalAssets` and `requestRedeem` fine | `test_extremes_chiAfterTenYearsAtMaxVsr` |
-| `shares * redeemFee` cannot overflow; fee on `uint128.max` shares = 3402823669209384634633746074317682115 | `test_extremes_feeMultiplicationCannotOverflow` |
-| `take` by non-taker: `AccessControlUnauthorizedAccount`; `take` above balance: `SparkPrimeVault/insufficient-unencumbered-shares` | `test_take_notTaker`, `test_take_moreThanBalance` |
-| `setChi` unpaused: `SparkPrimeVault/not-paused`; `unpause` by guardian or UNPAUSER_ROLE: unauthorized (admin only); `upgradeToAndCall` by non-admin: unauthorized, by admin works | `test_setChi_notPaused`, `test_unpause_guardianCannot`, `test_upgradeToAndCall_notAdmin` |
-| REBALANCER / RISK_MANAGER / SETTER cannot grant roles, set capacity, bounds, max fee or take | `test_hotWalletRoles_cannotEscalate` |
-| No callback ever reaches a recipient contract on instant mint, queued fill, redeem fill or cancel | `test_reentrancy_noCallbackToRecipient` |
-| RISK_MANAGER fee capped at `maxRedeemFee` (`fee-too-high` at 1% + 1 wei); worst case 1% on every exit (990_000 of 1_000_000); lowering the max does not reset the current fee | `test_compromised_riskManager_maxFeeOnEveryExit` |
-| REBALANCER with arbitrary `maxShares/maxRequests` order and 1-share starvation: every payout = `convertToAssets(shares)`, every mint = `convertToShares(assets)` (within one floor per partial fill), rebalancer balances unchanged, starved users can cancel | `test_compromised_rebalancer_cannotExtractValue` |
-| 1-share partial fills cost the vault exactly 1 spUSDC share each (R9), bounded by gas (~1_500 fills per block), dust | `test_compromised_rebalancer_partialFillsLeakAtMostOneSpUsdcShareEach` |
-| Random 24-step op sequences (deposits, redeems, cancels, partial processing, capacity changes, warps): `pendingDepositSavingsShares == sum(open deposit entries)`, `pendingRedeemShares == sum(open redeem entries) == balanceOf(vault)`, every entry before `depositHead`/`redeemHead` is closed, heads <= lengths | `testFuzz_queueInvariants_randomOps` |
-| The head reset on the instant path (line 379) happens only when pending == 0, which (by the sum invariant) means every earlier entry is closed; new deposits while an entry is open are queued and do not touch the head | `test_requestDeposit_headResetSkipsOnlyClosedEntries` |
-| Ghosts created while the queue is empty are skipped by the instant path immediately | `test_griefing_ghostDepositsWhileQueueEmptyAreSkippedInstantly` |
+| Repointing a filled (deleted) entry writes a recipient onto a 0-share slot: planner skips it, cancel says `no-request`, head walk ignores it, out-of-range ids revert, zero recipient rejected; later users unaffected | `test_updateRecipient_filledEntryIsHarmless` |
+| Random 24-step sequences including cancel settlement and arbitrary third-party repoints of all three queues: `pendingDepositSavingsShares`, `pendingCancelledDepositSavingsShares`, `pendingRedeemShares` each equal the sum of open entries; escrow equals pending redeems; vault spUSDC >= queued deposit + cancelled claims; every entry before each head is closed | `testFuzz_queueInvariants_randomOps` (5000 runs) |
+| Round trips, deposit/cancel/settle cycles and repeated cycles never return more than deposited; loss within the floor bound | `testFuzz_roundTrip_*`, `testFuzz_depositCancelCycle_userNeverProfits` (5000 runs) |
+| 1 wei deposit is a 0-share ghost, no jam; capacity of 1 share is unprocessable, not a jam | `test_jam_oneWeiDepositGivesZeroSavingsSharesNoJam`, `test_jam_capacityOneShareRemainderIsNotProcessable` |
+| First-come-first-served, loser stays queued after capacity frees; capacity lowered below supply breaks nothing; front-run jam costs capital equal to free capacity | `test_race_*` |
+| Permit, ERC-1271, transferFrom, approve race: unchanged from round 1 | `test_permit_*`, `test_transferFrom_*`, `test_approve_raceStandard`, `test_reentrancy_erc1271SignerCannotMutateState` |
+| Extremes: `uint128.max` deposit and 1% redeem fit; 10 years at MAX_VSR; chi caps at 76 years, drip overflow bricks at 38 years with max supply; uint192 unreachable; fee product cannot overflow | `test_extremes_*` |
+| Planner ghost skips: 493 / 518 gas warm per skipped deposit / redeem ghost, 21_075 per 1-wei fill, head advances across calls, head cannot move without capacity or liquidity | `test_griefing_ghost*GasPerSkip`, `test_griefing_oneWeiRedeemFillsGas`, `test_griefing_headDoesNotAdvanceWithoutCapacityOrLiquidity` |
+| `minDeposit` (assets) and `minRedeem` (shares) block every ghost type including `requestRedeem(0)` | `test_griefing_ghostsBlockedByMinimums` |
+| Donated spUSDC is liquidity and takeable, does not touch queue accounting | `test_donation_*` |
+| `recipient == vault` on the user's own request: phantom shares never burnable, USDC stranded | `test_escrow_*` |
+| `take` by non-taker rejected; above balance `SparkPrimeVault/insufficient-shares`; `realizeLoss` unpaused `not-paused`; upgrade admin-only; hot wallets cannot escalate, pause or unpause | `test_take_*`, `test_realizeLoss_notPaused`, `test_upgradeToAndCall_notAdmin`, `test_hotWalletRoles_cannotEscalate`, `test_pause_hotWalletRolesCannot` |
+| REBALANCER cannot extract value in any order or chunking across all three queues; 1-share partial fills leak at most 1 spUSDC share each | `test_compromised_rebalancer_*` |
+| RISK_MANAGER fee capped at `maxRedeemFee`; lowering the max does not reset the live fee | `test_compromised_riskManager_maxFeeOnEveryExit` |
+| Instant path fills only when the head reaches the new request; it never skips an open entry | `test_requestDeposit_headResetSkipsOnlyClosedEntries`, `test_griefing_ghostDepositsWhileQueueEmptyAreSkippedInstantly` |
+| spUSDC cap hit makes `requestDeposit` revert outright | `test_requestDeposit_revertsWhenSpUsdcCapHit` |
+| Blacklisted recipient on the attacker's own redeem still blocks the queue (round-1 A-1), guardian cancel to the owner unblocks | `test_BUG_blacklistedRecipientBlocksRedeemQueue` |
 
 ## (c) Unsettled items and recommendations
 
-1. A-1 needs a design decision: skip/park failed payouts vs. pay `request.owner` vs. pre-check
-   `isBlacklisted`. The harness mocks USDC without a blacklist; the test simulates it with
-   `vm.mockCallRevert` on `transfer(recipient)`. Worth a fork test against real USDC.
-2. `maxVSR` and `maxRedeemFee` launch values decide the hot-wallet blast radius (A-2, A-4):
-   suggest `maxVSR` <= 10-15% APY and a non-zero `redeemFee` at launch.
-3. `setChi` has no floor (A-3). Even if loss realisation is out of scope, the role bound is not.
-4. Block `recipient_ == address(this)` in `requestDeposit`, `requestRedeem` and the cancels (A-6, I-6).
-5. The instant path depends on a planner cadence: any 2-wei remainder (A-5), any legitimately
-   queued user, or any escrowed redeem (A-4) turns deposits async until `processDepositQueue`
-   runs. Netting deposits against redeems (TODO line 48) removes most of this.
-6. Gas numbers in A-7 are warm-slot numbers from a single test transaction; add ~2_000 per
-   cold SLOAD for mainnet estimates.
-7. Not tested: real-USDC behaviour on a fork (blacklist, A-1).
+1. R2-1 / R2-2 are the only thing that matters this round: add owner (or owner-or-guardian)
+   authorization to all three `update*Recipient` functions and reject `address(this)` as a
+   recipient everywhere. Until then no queued request is safe from anyone.
+2. `realizeLoss` (R2-3): decide a floor. `loss == totalAssets` is reachable by a hot wallet and
+   leaves redeems unprocessable forever; a `require(chi_ > 0)` plus a per-call drawdown cap set by
+   the admin bounds it.
+3. Cancel queue (R2-4, R2-5): clamp the budget to spUSDC liquidity, skip entries that exceed it,
+   and launch with `minDeposit >= 1e6`.
+4. Ghost minimums: `minDeposit >= 1e6` and `minRedeem >= 1` remove every ghost primitive used in
+   R2-6 at no cost to honest users.
+5. Gas numbers are warm-slot numbers from single test transactions; add ~2_000 per cold SLOAD
+   for mainnet estimates.
+6. Not tested: real-USDC behaviour on a fork (blacklist cases use `vm.mockCallRevert`).
