@@ -3,6 +3,12 @@
 Written 2026-10-14 00:05 UTC for a Claude session with zero context. Everything you need is in
 this repo; paths below are on Lucas's Mac mini unless marked (fork).
 
+> **Status 2026-10-14, round 2:** upstream moved to `refactor/more-simplifying` @ `0bc9288`. The whole
+> suite was ported and extended on branch `review/poc-tests-v2` (worktree `~/code/spprime-review-v2`,
+> worker worktrees `~/code/spprime-campaign-v2/<name>`): 520 tests, 519 pass, 1 deliberate failing
+> proof. Report: `AUDIT-REPORT.md` (round 2 on top, round 1 as appendix). Headline: unauthenticated
+> `update*Recipient` (Critical), F-1 regression (High), `realizeLoss` zeroes chi (High).
+
 > **Status 2026-10-14:** campaign complete. All seven `campaign/*` branches are merged into
 > `review/poc-tests`; the final report is `AUDIT-REPORT.md`; per-worker reports are `test/REPORT-*.md`.
 > Local suite: 373 passed, 1 deliberate failing proof (`test_BUG_processRedeemQueue_batchCeilBurnsExceedSpUsdcBalance`).

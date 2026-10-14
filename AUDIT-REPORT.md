@@ -1,4 +1,169 @@
-# spPRIME (`src/SparkPrimeVault.sol`) review and testing campaign: final report
+# spPRIME (`src/SparkPrimeVault.sol`) review and testing campaign: final report, round 2
+
+Target: upstream `refactor/more-simplifying` @ `0bc9288` (2026-10-14), unpatched. Branch `review/poc-tests-v2`.
+Round 1 (branch `review/poc-tests`, commit `807739f` with two review patches) is kept below as an appendix.
+
+## 1. Executive summary
+
+520 tests across 13 suites: 519 pass, 1 is a deliberate failing proof. 18 invariants held over 50,000 handler calls each on the new code. The refactor fixed F-3 and turned the deposit-cancel revert (F-2) into a planner-settled queue, but it introduced one Critical and regressed one High.
+
+| Severity | Count | Items |
+|---|---|---|
+| Critical | 1 | V2-1 |
+| High | 2 | V2-2 (F-1 regression), V2-3 |
+| Medium | 6 | V2-4 (C-1), V2-5 (C-2), V2-6, V2-7, V2-8 (C-4), F-2 (design) |
+| Low | 12 | V2-9..V2-14, C-5, C-7, C-8, C-9, C-10, C-11 |
+| Informational | 9 | V2-15..V2-23 |
+
+Act on these before anything else:
+
+1. **V2-1 Critical.** `updateDepositRecipient`, `updateCancelledDepositRecipient` and `updateRedeemRecipient` have no authorization. Anyone can point any queued deposit, refund or redeem at themselves in the block before the planner fills it. Every queued dollar in all three queues is stealable; the victim has no safe exit because cancelling only moves the money to another queue the attacker can also repoint.
+2. **V2-2 High.** The round-1 F-1 fix is not upstream: a guardian can still name any `recipient_` on both cancels. Deposit refunds settle to that address; redeem shares transfer to it immediately.
+3. **V2-3 High.** `realizeLoss` has no floor. `loss == totalAssets()` sets `chi` to 0 permanently: `processRedeemQueue` divides by zero forever, deposits are accepted but can never be filled, no role can recover, only an upgrade. `loss == totalAssets() - 1` leaves holders 1 wei in total. Reachable by a hot-wallet role while paused.
+4. **V2-6 Medium.** `processCancelledDepositQueue` budgets by the vault's spUSDC balance but spUSDC `redeem` needs USDC liquidity, so it reverts `SparkVault/insufficient-liquidity` instead of paying what it can; a whale cancel at the head starves everyone behind it.
+5. **V2-7 Medium.** `setCapacity` lost its `uint128` bound. `setCapacity(type(uint256).max)` makes every deposit revert by overflow; the safe bound shrinks as `chi` grows, so a value that works today can brick deposits later.
+6. **V2-4 / V2-5 Medium.** C-1 (batched redeem reverts on spUSDC ceil-rounding) and C-2 (blacklisted recipient blocks the redeem queue) persist unchanged; C-2 now costs nothing because the attacker can repoint a victim's entry instead of using their own.
+
+Fixed since round 1: F-3 (batch deposit loop), cancel recipient `address(0)` rejected, heads auto-advance past dead entries (narrows C-12), deposit cancel no longer reverts after `take()` (replaced by deferred settlement).
+
+## 2. Scope and method
+
+Local harness (`test/LocalTestBase.t.sol`): 6-decimal mock USDC, the real spUSDC `SparkVault` code behind a proxy, `SparkPrimeVault` behind a proxy, both indexes started at non-trivial values. Eight parallel workers each owned one file and one report (`test/REPORT-*.md`). Style mirrors Spark Vaults V2.
+
+| Suite | File | Tests | Result |
+|---|---|---|---|
+| New surface | `test/NewSurface.t.sol` | 33 | pass |
+| Cancelled-deposit queue | `test/CancelledDepositQueue.t.sol` | 20 | pass |
+| Deposit queue | `test/DepositQueue.t.sol` | 55 | pass |
+| Redeem queue | `test/RedeemQueue.t.sol` | 45 | pass |
+| Cancels and fees | `test/CancelAndFees.t.sol` | 62 | pass |
+| Invariants | `test/invariants/` | 20 | pass (100 runs x depth 500) |
+| Adversarial | `test/Adversarial.t.sol` | 76 | pass |
+| Rounding | `test/Rounding.t.sol` | 53 | 52 pass, 1 deliberate fail (V2-4) |
+| Authorization / Admin / Upgrade | `test/{Authorization,Admin,Upgrade}.t.sol` | 149 | pass |
+| Upstream queue tests | `test/QueueAudit.t.sol` | 5 | pass |
+| Harness smoke | `test/LocalSmoke.t.sol` | 2 | pass |
+| Fork PoCs | `test/Review.t.sol` | 10 | ported to the new API, compile, not executed (no RPC here) |
+
+`test_BUG_*` tests prove a bug; they pass by asserting the broken behaviour unless noted. Commands: `forge test --no-match-contract ReviewTest`; `FOUNDRY_INVARIANT_RUNS=100 FOUNDRY_INVARIANT_DEPTH=500 forge test --match-path 'test/invariants/*.t.sol'`; fork: `forge test --match-contract ReviewTest` with `MAINNET_RPC_URL`.
+
+## 3. What changed upstream (round 1 -> round 2)
+
+- `cancelDepositRequest` no longer refunds; it moves the entry to `cancelledDepositQueue` and REBALANCER settles it with `processCancelledDepositQueue` (budget = vault spUSDC balance, pays via spUSDC `redeem`).
+- Three new permissionless functions `update*Recipient` rewrite the payout address of any entry.
+- `setChi` replaced by `realizeLoss(loss)`: `chi = (totalAssets() - loss) * RAY / totalSupply`, paused only.
+- Heads auto-advance past zero entries on request and on head cancel; filled entries are deleted.
+- `setMinimums` split into `setMinDeposit` (assets) and `setMinRedeem` (shares); `requestRedeem` no longer requires non-zero shares.
+- `setCapacity` lost its `uint128` bound. `pause` briefly moved to admin, then back to GUARDIAN.
+- Storage layout changed (four new slots inserted mid-layout); not compatible with round 1, nothing deployed.
+
+## 4. Findings (line numbers on `0bc9288`)
+
+#### V2-1 · Critical · Recipient updaters have no authorization
+- **Location:** lines 423, 467, 534. Only `recipient_ != 0` is checked.
+- **What happens:** mallory, no role and no balance, calls `updateRedeemRecipient(id, mallory)` in the same block as the planner's `processRedeemQueue`; the planner pays mallory alice's 1,000,000 USDC. Same on queued deposits (shares minted to mallory) and on cancelled-deposit refunds. Cancelling to escape moves the money into the cancelled queue, which mallory repoints too. Last writer before the planner's call wins; the owner has no priority. Works while paused.
+- **Also enables:** blocking the redeem queue for free by repointing a victim to a blacklisted address (V2-5), stranding a victim's USDC by repointing to the vault, burning a victim's deposit into dead capacity.
+- **Fix:** `require(msg.sender == request.owner)` (or owner-or-guardian) in all three, and reject `address(this)`.
+- **Tests:** `test_BUG_updateDepositRecipient_anyoneCanStealQueuedDeposit`, `test_BUG_updateRedeemRecipient_anyoneCanStealQueuedRedeem`, `test_BUG_updateCancelledDepositRecipient_anyoneCanStealRefund`, `test_BUG_updateRecipient_frontRunPlannerStealsRedeemPayout`, `test_BUG_updateRecipient_victimHasNoSafeExitFromDepositQueue`, `test_BUG_updateRecipient_blacklistBlocksRedeemQueueAtZeroCost`, `test_BUG_updateRecipient_strandsVictimRedeemInVault`, `test_BUG_updateRecipient_burnsVictimDepositIntoDeadCapacity`.
+
+#### V2-2 · High · Guardian cancel pays whoever the guardian names (F-1 regression)
+- **Location:** lines 441-450 (deposit), 511-518 (redeem).
+- **What happens:** `cancelDepositRequest(id, guardian)` creates a cancelled entry with recipient guardian; settlement pays the guardian 999,999,999,999 USDC of alice's deposit. `cancelRedeemRequest(id, guardian)` transfers alice's 990,405,184,109 escrowed shares to the guardian at once.
+- **Fix:** `msg.sender == request_.owner ? recipient_ : request_.owner` in both.
+- **Tests:** `test_BUG_cancelDepositRequest_guardianCanRedirectRefund`, `test_BUG_cancelRedeemRequest_guardianCanRedirectShares`, `test_BUG_guardianCancelRefundsToArbitraryRecipient`.
+
+#### V2-3 · High · `realizeLoss` is unbounded and a full loss zeroes the index permanently
+- **Location:** line 357.
+- **What happens:** `realizeLoss(totalAssets())` sets `chi = 0`. `nowChi()` stays 0 after 10 years at MAX_VSR; `convertToShares` divides by zero so `processRedeemQueue` can never run; `requestDeposit` still succeeds but fills are impossible (capacity converts to 0); `realizeLoss(1)` then underflows. ~1,000,000 USDC of spUSDC remains, reachable only by `take`. `realizeLoss(totalAssets() - 1)` leaves holders 1 wei in total. `totalSupply == 0` and `loss > totalAssets` revert by arithmetic panic rather than a check. With `totalSupply == 1` share, a 1-wei loss is a full loss.
+- **Fix:** `require(loss_ < totalAssets())`, an admin-set per-call drawdown floor, or admin-only.
+- **Tests:** `test_BUG_realizeLoss_fullLossSetsChiZeroAndBricksVault`, `test_BUG_realizeLoss_oneWeiLossOnOneShareSupplyZeroesChi`, `test_compromised_riskManager_fullLossBricksVault`, `test_realizeLoss_totalAssetsMinusOneWipesHolders`.
+
+#### V2-4 · Medium · Batched `processRedeemQueue` reverts on spUSDC ceil-rounding (C-1, unchanged)
+- Lines 782 and 805. Same mechanism, numbers and fix as round 1 (re-clamp inside the loop). Tests: `test_BUG_processRedeemQueue_batchCeilBurnsExceedSpUsdcBalance` (deliberately failing), `test_BUG_processRedeemQueue_batchRevertsOnCeilRounding_*`.
+
+#### V2-5 · Medium · Blacklisted recipient blocks the redeem queue (C-2, now zero-cost)
+- Line 805, strict FIFO, no skip. Attacker no longer needs their own request: repoint a victim's entry (V2-1). Guardian cancel unblocks but costs the victim the up-front fee (F-8). Tests: `test_BUG_blacklistedRecipientBlocksRedeemQueue`, `test_BUG_updateRecipient_blacklistBlocksRedeemQueueAtZeroCost`, `test_updateRedeemRecipient_anyoneUnblocksBlacklistedHeadAndTakesThePayout`.
+
+#### V2-6 · Medium · Cancelled-deposit settlement reverts when spUSDC is illiquid; whale starvation
+- **Location:** line 744 (budget = `spUSDC.balanceOf(vault)`), line 765 (`spUSDC.redeem`).
+- **What happens:** spUSDC `redeem` needs USDC. With 500k of 1M drained from spUSDC, settling alice's 1M refund reverts `SparkVault/insufficient-liquidity` although 499,999,999,998 could be paid; a batch whose second entry does not fit reverts entirely; a 10M cancel at the head with 1,000 USDC of liquidity starves a 100 USDC cancel behind it. The redeem loop already clamps to `maxWithdraw` and degrades gracefully. Hit live by the invariant campaign.
+- **Fix:** budget by `spUSDC.maxRedeem(address(this))` and break when the next payout exceeds it.
+- **Tests:** `test_BUG_processCancelledDepositQueue_revertsWhenSpUsdcIlliquid`, `test_BUG_processCancelledDepositQueue_batchRevertsWhenSecondEntryIlliquid`, `test_cancelQueue_whaleCancelStarvesQueueWhenSpUsdcShort`, `invariant_P_processCancelledDepositQueueRevertsOnlyOnKnownReasons`.
+
+#### V2-7 · Medium · `setCapacity` is unbounded; large values brick deposits
+- **Location:** line 268 (setter), line 704 (`availableCapacity() * chi`).
+- **What happens:** `setCapacity(type(uint256).max)` makes every `requestDeposit` and `processDepositQueue` panic with overflow. Safe bound is `type(uint256).max / nowChi()` (1.1468e50 today) and shrinks as `chi` grows: a capacity at the exact bound today bricks deposits after one day at MAX_VSR. Admin can recover by lowering the cap.
+- **Fix:** restore `capacity_ <= type(uint128).max`.
+- **Tests:** `test_BUG_setCapacity_maxUint256BricksDeposits`, `test_capacity_overflowThreshold_shrinksAsChiGrows`.
+
+#### V2-8 · Medium · Last admin can brick the vault; zero admin accepted at init (C-4, unchanged)
+- Tests: `test_renounceDefaultAdmin_vaultHasNoAdminForever`, `test_initialize_zeroAdminNotGuarded`.
+
+#### F-2 · Medium (design) · Cancelled queue is not ring-fenced from `take()` or from other depositors
+- After `take()`, settlement is a silent no-op (no revert, no event) until spUSDC returns; an early cancel settles from a later depositor's spUSDC; deposit fills still mint against backing that left; redeem and cancelled queues compete for the same spUSDC and the planner's call order decides who is paid. Tests: `test_take_afterCancel_settleIsNoOpUntilSpUsdcReturned`, `test_processCancelledDepositQueue_spendsOtherQueuedDepositorsBacking`, `test_priority_*`, `test_processDepositQueue_fillsAfterTakeRemovedBacking`.
+
+#### Low
+
+- **V2-9** `requestRedeem(0)` creates a zero-share ghost (the `shares_ != 0` check was dropped); free throughput griefing with no balance and no fee; `minRedeem >= 1` closes it. `test_BUG_requestRedeem_zeroSharesCreatesGhostEntry`.
+- **V2-10** Head walk in `cancelDepositRequest` is unbounded: ~2,900 gas per ghost behind a live head; ~10,300 ghosts (about 0.8 ETH at 1 gwei) make the head depositor's cancel exceed 30M gas and the planner cannot pre-clear them without capacity. `test_cancelDepositRequest_headWalkGasGrowsWithGhosts`. The walk in `_requestDeposit` is a one-time charge, not a DoS (`test_griefing_headWalkChargedToNextDepositorAfterPlannerClosesHead`).
+- **V2-11** Cancelled-queue bloat: a 2-wei deposit plus cancel costs the attacker ~250k gas and the planner ~20k per entry to settle; 500 of them push a victim's refund behind one full planner call. `minDeposit >= 1e6` removes it. `test_cancelQueue_dustCancelsGasPerEntry`.
+- **V2-12** `realizeLoss` over-realises by exactly 1 wei per call in the generic case (two floors), so `LossRealized.loss` understates the holders' loss; a stream of k small losses costs holders up to k wei more than one aggregated loss. `testFuzz_R13_realizeLoss_floorsAgainstHolders_overRealisesAtMostOneWei`.
+- **V2-13** `recipient == address(vault)` or `== spUSDC` still accepted in `requestDeposit`, `requestRedeem`, both cancels and all three updaters (C-6; only `address(0)` is now rejected on cancels). Combined with V2-1 it is third-party destruction of funds.
+- **V2-14** Dust at the deposit head still switches everyone to queued mode (C-5); after a guardian cancel of the dust, requests already queued behind it stay queued until the planner runs. `test_BUG_twoWeiDepositAtFullCapacityJamsInstantPath`.
+- Carried unchanged: C-7 (tightened bounds do not clamp live values), C-8 (`setMinDeposit`/`setMinRedeem` unvalidated; `minRedeem` in shares drifts up in USDC terms, +5% after a year at 5%), C-9 (SETTER at MAX_VSR over-credits 1,900 USDC per day per 1M), C-10 (free capacity hogging at fee 0), C-11 (deposits below one spUSDC share are donated to spUSDC).
+
+#### Informational
+
+- **V2-15** `update*Recipient` on a filled (deleted) id writes a recipient into a dead slot; harmless. Also allowed while paused.
+- **V2-16** `Deposit` event's fourth parameter is named `savingsShares` but carries spPRIME shares; `requestDeposit` natspec says it returns `uint256.max` when nothing was queued, it always returns the index.
+- **V2-17** Storage layout is not upgrade-compatible with round 1 (four slots inserted mid-layout, `decimals` moved). Nothing deployed.
+- **V2-18** `UNPAUSER_ROLE` still unused; `unpause` is admin-only (I-3).
+- **V2-19** `realizeLoss` edge cases revert with arithmetic panics (`totalSupply == 0`, `loss > totalAssets`) instead of a require string.
+- **V2-20** After a loss that takes `chi` below RAY, `convertToAssets(s)` is 0 for small `s`; the redeem loop burns such shares and pays 0.
+- **V2-21** Cancelled entries behind a live head still consume `maxRequests_` (C-12, narrowed: head cancels no longer cost a slot).
+- **V2-22** `minRedeem` is gross of fee: a request exactly at the minimum pays 1% less than the minimum's value (I-4).
+- **V2-23** Fee burned at request accrues to vault equity and now also funds cancelled-deposit refunds after a full `take()` (I-2).
+
+## 5. Rounding table (round 2)
+
+All rows re-proven at 10,000 fuzz runs on the new line numbers. R5 is gone (the redeem minimum is an exact share comparison). R10 moved into `_processCancelledDepositQueue`; k-chunk settlement loses at most k-1 wei versus one shot. New R13: `realizeLoss` rounds against holders by at most 1 wei (exactly 1 in the generic case), the cast cannot truncate, `loss == totalAssets` gives `chi = 0`. Round-trip loss bound unchanged: at most 4 wei at current indexes. Capacity overflow bound: `maxCapacity - totalSupply <= type(uint256).max / nowChi()`. Full table in `test/REPORT-rounding.md`.
+
+## 6. Invariants (18, all held, 100 runs x depth 500, 0 handler reverts)
+
+A sum of balances == `totalSupply`; B vault balance == `pendingRedeemShares`; C/D/Q pending counters == sums of open entries for all three queues; E everything strictly before each of the three heads is zero; F no mint above capacity at mint time; G `chi` only decreases via `realizeLoss` and `drip() == nowChi()`; H real backing minus value owed to deposit and cancelled queues covers `totalAssets()` plus realised losses within one spUSDC share per redeem fill, while spUSDC rate >= prime rate and nothing is taken; I users never extract more than deposits plus real yield (fills plus refunds); J balance provenance with recipients captured at fill time; K USDC conservation; L `availableCapacity()` formula; M zero-share fills counted; N spUSDC supply == vault + taker; O `processRedeemQueue` reverts only on the ceil-burn (V2-4); P `processCancelledDepositQueue` reverts only on `insufficient-liquidity` (V2-6); R a recipient update changes no balance, total, head or entry amount (keccak digest of full state before == after).
+
+## 7. Suggested code changes (round 2)
+
+1. Authorize the three `update*Recipient` functions to the entry owner (or owner-or-guardian) and reject `address(this)` and `savings` as recipients everywhere (V2-1, V2-13).
+2. In both cancels, use `request_.owner` as recipient unless the owner is the caller (V2-2).
+3. `realizeLoss`: `require(loss_ < totalAssets())` plus an admin-set per-call drawdown floor, or make it admin-only (V2-3, V2-12, V2-19).
+4. `_processRedeemQueue`: re-clamp the budget inside the loop and skip or park entries whose payout fails (V2-4, V2-5).
+5. `_processCancelledDepositQueue`: budget by `spUSDC.maxRedeem(address(this))` (V2-6).
+6. Restore `capacity_ <= type(uint128).max` (V2-7).
+7. `require(shares_ != 0)` in `requestRedeem` and `require(savingsShares_ != 0)` in `_requestDeposit`; launch with `minDeposit >= 1e6`, `minRedeem >= 1` (V2-9, V2-10, V2-11, C-11).
+8. Keep the round-1 items: default-admin rules (V2-8), clamp live values in bound setters (C-7), sanity bounds on minimums (C-8), `maxVSR` 10-15% APY (C-9), non-zero launch fee or netting (C-10), gate `unpause` on UNPAUSER_ROLE or delete it (V2-18).
+
+## 8. Open questions for the business team
+
+1-17 from round 1 remain (see appendix). New:
+18. Are the `update*Recipient` functions wanted at all? If yes, owner-only or owner-or-guardian, and should they work while paused?
+19. Should guardian cancels be forced to refund the owner (round-1 F-1 answer was yes; upstream dropped it)?
+20. What per-call loss floor is acceptable for `realizeLoss`, and should a full loss ever be expressible?
+21. Should the cancelled-deposit queue be settled before or after the redeem queue when spUSDC is short? Today the planner decides per call.
+22. Should refunds be allowed to consume other queued depositors' spUSDC (today yes, in a REBALANCER call)?
+23. Launch values for `minDeposit` and `minRedeem`, given that `minRedeem` is now in shares and drifts up in USDC terms.
+
+## 9. Limitations
+
+- Fork PoCs were ported but not executed (no RPC in this environment).
+- Blacklist behaviour is simulated with a mocked USDC revert.
+- Invariant H covers the prefix of each run before the spUSDC/prime rate order first breaks; realised losses are modelled as notional only.
+- `processQueues` netting is not on this branch and was not tested here.
+
+---
+
+# Appendix: round 1 report (branch `review/poc-tests`, `807739f` + review patches F-1, F-3)
+
 
 Branch `review/poc-tests` (based on `lucas/refactor-vault` @ `807739f`), 2026-10-14.
 Scope: `src/SparkPrimeVault.sol` as implemented on that commit, with two review patches applied (F-1, F-3).
