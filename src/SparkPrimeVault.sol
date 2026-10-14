@@ -428,14 +428,19 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         newRequestId_ = _depositCancellationRequests.length;
 
-        _depositCancellationRequests.push(Request(request_.owner, recipient_, requestSavingsShares_));
+        _depositCancellationRequests.push(
+            Request(request_.owner, recipient_, requestSavingsShares_)
+        );
 
         pendingDepositSavingsShares          -= requestSavingsShares_;
         pendingCancelledDepositSavingsShares += requestSavingsShares_;
 
         if (requestId_ == firstPendingDepositId) {
             // Advance head past any cancelled/dead requests.
-            while (firstPendingDepositId < _depositRequests.length && _depositRequests[firstPendingDepositId].shares == 0) {
+            while (
+                firstPendingDepositId < _depositRequests.length &&
+                _depositRequests[firstPendingDepositId].shares == 0
+            ) {
                 unchecked { ++firstPendingDepositId; }
             }
         }
@@ -495,7 +500,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         if (requestId_ == firstPendingRedeemId) {
             // Advance head past any cancelled/dead requests.
-            while (firstPendingRedeemId < _redeemRequests.length && _redeemRequests[firstPendingRedeemId].shares == 0) {
+            while (
+                firstPendingRedeemId < _redeemRequests.length &&
+                _redeemRequests[firstPendingRedeemId].shares == 0
+            ) {
                 unchecked { ++firstPendingRedeemId; }
             }
         }
@@ -722,7 +730,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         }
     }
 
-    function getPendingDepositCancellationRequests() external view returns (Request[] memory requests_) {
+    function getPendingDepositCancellationRequests()
+        external
+        view
+        returns (Request[] memory requests_)
+    {
         uint256 pendingLength_ = _depositCancellationRequests.length;
 
         requests_ = new Request[](pendingLength_ - firstPendingDepositCancellationId);
@@ -798,7 +810,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         emit DepositRequest(msg.sender, recipient_, requestId_, assets_, savingsShares_);
 
         // Advance head past any cancelled/dead requests.
-        while (firstPendingDepositId < requestId_ && _depositRequests[firstPendingDepositId].shares == 0) {
+        while (
+            firstPendingDepositId < requestId_ &&
+            _depositRequests[firstPendingDepositId].shares == 0
+        ) {
             unchecked { ++firstPendingDepositId; }
         }
 
@@ -855,10 +870,13 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         firstPendingDepositId = i_;
     }
 
-    function _processPendingDepositCancellations(uint256 maxSavingsShares_, uint256 maxRequests_) internal {
+    function _processPendingDepositCancellations(uint256 maxSavingsShares_, uint256 maxRequests_)
+        internal
+    {
         drip();
 
-        uint256 remaining_ = _min(maxSavingsShares_, IERC4626Like(savings).maxRedeem(address(this)));
+        uint256 remaining_ =
+            _min(maxSavingsShares_, IERC4626Like(savings).maxRedeem(address(this)));
 
         // Process the cancelled deposit queue up to the maximum number of requests or until there
         // are no more remaining savings shares.
