@@ -21,8 +21,11 @@ contract InvalidSparkPrimeVault1 {
 contract InvalidSparkPrimeVault2 {}
 
 /// @dev UUPS upgrade tests: authorization, invalid targets, exact state preservation (every
-///      public getter and every raw storage slot 0..22), re-initialization guards, and the
-///      implementation contract itself.
+///      public getter and every raw storage slot 0..26), re-initialization guards, and the
+///      implementation contract itself. Layout as of `refactor/more-simplifying`:
+///      `asset`, `pendingCancelledDepositSavingsShares`, `cancelledDepositQueue` and
+///      `cancelledDepositHead` were inserted mid-layout, so this layout is NOT compatible with
+///      the round-1 layout (nothing is deployed yet).
 contract UpgradeTest is LocalTestBase {
 
     // keccak256("eip1967.proxy.implementation") - 1
@@ -33,7 +36,7 @@ contract UpgradeTest is LocalTestBase {
     bytes32 constant INITIALIZABLE_STORAGE =
         0xf0c57e16840df040f15088dc2f81fe391c3923bec73e23a9662efc9c229c6a00;
 
-    uint256 constant V1_SLOTS = 23;  // savings (0) .. allowance (22)
+    uint256 constant V1_SLOTS = 27;  // savings (0) .. allowance (26)
 
     event Upgraded(address indexed implementation);
 
@@ -43,17 +46,20 @@ contract UpgradeTest is LocalTestBase {
     SparkPrimeVaultV2Mock newImplementation;
 
     uint256 depId;
+    uint256 cancelId;
     uint256 redId;
     uint256 setVsrTimestamp;
 
-    // Build non-trivial state: shares, a queued deposit, a queued redeem, a fee, a rate, allowance.
+    // Build non-trivial state: shares, a queued deposit, a cancelled deposit awaiting
+    // settlement, a queued redeem, a fee, minimums, a rate, allowance.
     function setUp() public override {
         super.setUp();
 
         newImplementation = new SparkPrimeVaultV2Mock();
 
         _setRedeemFee(0.001e18);
-        _setMinimums(1e6, 1e6);
+        _setMinDeposit(1e6);
+        _setMinRedeem(1e6);
         _setPrimeVsr(FOUR_PCT_VSR);
         setVsrTimestamp = block.timestamp;
 
@@ -62,6 +68,9 @@ contract UpgradeTest is LocalTestBase {
 
         _setCapacity(vault.totalSupply());
         depId = _deposit(bob, 50_000e6);
+        uint256 dep2Id_ = _deposit(bob, 20_000e6);
+        vm.prank(bob);
+        cancelId = vault.cancelDepositRequest(dep2Id_, bob);
 
         vm.prank(alice);
         vault.approve(bob, 123);
@@ -158,6 +167,7 @@ contract UpgradeTest is LocalTestBase {
 
     struct Snapshot {
         address savings;
+        address asset;
         uint8   decimals;
         string  name;
         string  symbol;
@@ -169,13 +179,15 @@ contract UpgradeTest is LocalTestBase {
         bool    paused;
         uint256 maxCapacity;
         uint256 minDeposit;
-        uint256 minWithdraw;
+        uint256 minRedeem;
         uint256 redeemFee;
         uint256 maxRedeemFee;
         uint256 totalSupply;
         uint256 pendingDepositSavingsShares;
+        uint256 pendingCancelledDepositSavingsShares;
         uint256 pendingRedeemShares;
         uint256 depositHead;
+        uint256 cancelledDepositHead;
         uint256 redeemHead;
         uint256 totalAssets;
         uint192 nowChi;
@@ -187,6 +199,9 @@ contract UpgradeTest is LocalTestBase {
         address depOwner;
         address depRecipient;
         uint256 depShares;
+        address cancelOwner;
+        address cancelRecipient;
+        uint256 cancelShares;
         address redOwner;
         address redRecipient;
         uint256 redShares;
@@ -195,71 +210,81 @@ contract UpgradeTest is LocalTestBase {
     }
 
     function _snapshot() internal view returns (Snapshot memory s_) {
-        s_.savings                     = vault.savings();
-        s_.decimals                    = vault.decimals();
-        s_.name                        = vault.name();
-        s_.symbol                      = vault.symbol();
-        s_.rho                         = vault.rho();
-        s_.chi                         = vault.chi();
-        s_.vsr                         = vault.vsr();
-        s_.minVSR                      = vault.minVSR();
-        s_.maxVSR                      = vault.maxVSR();
-        s_.paused                      = vault.paused();
-        s_.maxCapacity                 = vault.maxCapacity();
-        s_.minDeposit                  = vault.minDeposit();
-        s_.minWithdraw                 = vault.minWithdraw();
-        s_.redeemFee                   = vault.redeemFee();
-        s_.maxRedeemFee                = vault.maxRedeemFee();
-        s_.totalSupply                 = vault.totalSupply();
-        s_.pendingDepositSavingsShares = vault.pendingDepositSavingsShares();
-        s_.pendingRedeemShares         = vault.pendingRedeemShares();
-        s_.depositHead                 = vault.depositHead();
-        s_.redeemHead                  = vault.redeemHead();
-        s_.totalAssets                 = vault.totalAssets();
-        s_.nowChi                      = vault.nowChi();
-        s_.balAlice                    = vault.balanceOf(alice);
-        s_.balBob                      = vault.balanceOf(bob);
-        s_.balVault                    = vault.balanceOf(address(vault));
-        s_.nonceAlice                  = vault.nonces(alice);
-        s_.allowanceAliceBob           = vault.allowance(alice, bob);
-        (s_.depOwner, s_.depRecipient, s_.depShares) = vault.depositQueue(depId);
-        (s_.redOwner, s_.redRecipient, s_.redShares) = vault.redeemQueue(redId);
-        s_.spUsdcBal                   = spUsdc.balanceOf(address(vault));
-        s_.domainSeparator             = vault.DOMAIN_SEPARATOR();
+        s_.savings                              = vault.savings();
+        s_.asset                                = vault.asset();
+        s_.decimals                             = vault.decimals();
+        s_.name                                 = vault.name();
+        s_.symbol                               = vault.symbol();
+        s_.rho                                  = vault.rho();
+        s_.chi                                  = vault.chi();
+        s_.vsr                                  = vault.vsr();
+        s_.minVSR                               = vault.minVSR();
+        s_.maxVSR                               = vault.maxVSR();
+        s_.paused                               = vault.paused();
+        s_.maxCapacity                          = vault.maxCapacity();
+        s_.minDeposit                           = vault.minDeposit();
+        s_.minRedeem                            = vault.minRedeem();
+        s_.redeemFee                            = vault.redeemFee();
+        s_.maxRedeemFee                         = vault.maxRedeemFee();
+        s_.totalSupply                          = vault.totalSupply();
+        s_.pendingDepositSavingsShares          = vault.pendingDepositSavingsShares();
+        s_.pendingCancelledDepositSavingsShares = vault.pendingCancelledDepositSavingsShares();
+        s_.pendingRedeemShares                  = vault.pendingRedeemShares();
+        s_.depositHead                          = vault.depositHead();
+        s_.cancelledDepositHead                 = vault.cancelledDepositHead();
+        s_.redeemHead                           = vault.redeemHead();
+        s_.totalAssets                          = vault.totalAssets();
+        s_.nowChi                               = vault.nowChi();
+        s_.balAlice                             = vault.balanceOf(alice);
+        s_.balBob                               = vault.balanceOf(bob);
+        s_.balVault                             = vault.balanceOf(address(vault));
+        s_.nonceAlice                           = vault.nonces(alice);
+        s_.allowanceAliceBob                    = vault.allowance(alice, bob);
+        (s_.depOwner,    s_.depRecipient,    s_.depShares)    = vault.depositQueue(depId);
+        (s_.cancelOwner, s_.cancelRecipient, s_.cancelShares) = vault.cancelledDepositQueue(cancelId);
+        (s_.redOwner,    s_.redRecipient,    s_.redShares)    = vault.redeemQueue(redId);
+        s_.spUsdcBal                            = spUsdc.balanceOf(address(vault));
+        s_.domainSeparator                      = vault.DOMAIN_SEPARATOR();
     }
 
     function _assertSnapshot(Snapshot memory s_) internal view {
-        assertEq(s_.savings,                     address(spUsdc));
-        assertEq(s_.decimals,                    6);
-        assertEq(s_.name,                        "Spark Prime USDC");
-        assertEq(s_.symbol,                      "spPRIME");
-        assertEq(s_.rho,                         setVsrTimestamp);
-        assertEq(s_.vsr,                         FOUR_PCT_VSR);
-        assertEq(s_.minVSR,                      RAY);
-        assertEq(s_.maxVSR,                      MAX_VSR);
-        assertEq(s_.paused,                      false);
-        assertEq(s_.minDeposit,                  1e6);
-        assertEq(s_.minWithdraw,                 1e6);
-        assertEq(s_.redeemFee,                   0.001e18);
-        assertEq(s_.maxRedeemFee,                0.01e18);
-        assertEq(s_.pendingRedeemShares,         99_900e6);
-        assertEq(s_.depositHead,                 1);
-        assertEq(s_.redeemHead,                  0);
-        assertEq(s_.balVault,                    99_900e6);
-        assertEq(s_.balBob,                      0);
-        assertEq(s_.nonceAlice,                  0);
-        assertEq(s_.allowanceAliceBob,           123);
-        assertEq(s_.depOwner,                    bob);
-        assertEq(s_.depRecipient,                bob);
-        assertEq(s_.redOwner,                    alice);
-        assertEq(s_.redRecipient,                alice);
-        assertEq(s_.redShares,                   99_900e6);
-        assertGt(s_.chi,                         RAY);
-        assertGt(s_.nowChi,                      s_.chi);  // 1 day of undripped accrual
-        assertGt(s_.depShares,                   0);
-        assertEq(s_.pendingDepositSavingsShares, s_.depShares);
-        assertEq(s_.totalSupply,                 s_.balAlice + s_.balVault);
-        assertEq(s_.maxCapacity,                 s_.totalSupply);
+        assertEq(s_.savings,                              address(spUsdc));
+        assertEq(s_.asset,                                address(usdc));
+        assertEq(s_.decimals,                             6);
+        assertEq(s_.name,                                 "Spark Prime USDC");
+        assertEq(s_.symbol,                               "spPRIME");
+        assertEq(s_.rho,                                  setVsrTimestamp);
+        assertEq(s_.vsr,                                  FOUR_PCT_VSR);
+        assertEq(s_.minVSR,                               RAY);
+        assertEq(s_.maxVSR,                               MAX_VSR);
+        assertEq(s_.paused,                               false);
+        assertEq(s_.minDeposit,                           1e6);
+        assertEq(s_.minRedeem,                            1e6);
+        assertEq(s_.redeemFee,                            0.001e18);
+        assertEq(s_.maxRedeemFee,                         0.01e18);
+        assertEq(s_.pendingRedeemShares,                  99_900e6);
+        assertEq(s_.depositHead,                          1);
+        assertEq(s_.cancelledDepositHead,                 0);
+        assertEq(s_.redeemHead,                           0);
+        assertEq(s_.balVault,                             99_900e6);
+        assertEq(s_.balBob,                               0);
+        assertEq(s_.nonceAlice,                           0);
+        assertEq(s_.allowanceAliceBob,                    123);
+        assertEq(s_.depOwner,                             bob);
+        assertEq(s_.depRecipient,                         bob);
+        assertEq(s_.cancelOwner,                          bob);
+        assertEq(s_.cancelRecipient,                      bob);
+        assertEq(s_.redOwner,                             alice);
+        assertEq(s_.redRecipient,                         alice);
+        assertEq(s_.redShares,                            99_900e6);
+        assertGt(s_.chi,                                  RAY);
+        assertGt(s_.nowChi,                               s_.chi);  // 1 day of undripped accrual
+        assertGt(s_.depShares,                            0);
+        assertGt(s_.cancelShares,                         0);
+        assertEq(s_.pendingDepositSavingsShares,          s_.depShares);
+        assertEq(s_.pendingCancelledDepositSavingsShares, s_.cancelShares);
+        assertEq(s_.totalSupply,                          s_.balAlice + s_.balVault);
+        assertEq(s_.maxCapacity,                          s_.totalSupply);
     }
 
     function _assertSnapshotsEqual(Snapshot memory a_, Snapshot memory b_) internal pure {
@@ -341,14 +366,18 @@ contract UpgradeTest is LocalTestBase {
         vm.expectRevert(abi.encodeWithSignature("InvalidInitialization()"));
         vault.initialize(address(spUsdc), "Spark Prime USDC", "spPRIME", admin);
 
-        // The vault keeps working: the open queues can be processed by the rebalancer.
+        // The vault keeps working: all three open queues can be processed by the rebalancer.
         _setCapacity(type(uint128).max);
         _processDeposits(type(uint256).max, 10);
         _processRedeems(type(uint256).max, 10);
-        assertEq(vault.pendingDepositSavingsShares(), 0);
-        assertEq(vault.pendingRedeemShares(),         0);
-        assertGt(vault.balanceOf(bob),                0);
-        assertGt(usdc.balanceOf(alice),               0);
+        _processCancelledDeposits(type(uint256).max, 10);
+        assertEq(vault.pendingDepositSavingsShares(),          0);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
+        assertEq(vault.pendingRedeemShares(),                  0);
+        assertEq(vault.cancelledDepositHead(),                 1);
+        assertGt(vault.balanceOf(bob),                         0);
+        assertGt(usdc.balanceOf(alice),                        0);
+        assertApproxEqAbs(usdc.balanceOf(bob), 20_000e6, 2);  // settled refund
     }
 
     function test_upgradeToAndCall_withReinitializer() public {
@@ -391,26 +420,78 @@ contract UpgradeTest is LocalTestBase {
         _assertSnapshotsEqual(before_, _snapshot());
     }
 
-    // Storage layout checks that a future upgrade must keep: `savings` and `decimals` pack into
-    // slot 0, `rho` and `chi` pack into slot 3.
+    // Storage layout checks that a future upgrade must keep: `savings` alone in slot 0, `asset`
+    // and `decimals` pack into slot 1, `rho` and `chi` pack into slot 4; three queues at 18..20,
+    // three heads at 21..23, mappings at 24..26.
     function test_storageLayout_packing() public view {
         bytes32 slot0_ = vm.load(address(vault), bytes32(uint256(0)));
         assertEq(address(uint160(uint256(slot0_))),        address(spUsdc));
-        assertEq(uint8(uint256(slot0_) >> 160),            6);
-        assertEq(uint256(slot0_) >> 168,                   0);
+        assertEq(uint256(slot0_) >> 160,                   0);
 
-        bytes32 slot3_ = vm.load(address(vault), bytes32(uint256(3)));
-        assertEq(uint64(uint256(slot3_)),                  vault.rho());
-        assertEq(uint192(uint256(slot3_) >> 64),           vault.chi());
+        bytes32 slot1_ = vm.load(address(vault), bytes32(uint256(1)));
+        assertEq(address(uint160(uint256(slot1_))),        address(usdc));
+        assertEq(uint8(uint256(slot1_) >> 160),            6);
+        assertEq(uint256(slot1_) >> 168,                   0);
 
-        assertEq(uint256(vm.load(address(vault), bytes32(uint256(4)))),  vault.vsr());
-        assertEq(uint256(vm.load(address(vault), bytes32(uint256(7)))),  0);  // paused
-        assertEq(uint256(vm.load(address(vault), bytes32(uint256(8)))),  vault.maxCapacity());
-        assertEq(uint256(vm.load(address(vault), bytes32(uint256(13)))), vault.totalSupply());
-        assertEq(uint256(vm.load(address(vault), bytes32(uint256(16)))), 2);  // depositQueue.length
-        assertEq(uint256(vm.load(address(vault), bytes32(uint256(17)))), 1);  // redeemQueue.length
-        assertEq(uint256(vm.load(address(vault), bytes32(uint256(18)))), vault.depositHead());
-        assertEq(uint256(vm.load(address(vault), bytes32(uint256(19)))), vault.redeemHead());
+        bytes32 slot4_ = vm.load(address(vault), bytes32(uint256(4)));
+        assertEq(uint64(uint256(slot4_)),                  vault.rho());
+        assertEq(uint192(uint256(slot4_) >> 64),           vault.chi());
+
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(5)))),  vault.vsr());
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(6)))),  vault.minVSR());
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(7)))),  vault.maxVSR());
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(8)))),  0);  // paused
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(9)))),  vault.maxCapacity());
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(10)))), vault.minDeposit());
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(11)))), vault.minRedeem());
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(12)))), vault.redeemFee());
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(13)))), vault.maxRedeemFee());
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(14)))), vault.totalSupply());
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(15)))), vault.pendingDepositSavingsShares());
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(16)))), vault.pendingCancelledDepositSavingsShares());
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(17)))), vault.pendingRedeemShares());
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(18)))), 3);  // depositQueue.length
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(19)))), 1);  // cancelledDepositQueue.length
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(20)))), 1);  // redeemQueue.length
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(21)))), vault.depositHead());
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(22)))), vault.cancelledDepositHead());
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(23)))), vault.redeemHead());
+
+        // Mapping slots: balanceOf (24), nonces (25), allowance (26).
+        assertEq(
+            uint256(vm.load(address(vault), keccak256(abi.encode(alice, uint256(24))))),
+            vault.balanceOf(alice)
+        );
+        assertEq(
+            uint256(vm.load(address(vault), keccak256(abi.encode(alice, uint256(25))))),
+            vault.nonces(alice)
+        );
+        assertEq(
+            uint256(vm.load(
+                address(vault),
+                keccak256(abi.encode(bob, keccak256(abi.encode(alice, uint256(26)))))
+            )),
+            123
+        );
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(27)))), 0);  // next free
+    }
+
+    // Informational: the round-1 layout had `decimals` at slot 0 offset 20, `minWithdraw` at
+    // slot 10, queues at 16/17, heads at 18/19 and mappings at 20..22. A round-1 implementation
+    // reading this proxy would misinterpret every slot from 1 onwards. Nothing is deployed yet.
+    function test_storageLayout_notCompatibleWithRoundOne() public view {
+        bytes32 slot0_ = vm.load(address(vault), bytes32(uint256(0)));
+        assertEq(uint8(uint256(slot0_) >> 160), 0);  // round 1: decimals == 6 here
+
+        // Round 1: slot 16 was depositQueue.length (3 here); now it is the cancelled counter.
+        assertEq(
+            uint256(vm.load(address(vault), bytes32(uint256(16)))),
+            vault.pendingCancelledDepositSavingsShares()
+        );
+        assertTrue(uint256(vm.load(address(vault), bytes32(uint256(16)))) != 3);
+
+        // Round 1: slot 20 was balanceOf's base; now it is redeemQueue.length.
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(20)))), 1);
     }
 
 }

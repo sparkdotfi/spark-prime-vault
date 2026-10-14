@@ -18,8 +18,11 @@ interface ISpUsdc {
     function approve(address, uint256) external returns (bool);
 }
 
-// Proof-of-concept tests for the review findings. Each test name carries the finding id.
-// NOTE: src/ carries review patches for F-1 and F-3, so those tests now assert the FIXED behaviour.
+// Proof-of-concept tests for the review findings against mainnet spUSDC. Each test name carries
+// the finding id. Ported to `refactor/more-simplifying` (round 2): src/ is UNPATCHED upstream,
+// so F-1 asserts the vulnerable behaviour again (guardian-chosen recipient, now paid on
+// settlement), F-2 follows the new cancel semantics (cancel succeeds, settlement starves) and
+// F-3 asserts the fixed loop. Not executed in this environment (no RPC); compiled only.
 contract ReviewTest is TestBase {
 
     IERC20Full internal usdcT = IERC20Full(address(usdc));
@@ -59,8 +62,13 @@ contract ReviewTest is TestBase {
         id = vault.requestDeposit(amt, who);
     }
 
+    function _settleCancels() internal {
+        vm.prank(rebalancer);
+        vault.processCancelledDepositQueue(type(uint256).max, type(uint256).max);
+    }
+
     /*******************************************************************************************/
-    /*** F-1: guardian can redirect a cancelled request to any recipient                      ***/
+    /*** F-1: guardian can redirect a cancelled request to any recipient (UNPATCHED upstream) ***/
     /*******************************************************************************************/
 
     function test_F1_guardianCancelDepositRedirectsFunds() public {
@@ -70,11 +78,19 @@ contract ReviewTest is TestBase {
         assertGt(vault.pendingDepositSavingsShares(), 0);
 
         vm.prank(guardian);
-        vault.cancelDepositRequest(id, thief);
+        uint256 cancelId = vault.cancelDepositRequest(id, thief);
 
-        // PATCHED (F-1): guardian cancel refunds the owner, `recipient_` is ignored.
-        assertEq(usdcT.balanceOf(thief), 0);
-        assertApproxEqAbs(usdcT.balanceOf(bob), 1_000_000e6, 2);
+        // The cancelled entry records the owner (bob) but pays `recipient_` (thief).
+        (address owner, address recipient, uint256 shares) = vault.cancelledDepositQueue(cancelId);
+        assertEq(owner,     bob);
+        assertEq(recipient, thief);
+        assertGt(shares,    0);
+
+        _settleCancels();
+
+        // VULNERABLE: the refund lands with the guardian-chosen recipient.
+        assertApproxEqAbs(usdcT.balanceOf(thief), 100_000e6, 2);
+        assertEq(usdcT.balanceOf(bob), 900_000e6);
     }
 
     function test_F1_guardianCancelRedeemRedirectsShares() public {
@@ -87,9 +103,9 @@ contract ReviewTest is TestBase {
         vm.prank(guardian);
         vault.cancelRedeemRequest(id, thief);
 
-        // PATCHED (F-1): guardian cancel returns the escrowed shares to the owner.
-        assertEq(vault.balanceOf(thief), 0);
-        assertEq(vault.balanceOf(alice), shares);
+        // VULNERABLE: escrowed shares go to the guardian-chosen recipient.
+        assertEq(vault.balanceOf(thief), shares);
+        assertEq(vault.balanceOf(alice), 0);
     }
 
     /*******************************************************************************************/
@@ -101,7 +117,7 @@ contract ReviewTest is TestBase {
         uint256 id = _deposit(bob, 100_000e6);     // queued, backed by spUSDC
 
         uint256 queued = vault.pendingDepositSavingsShares();
-        
+
         // Taker drains the whole spUSDC balance, including bob's queued backing.
         uint256 bal = spT.balanceOf(address(vault));
         vm.prank(taker);
@@ -110,10 +126,18 @@ contract ReviewTest is TestBase {
         assertEq(spT.balanceOf(address(vault)), 0);
         assertEq(vault.pendingDepositSavingsShares(), queued);
 
-        // bob can no longer cancel: his spUSDC is gone.
+        // Round 2: bob's cancel succeeds (it only moves the entry), but the settlement has no
+        // spUSDC to redeem: nothing is paid, the entry stays open, bob is still out 100k.
         vm.prank(bob);
-        vm.expectRevert();
-        vault.cancelDepositRequest(id, bob);
+        uint256 cancelId = vault.cancelDepositRequest(id, bob);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), queued);
+
+        _settleCancels();
+
+        (, , uint256 left) = vault.cancelledDepositQueue(cancelId);
+        assertEq(left, queued);
+        assertEq(vault.cancelledDepositHead(), 0);
+        assertEq(usdcT.balanceOf(bob), 900_000e6);
     }
 
     function test_F2_processRedeemQueuePaysRedeemersWithQueuedDepositBacking() public {
@@ -138,18 +162,25 @@ contract ReviewTest is TestBase {
 
         // bob's queued deposit is still recorded in full ...
         assertEq(vault.pendingDepositSavingsShares(), bobShares);
-        // ... but only ~half of it is actually held, so cancel reverts.
-        assertLt(spT.balanceOf(address(vault)), bobShares);
+        // ... but only ~half of it is actually held, so the settlement is partial.
+        uint256 held = spT.balanceOf(address(vault));
+        assertLt(held, bobShares);
+
         vm.prank(bob);
-        vm.expectRevert();
-        vault.cancelDepositRequest(bobId, bob);
+        uint256 cancelId = vault.cancelDepositRequest(bobId, bob);
+        _settleCancels();
+
+        (, , uint256 left) = vault.cancelledDepositQueue(cancelId);
+        assertEq(left, bobShares - held);                 // Partial fill, entry stays at head
+        assertEq(vault.cancelledDepositHead(), 0);
+        assertApproxEqAbs(usdcT.balanceOf(bob), 950_000e6, 2);
     }
 
     /*******************************************************************************************/
-    /*** F-3: _processDepositQueue breaks after the first request (maxRequests ignored)       ***/
+    /*** F-3: _processDepositQueue honours maxRequests (FIXED upstream)                       ***/
     /*******************************************************************************************/
 
-    function test_F3_processDepositQueueOnlyFillsOneRequestPerCall() public {
+    function test_F3_processDepositQueueFillsAllRequestsInOneCall() public {
         _deposit(alice, 1_000_000e6);              // capacity full
         _deposit(bob,   10_000e6);                 // queued
         _deposit(carol, 10_000e6);                 // queued
@@ -160,7 +191,7 @@ contract ReviewTest is TestBase {
         vm.prank(rebalancer);
         vault.processDepositQueue(type(uint256).max, 10);
 
-        // PATCHED (F-3): both requests fill in one call.
+        // FIXED (F-3): both requests fill in one call.
         assertGt(vault.balanceOf(bob),   0, "bob filled");
         assertGt(vault.balanceOf(carol), 0, "carol filled in the same call");
         assertEq(vault.pendingDepositSavingsShares(), 0);
@@ -173,9 +204,9 @@ contract ReviewTest is TestBase {
 
     function test_F4_dustFillMintsZeroShares() public {
         // Raise spPRIME's index above RAY so convertToShares(1 wei) == 0.
-        vm.startPrank(admin);
-        vault.setVSRBounds(1e27, vault.MAX_VSR());
-        vm.stopPrank();
+        uint256 maxVsr = vault.MAX_VSR();
+        vm.prank(admin);
+        vault.setVSRBounds(1e27, maxVsr);
         vm.prank(setter);
         vault.setVSR(1.000000003022265980097387650e27);  // ~10% APY
         vm.warp(block.timestamp + 365 days);

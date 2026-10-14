@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
+import { stdError } from "../lib/forge-std/src/StdError.sol";
+
 import { ERC1967Proxy } from "../lib/oz/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
@@ -17,16 +19,18 @@ contract UninitializedERC1967Proxy is ERC1967Proxy {
 }
 
 /// @dev Setter bounds (what each role can and cannot do once its key is compromised), setter
-///      validation gaps, setter events, `take`, `initialize`, and ERC20/permit basics.
+///      validation gaps, setter events, `realizeLoss`, `take`, `initialize`, and ERC20/permit
+///      basics, on `refactor/more-simplifying`.
 contract AdminTest is LocalTestBase {
 
     event Approval(address indexed owner, address indexed spender, uint256 value);
     event Transfer(address indexed from, address indexed to, uint256 value);
-    event CapacitySet(uint256 newCapacity);
-    event ChiSet(uint192 chi);
+    event CapacitySet(uint256 capacity);
+    event LossRealized(uint192 chi, uint256 loss);
     event Drip(uint192 chi, uint256 diff);
     event MaxRedeemFeeSet(uint256 fee);
-    event MinimumsSet(uint256 minDeposit, uint256 minWithdraw);
+    event MinDepositSet(uint256 minDeposit);
+    event MinRedeemSet(uint256 minRedeem);
     event Take(address indexed to, uint256 shares);
     event VSRBoundsSet(uint256 minVSR, uint256 maxVSR);
     event VSRSet(uint256 vsr);
@@ -43,13 +47,29 @@ contract AdminTest is LocalTestBase {
     /*** setCapacity                                                                            ***/
     /**********************************************************************************************/
 
-    function test_setCapacity_tooHighBoundary() public {
+    // Round 2: the `capacity_ <= uint128.max` bound was removed. The setter accepts anything;
+    // at `uint256.max` every deposit reverts by overflow in `convertToAssets(availableCapacity())`
+    // (NEWSURFACE owns the brick finding; the acceptance is asserted here).
+    function test_setCapacity_noUpperBound() public {
         vm.startPrank(admin);
-        vm.expectRevert("SparkPrimeVault/capacity-too-high");
         vault.setCapacity(uint256(type(uint128).max) + 1);
+        assertEq(vault.maxCapacity(), uint256(type(uint128).max) + 1);
 
-        vault.setCapacity(type(uint128).max);
-        assertEq(vault.maxCapacity(), type(uint128).max);
+        vault.setCapacity(type(uint256).max);
+        assertEq(vault.maxCapacity(),       type(uint256).max);
+        assertEq(vault.availableCapacity(), type(uint256).max);
+        vm.stopPrank();
+
+        _fund(alice, 100e6);
+        vm.prank(alice);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.requestDeposit(100e6, alice);
+
+        // Back inside the old bound the vault works again.
+        _setCapacity(type(uint128).max);
+        vm.prank(alice);
+        vault.requestDeposit(100e6, alice);
+        assertGt(vault.balanceOf(alice), 0);
     }
 
     function test_setCapacity() public {
@@ -110,7 +130,7 @@ contract AdminTest is LocalTestBase {
         assertEq(vault.maxRedeemFee(), 0.005e18);
     }
 
-    // GAP: lowering the max below the current fee leaves the fee above the max; new redeem
+    // C-7: lowering the max below the current fee leaves the fee above the max; new redeem
     // requests keep paying the old fee until the risk manager sets a new one.
     function test_setMaxRedeemFee_belowCurrentFeeLeavesFeeAboveMax() public {
         _setRedeemFee(0.01e18);
@@ -134,26 +154,35 @@ contract AdminTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** setMinimums                                                                            ***/
+    /*** setMinDeposit / setMinRedeem                                                           ***/
     /**********************************************************************************************/
 
-    function test_setMinimums() public {
+    function test_setMinDeposit() public {
         vm.prank(admin);
         vm.expectEmit(address(vault));
-        emit MinimumsSet(10e6, 20e6);
-        vault.setMinimums(10e6, 20e6);
-        assertEq(vault.minDeposit(),  10e6);
-        assertEq(vault.minWithdraw(), 20e6);
+        emit MinDepositSet(10e6);
+        vault.setMinDeposit(10e6);
+        assertEq(vault.minDeposit(), 10e6);
+        assertEq(vault.minRedeem(),  0);
     }
 
-    // GAP: no validation at all. minWithdraw = max blocks every redeem request forever
+    function test_setMinRedeem() public {
+        vm.prank(admin);
+        vm.expectEmit(address(vault));
+        emit MinRedeemSet(20e6);
+        vault.setMinRedeem(20e6);
+        assertEq(vault.minRedeem(),  20e6);
+        assertEq(vault.minDeposit(), 0);
+    }
+
+    // C-8: no validation at all. minRedeem = max blocks every redeem request forever
     // (cancels still work, the rebalancer can still process what is already queued).
-    function test_setMinimums_noValidation_minWithdrawBlocksAllRedeems() public {
+    function test_setMinRedeem_noValidation_blocksAllRedeems() public {
         _deposit(alice, 1_000e6);
         uint256 shares_ = vault.balanceOf(alice);
 
         vm.prank(admin);
-        vault.setMinimums(0, type(uint256).max);
+        vault.setMinRedeem(type(uint256).max);
 
         vm.prank(alice);
         vm.expectRevert("SparkPrimeVault/below-minimum");
@@ -164,15 +193,15 @@ contract AdminTest is LocalTestBase {
         vault.requestRedeem(1, alice);
 
         // Only a reset by DEFAULT_ADMIN restores exits.
-        _setMinimums(0, 0);
+        _setMinRedeem(0);
         _requestRedeem(alice, shares_);
         assertEq(vault.pendingRedeemShares(), shares_);
     }
 
-    // GAP: minDeposit = max blocks every deposit request.
-    function test_setMinimums_noValidation_minDepositBlocksAllDeposits() public {
+    // C-8: minDeposit = max blocks every deposit request.
+    function test_setMinDeposit_noValidation_blocksAllDeposits() public {
         vm.prank(admin);
-        vault.setMinimums(type(uint256).max, 0);
+        vault.setMinDeposit(type(uint256).max);
 
         _fund(alice, 1_000e6);
         vm.prank(alice);
@@ -180,11 +209,11 @@ contract AdminTest is LocalTestBase {
         vault.requestDeposit(1_000e6, alice);
     }
 
-    // GAP: minDeposit may exceed the whole capacity; every deposit then partially fills and the
+    // C-8: minDeposit may exceed the whole capacity; every deposit then partially fills and the
     // remainder queues behind an unreachable capacity.
-    function test_setMinimums_minDepositAboveCapacity() public {
+    function test_setMinDeposit_aboveCapacity() public {
         _setCapacity(100e6);
-        _setMinimums(1_000e6, 0);
+        _setMinDeposit(1_000e6);
 
         _fund(alice, 1_000e6);
         vm.prank(alice);
@@ -199,27 +228,37 @@ contract AdminTest is LocalTestBase {
         assertGt(queued_,                         0);
     }
 
-    // minDeposit is checked on assets, minWithdraw on gross shares valued at nowChi (I-4).
+    // minDeposit is checked on assets; minRedeem is now checked on gross shares (not value).
     function test_setMinimums_boundaries() public {
-        _setMinimums(100e6, 50e6);
+        _setMinDeposit(100e6);
+        _setMinRedeem(50e6);
 
         _fund(alice, 1_000e6);
         vm.startPrank(alice);
         vm.expectRevert("SparkPrimeVault/below-minimum");
         vault.requestDeposit(100e6 - 1, alice);
         vault.requestDeposit(100e6, alice);
-        vm.stopPrank();
 
-        uint256 chi_       = vault.nowChi();
-        uint256 minShares_ = (50e6 * RAY + chi_ - 1) / chi_;  // smallest shares with value >= 50e6
-        assertGe(minShares_ * chi_ / RAY, 50e6);
-        assertLt((minShares_ - 1) * chi_ / RAY, 50e6);
-
-        vm.startPrank(alice);
         vm.expectRevert("SparkPrimeVault/below-minimum");
-        vault.requestRedeem(minShares_ - 1, alice);
-        vault.requestRedeem(minShares_, alice);
+        vault.requestRedeem(50e6 - 1, alice);
+        vault.requestRedeem(50e6, alice);
         vm.stopPrank();
+
+        // The share minimum is below the asset minimum in value terms only through chi; at
+        // chi ~1.0098 50e6 shares are worth more than 50e6 assets.
+        assertGt(vault.convertToAssets(50e6), 50e6);
+    }
+
+    // minRedeem is gross of the fee: the queued amount can land below the minimum.
+    function test_setMinRedeem_grossOfFee() public {
+        _setMinRedeem(100e6);
+        _setRedeemFee(0.01e18);
+        _deposit(alice, 1_000e6);
+
+        uint256 id_ = _requestRedeem(alice, 100e6);
+        (, , uint256 queued_) = _redeemRequest(id_);
+        assertEq(queued_, 99e6);
+        assertLt(queued_, vault.minRedeem());
     }
 
     /**********************************************************************************************/
@@ -263,7 +302,7 @@ contract AdminTest is LocalTestBase {
         assertEq(vault.maxVSR(), FOUR_PCT_VSR);
     }
 
-    // GAP: bounds may be set so the current vsr is outside them; drip keeps accruing at the old
+    // C-7: bounds may be set so the current vsr is outside them; drip keeps accruing at the old
     // vsr until the setter moves it. Only the setter can bring it back into range.
     function test_setVSRBounds_currentVsrOutsideNewBounds() public {
         _deposit(alice, 1_000e6);
@@ -406,94 +445,207 @@ contract AdminTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** setChi (RISK_MANAGER_ROLE, hot wallet)                                                 ***/
+    /*** realizeLoss (RISK_MANAGER_ROLE, hot wallet)                                            ***/
     /**********************************************************************************************/
 
-    function test_setChi_notPaused() public {
-        uint192 chi_ = vault.chi();
+    // As of 0bc9288: chi = floor((totalAssets() - loss) * RAY / totalSupply) after a drip.
+
+    function test_realizeLoss_notPaused() public {
+        _deposit(alice, 1_000e6);
         vm.prank(riskManager);
         vm.expectRevert("SparkPrimeVault/not-paused");
-        vault.setChi(chi_ - 1);
+        vault.realizeLoss(1e6);
     }
 
-    function test_setChi_zero() public {
+    function test_realizeLoss_zeroLoss() public {
+        _deposit(alice, 1_000e6);
         _pause();
         vm.prank(riskManager);
-        vm.expectRevert("SparkPrimeVault/invalid-chi");
-        vault.setChi(0);
+        vm.expectRevert("SparkPrimeVault/invalid-loss");
+        vault.realizeLoss(0);
     }
 
-    // chi_ must be strictly below the dripped chi: the risk manager can never raise the index.
-    function test_setChi_cannotRaiseBoundary() public {
+    // Exact formula and event; the write-down is at least the loss (floor on the new index).
+    function test_realizeLoss() public {
+        _deposit(alice, 1_000e6);
         _pause();
-        uint192 chi_ = vault.chi();
+        uint256 totalAssets_ = vault.totalAssets();
+        uint256 supply_      = vault.totalSupply();
+        uint256 before_      = vault.assetsOf(alice);
+        uint192 expected_    = uint192((totalAssets_ - 10e6) * RAY / supply_);
+        assertLt(expected_, vault.chi());
 
-        vm.startPrank(riskManager);
-        vm.expectRevert("SparkPrimeVault/invalid-chi");
-        vault.setChi(chi_ + 1);
+        vm.prank(riskManager);
+        vm.expectEmit(address(vault));
+        emit LossRealized(expected_, 10e6);
+        vault.realizeLoss(10e6);
 
-        vm.expectRevert("SparkPrimeVault/invalid-chi");
-        vault.setChi(chi_);
-
-        vault.setChi(chi_ - 1);
-        assertEq(vault.chi(), chi_ - 1);
+        assertEq(vault.chi(),           expected_);
+        assertEq(vault.assetsOf(alice), vault.balanceOf(alice) * expected_ / RAY);
+        assertGe(before_ - vault.assetsOf(alice), 10e6);
+        assertLe(before_ - vault.assetsOf(alice), 10e6 + 1);
+        assertLe(totalAssets_ - 10e6 - vault.totalAssets(), 1);
+        // Backing is untouched.
+        assertApproxEqAbs(spUsdc.convertToAssets(_vaultSpUsdc()), 1_000e6, 2);
     }
 
-    // After time passes, setChi compares against the dripped value, not the stored one.
-    function test_setChi_comparesAgainstDrippedChi() public {
+    // realizeLoss drips first, so the loss is taken from the accrued value and rho moves.
+    function test_realizeLoss_dripsFirst() public {
+        _deposit(alice, 1_000e6);
         _setPrimeVsr(TEN_PCT_VSR);
         _pause();
         uint192 stored_ = vault.chi();
         skip(30 days);
-        uint192 dripped_ = vault.nowChi();
+        uint192 dripped_     = vault.nowChi();
+        uint256 supply_      = vault.totalSupply();
+        uint256 totalAssets_ = vault.totalAssets();  // valued at nowChi
         assertGt(dripped_, stored_);
+        assertEq(totalAssets_, supply_ * dripped_ / RAY);
 
-        vm.startPrank(riskManager);
-        vm.expectRevert("SparkPrimeVault/invalid-chi");
-        vault.setChi(dripped_);
+        vm.prank(riskManager);
+        vault.realizeLoss(1e6);
 
-        // A value above the stored chi but below the dripped one is accepted.
-        vault.setChi(dripped_ - 1);
-        assertEq(vault.chi(), dripped_ - 1);
+        assertEq(vault.chi(), uint192((totalAssets_ - 1e6) * RAY / supply_));
         assertEq(vault.rho(), block.timestamp);
+        // The write-down lands on the dripped value, not the stored one.
+        assertGt(vault.chi(), stored_);
     }
 
-    function test_setChi() public {
+    // Repeated calls compound through totalAssets(); the risk manager can never raise chi.
+    function test_realizeLoss_repeated() public {
         _deposit(alice, 1_000e6);
         _pause();
-        uint192 chi_   = vault.chi();
-        uint192 half_  = chi_ / 2;
-        uint256 before_ = vault.assetsOf(alice);
+        uint256 supply_ = vault.totalSupply();
+
+        uint192 chi0_ = vault.chi();
+        _realizeLoss(5e6);
+        uint192 chi1_ = vault.chi();
+        assertEq(chi1_, uint192((supply_ * chi0_ / RAY - 5e6) * RAY / supply_));
+        assertLt(chi1_, chi0_);
+
+        _realizeLoss(5e6);
+        uint192 chi2_ = vault.chi();
+        assertEq(chi2_, uint192((supply_ * chi1_ / RAY - 5e6) * RAY / supply_));
+        assertLt(chi2_, chi1_);
+    }
+
+    // C-3 re-confirmed: no floor. loss = totalAssets - 1 leaves holders with 1 wei of value in
+    // total while the full spUSDC backing stays in the vault and is takeable.
+    function test_realizeLoss_totalAssetsMinusOneWipesHolders() public {
+        _deposit(alice, 1_000_000e6);
+        _pause();
+        uint256 totalAssets_ = vault.totalAssets();
+        uint256 supply_      = vault.totalSupply();
+        assertApproxEqAbs(totalAssets_, 1_000_000e6, 2);
+
+        vm.prank(riskManager);
+        vault.realizeLoss(totalAssets_ - 1);
+
+        assertEq(vault.chi(),           uint192(RAY / supply_));
+        assertEq(vault.totalAssets(),   supply_ * (RAY / supply_) / RAY);
+        assertLe(vault.totalAssets(),   1);
+        assertLe(vault.assetsOf(alice), 1);
+        assertEq(vault.balanceOf(alice), supply_);  // Shares remain, worth nothing
+
+        // Backing is untouched and still takeable in full.
+        assertApproxEqAbs(spUsdc.convertToAssets(_vaultSpUsdc()), 1_000_000e6, 2);
+        _takeAll();
+        assertEq(_vaultSpUsdc(), 0);
+    }
+
+    // C-3 (worst case): loss = totalAssets sets chi to 0. nowChi() stays 0 forever (rpow * 0),
+    // `convertToShares` divides by zero, `processRedeemQueue` can never run, and deposits can
+    // never mint (availableCapacity converts to 0 assets). The vault is dead with the whole
+    // backing still inside it, and only `take` can move that backing.
+    function test_realizeLoss_fullLossZeroesChiAndBricksVault() public {
+        _deposit(alice, 1_000_000e6);
+        _pause();
+        uint256 totalAssets_ = vault.totalAssets();
 
         vm.prank(riskManager);
         vm.expectEmit(address(vault));
-        emit ChiSet(half_);
-        vault.setChi(half_);
+        emit LossRealized(0, totalAssets_);
+        vault.realizeLoss(totalAssets_);
 
-        assertEq(vault.chi(),           half_);
-        assertEq(vault.assetsOf(alice), vault.balanceOf(alice) * half_ / RAY);
-        assertLe(vault.assetsOf(alice), before_ / 2);
+        assertEq(vault.chi(),         0);
+        assertEq(vault.nowChi(),      0);
+        assertEq(vault.totalAssets(), 0);
+        assertEq(vault.assetsOf(alice), 0);
+
+        vm.expectRevert(stdError.divisionError);
+        vault.convertToShares(1);
+
+        // Time at MAX_VSR does not help: rpow(vsr, dt) * 0 == 0.
+        _setPrimeVsr(MAX_VSR);
+        skip(3650 days);
+        assertEq(vault.nowChi(), 0);
+
+        // A second loss cannot be realised either (0 - loss underflows).
+        vm.prank(riskManager);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.realizeLoss(1);
+
+        _unpause();
+
+        // Redeem requests still queue but can never be processed.
+        _requestRedeem(alice, vault.balanceOf(alice));
+        vm.prank(rebalancer);
+        vm.expectRevert(stdError.divisionError);
+        vault.processRedeemQueue(type(uint256).max, 10);
+
+        // New deposits queue and never mint: capacity converts to 0 assets at chi 0.
+        uint256 id_ = _deposit(bob, 100e6);
+        assertEq(vault.balanceOf(bob), 0);
+        (, , uint256 queued_) = _depositRequest(id_);
+        assertGt(queued_, 0);
+        _processDeposits(type(uint256).max, 10);
+        assertEq(vault.balanceOf(bob), 0);
+
+        // The backing is still there and still takeable.
+        assertApproxEqAbs(spUsdc.convertToAssets(_vaultSpUsdc()), 1_000_100e6, 3);
+        _takeAll();
+        assertEq(_vaultSpUsdc(), 0);
     }
 
-    // No floor: a compromised risk manager (while the guardian has paused) can write off the
-    // whole vault with one call. Recommend a floor, e.g. chi_ >= drip() * X% or a per-call max
-    // drawdown.
-    function test_setChi_oneWeiRealisesTotalLoss() public {
-        _deposit(alice, 1_000_000e6);
+    // loss > totalAssets underflows (panic 0x11) instead of a clean revert string.
+    function test_realizeLoss_aboveTotalAssetsUnderflows() public {
+        _deposit(alice, 1_000e6);
         _pause();
-        assertApproxEqAbs(vault.assetsOf(alice), 1_000_000e6, 2);
+        uint256 totalAssets_ = vault.totalAssets();
 
         vm.prank(riskManager);
-        vault.setChi(1);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.realizeLoss(totalAssets_ + 1);
 
-        assertEq(vault.chi(),           1);
-        assertEq(vault.assetsOf(alice), vault.balanceOf(alice) / RAY);  // 0 for < 1e27 shares
-        assertEq(vault.assetsOf(alice), 0);
-        assertEq(vault.totalAssets(),   0);
+        vm.prank(riskManager);
+        vault.realizeLoss(totalAssets_);
+        assertEq(vault.chi(), 0);
+    }
 
-        // The spUSDC backing is untouched: the vault now holds ~1M USDC of spUSDC against a
-        // notional of 0, and `take` can still remove all of it.
-        assertApproxEqAbs(spUsdc.convertToAssets(_vaultSpUsdc()), 1_000_000e6, 2);
+    // totalSupply == 0: totalAssets() is 0 so any loss underflows before the division by zero.
+    function test_realizeLoss_zeroSupplyReverts() public {
+        assertEq(vault.totalSupply(), 0);
+        _pause();
+        vm.prank(riskManager);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.realizeLoss(1);
+    }
+
+    // The uint192 cast is safe: the result is at most chi (< 2^192) for any accepted loss.
+    function testFuzz_realizeLoss_neverRaisesChi(uint256 deposit_, uint256 loss_) public {
+        deposit_ = bound(deposit_, 2, 1_000_000_000e6);
+        _deposit(alice, deposit_);
+        _pause();
+        uint256 totalAssets_ = vault.totalAssets();
+        vm.assume(totalAssets_ > 0);
+        loss_ = bound(loss_, 1, totalAssets_);
+
+        uint192 chi_ = vault.chi();
+        _realizeLoss(loss_);
+
+        assertLt(vault.chi(), chi_);
+        assertGe(totalAssets_ - vault.totalAssets(), loss_);
+        assertLe(totalAssets_ - vault.totalAssets(), loss_ + 1);
     }
 
     /**********************************************************************************************/
@@ -505,7 +657,7 @@ contract AdminTest is LocalTestBase {
         uint256 bal_ = _vaultSpUsdc();
 
         vm.startPrank(taker);
-        vm.expectRevert("SparkPrimeVault/insufficient-unencumbered-shares");
+        vm.expectRevert("SparkPrimeVault/insufficient-shares");
         vault.take(bal_ + 1);
 
         vault.take(bal_);
@@ -548,7 +700,9 @@ contract AdminTest is LocalTestBase {
         assertEq(_vaultSpUsdc(), 0);
     }
 
-    // F-2 (known): take ignores pendingDepositSavingsShares.
+    // F-2 (known): take ignores pendingDepositSavingsShares and
+    // pendingCancelledDepositSavingsShares. Round 2: the cancel itself succeeds, the settlement
+    // then pays nothing because the vault holds no spUSDC (no revert, the refund just waits).
     function test_take_ignoresPendingDepositSavingsShares() public {
         _setCapacity(0);
         uint256 id_ = _deposit(alice, 1_000e6);
@@ -563,8 +717,14 @@ contract AdminTest is LocalTestBase {
         assertEq(vault.pendingDepositSavingsShares(), queued_);
 
         vm.prank(alice);
-        vm.expectRevert();  // spUSDC redeem of shares the vault no longer holds
-        vault.cancelDepositRequest(id_, alice);
+        uint256 cancelId_ = vault.cancelDepositRequest(id_, alice);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), queued_);
+
+        _processCancelledDeposits(type(uint256).max, 10);
+        (, , uint256 left_) = _cancelledDepositRequest(cancelId_);
+        assertEq(left_,                   queued_);
+        assertEq(usdc.balanceOf(alice),   0);
+        assertEq(vault.cancelledDepositHead(), 0);
     }
 
     /**********************************************************************************************/
@@ -580,6 +740,7 @@ contract AdminTest is LocalTestBase {
 
         assertEq(vm.load(address(fresh_), INITIALIZABLE_STORAGE), bytes32(0));
         assertEq(fresh_.savings(),  address(0));
+        assertEq(fresh_.asset(),    address(0));
         assertEq(fresh_.name(),     "");
         assertEq(fresh_.symbol(),   "");
         assertEq(fresh_.decimals(), 0);
@@ -596,6 +757,8 @@ contract AdminTest is LocalTestBase {
 
         assertEq(vm.load(address(fresh_), INITIALIZABLE_STORAGE), bytes32(uint256(1)));
         assertEq(fresh_.savings(),      address(spUsdc));
+        assertEq(fresh_.asset(),        address(usdc));
+        assertEq(fresh_.asset(),        spUsdc.asset());
         assertEq(fresh_.name(),         "Spark Prime USDC");
         assertEq(fresh_.symbol(),       "spPRIME");
         assertEq(fresh_.decimals(),     6);
@@ -607,12 +770,18 @@ contract AdminTest is LocalTestBase {
         assertEq(fresh_.maxVSR(),       RAY);
         assertEq(fresh_.maxCapacity(),  0);
         assertEq(fresh_.minDeposit(),   0);
-        assertEq(fresh_.minWithdraw(),  0);
+        assertEq(fresh_.minRedeem(),    0);
         assertEq(fresh_.redeemFee(),    0);
         assertEq(fresh_.maxRedeemFee(), 0);
         assertEq(fresh_.totalSupply(),  0);
         assertEq(fresh_.paused(),       false);
         assertEq(fresh_.version(),      "1");
+        assertEq(fresh_.pendingDepositSavingsShares(),          0);
+        assertEq(fresh_.pendingCancelledDepositSavingsShares(), 0);
+        assertEq(fresh_.pendingRedeemShares(),                  0);
+        assertEq(fresh_.depositHead(),                          0);
+        assertEq(fresh_.cancelledDepositHead(),                 0);
+        assertEq(fresh_.redeemHead(),                           0);
         assertEq(usdc.allowance(address(fresh_), address(spUsdc)), type(uint256).max);
 
         assertTrue(fresh_.hasRole(DEFAULT_ADMIN_ROLE, admin));
@@ -644,8 +813,9 @@ contract AdminTest is LocalTestBase {
         assertEq(fresh_.availableCapacity(), 0);
     }
 
-    // GAP: `initialize` does not guard against admin == address(0). OZ `_grantRole` succeeds for
-    // the zero address, leaving a vault whose only admin is address(0): no setters, no upgrade.
+    // C-4: `initialize` does not guard against admin == address(0). OZ `_grantRole` succeeds for
+    // the zero address, leaving a vault whose only admin is address(0): no setters, no pause,
+    // no upgrade.
     function test_initialize_zeroAdminNotGuarded() public {
         SparkPrimeVault fresh_ = _freshProxy();
         fresh_.initialize(address(spUsdc), "Spark Prime USDC", "spPRIME", address(0));
@@ -660,6 +830,12 @@ contract AdminTest is LocalTestBase {
             "AccessControlUnauthorizedAccount(address,bytes32)", admin, DEFAULT_ADMIN_ROLE
         ));
         fresh_.setCapacity(1);
+
+        vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSignature(
+            "AccessControlUnauthorizedAccount(address,bytes32)", admin, DEFAULT_ADMIN_ROLE
+        ));
+        fresh_.grantRole(GUARDIAN_ROLE, admin);  // No guardian can ever be appointed either
     }
 
     /**********************************************************************************************/
@@ -671,6 +847,7 @@ contract AdminTest is LocalTestBase {
         assertEq(vault.symbol(),   "spPRIME");
         assertEq(vault.decimals(), 6);
         assertEq(vault.version(),  "1");
+        assertEq(vault.asset(),    address(usdc));
         assertEq(
             vault.DOMAIN_SEPARATOR(),
             keccak256(abi.encode(
