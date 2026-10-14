@@ -26,7 +26,9 @@ contract InvalidSparkPrimeVault2 {}
 ///      `asset`, `pendingCancelledDepositSavingsShares`, `cancelledDepositQueue` and
 ///      `cancelledDepositHead` were inserted mid-layout, so this layout is NOT compatible with
 ///      the round-1 layout (nothing is deployed yet). Re-verified unchanged at ff828d2
-///      (`realizeGain` adds no state).
+///      (`realizeGain` adds no state) and at bf93b0d (`cancelRedeemRequest` removed, no state
+///      change; the snapshot now also covers the three `getPending*Requests` views, both
+///      overloads, and `availableCapacity` / `assetsOf`).
 contract UpgradeTest is LocalTestBase {
 
     // keccak256("eip1967.proxy.implementation") - 1
@@ -148,6 +150,36 @@ contract UpgradeTest is LocalTestBase {
         newImplementation.initializeV2(1);
     }
 
+    // `upgradeToAndCall` is payable (UUPS) but refuses ETH when there is no call data.
+    function test_upgradeToAndCall_nonPayableWithoutData() public {
+        address oldImpl_ = vault.implementation();
+        vm.deal(admin, 1 ether);
+
+        vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSignature("ERC1967NonPayable()"));
+        vault.upgradeToAndCall{ value: 1 }(address(newImplementation), "");
+
+        assertEq(vault.implementation(), oldImpl_);
+        assertEq(address(vault).balance, 0);
+    }
+
+    // With call data the ETH is forwarded to the delegatecall; `initializeV2` is not payable,
+    // so it reverts and the upgrade is rolled back. No path leaves ETH inside the proxy.
+    function test_upgradeToAndCall_valueWithNonPayableInitializer() public {
+        address oldImpl_ = vault.implementation();
+        vm.deal(admin, 1 ether);
+
+        vm.prank(admin);
+        vm.expectRevert();
+        vault.upgradeToAndCall{ value: 1 }(
+            address(newImplementation),
+            abi.encodeCall(SparkPrimeVaultV2Mock.initializeV2, (777))
+        );
+
+        assertEq(vault.implementation(), oldImpl_);
+        assertEq(address(vault).balance, 0);
+    }
+
     // Upgrading with calldata that re-runs `initialize` reverts and the upgrade is rolled back.
     function test_upgradeToAndCall_reinitializeReverts() public {
         address oldImpl_ = vault.implementation();
@@ -208,6 +240,17 @@ contract UpgradeTest is LocalTestBase {
         uint256 redShares;
         uint256 spUsdcBal;
         bytes32 domainSeparator;
+        uint256 availableCapacity;
+        uint256 assetsOfAlice;
+        bytes32 pendingDepositsHash;        // getPendingDepositRequests()
+        bytes32 pendingCancellationsHash;   // getPendingDepositCancellationRequests()
+        bytes32 pendingRedeemsHash;         // getPendingRedeemRequests()
+        bytes32 allDepositsHash;            // getPendingDepositRequests(0, length)
+        bytes32 allCancellationsHash;       // getPendingDepositCancellationRequests(0, length)
+        bytes32 allRedeemsHash;             // getPendingRedeemRequests(0, length)
+        uint256 pendingDepositsLen;
+        uint256 pendingCancellationsLen;
+        uint256 pendingRedeemsLen;
     }
 
     function _snapshot() internal view returns (Snapshot memory s_) {
@@ -246,6 +289,27 @@ contract UpgradeTest is LocalTestBase {
         (s_.redOwner,    s_.redRecipient,    s_.redShares)    = _redeemRequest(redId);
         s_.spUsdcBal                            = spUsdc.balanceOf(address(vault));
         s_.domainSeparator                      = vault.DOMAIN_SEPARATOR();
+        s_.availableCapacity                    = vault.availableCapacity();
+        s_.assetsOfAlice                        = vault.assetsOf(alice);
+
+        SparkPrimeVault.Request[] memory d_ = vault.getPendingDepositRequests();
+        SparkPrimeVault.Request[] memory c_ = vault.getPendingDepositCancellationRequests();
+        SparkPrimeVault.Request[] memory r_ = vault.getPendingRedeemRequests();
+        s_.pendingDepositsHash      = keccak256(abi.encode(d_));
+        s_.pendingCancellationsHash = keccak256(abi.encode(c_));
+        s_.pendingRedeemsHash       = keccak256(abi.encode(r_));
+        s_.pendingDepositsLen       = d_.length;
+        s_.pendingCancellationsLen  = c_.length;
+        s_.pendingRedeemsLen        = r_.length;
+        s_.allDepositsHash = keccak256(abi.encode(
+            vault.getPendingDepositRequests(0, _depositQueueLength())
+        ));
+        s_.allCancellationsHash = keccak256(abi.encode(
+            vault.getPendingDepositCancellationRequests(0, _cancelledDepositQueueLength())
+        ));
+        s_.allRedeemsHash = keccak256(abi.encode(
+            vault.getPendingRedeemRequests(0, _redeemQueueLength())
+        ));
     }
 
     function _assertSnapshot(Snapshot memory s_) internal view {
@@ -286,6 +350,17 @@ contract UpgradeTest is LocalTestBase {
         assertEq(s_.pendingCancelledDepositSavingsShares, s_.cancelShares);
         assertEq(s_.totalSupply,                          s_.balAlice + s_.balVault);
         assertEq(s_.maxCapacity,                          s_.totalSupply);
+        assertEq(s_.availableCapacity,                    0);
+        assertEq(s_.assetsOfAlice,                        s_.balAlice * s_.nowChi / RAY);
+        // Deposit queue: [alice filled (dead), bob queued, bob cancelled (dead)], head at 1.
+        assertEq(s_.pendingDepositsLen,                   2);
+        assertEq(s_.pendingCancellationsLen,              1);
+        assertEq(s_.pendingRedeemsLen,                    1);
+        assertEq(s_.pendingDepositsHash, keccak256(abi.encode(
+            vault.getPendingDepositRequests(1, 3)
+        )));
+        assertEq(s_.pendingCancellationsHash,             s_.allCancellationsHash);
+        assertEq(s_.pendingRedeemsHash,                   s_.allRedeemsHash);
     }
 
     function _assertSnapshotsEqual(Snapshot memory a_, Snapshot memory b_) internal pure {
@@ -475,6 +550,32 @@ contract UpgradeTest is LocalTestBase {
             123
         );
         assertEq(uint256(vm.load(address(vault), bytes32(uint256(27)))), 0);  // next free
+    }
+
+    // Round 4: the roles the contract knows about are exactly DEFAULT_ADMIN plus five named
+    // roles; `UNPAUSER_ROLE` is not a contract constant any more (the harness-local one is an
+    // arbitrary bytes32). Every role's admin is DEFAULT_ADMIN_ROLE, before and after upgrade.
+    function test_roleAdmins_unchangedByUpgrade() public {
+        bytes32[6] memory roles_ = [
+            DEFAULT_ADMIN_ROLE, GUARDIAN_ROLE, REBALANCER_ROLE, RISK_MANAGER_ROLE,
+            SETTER_ROLE, TAKER_ROLE
+        ];
+        assertEq(vault.GUARDIAN_ROLE(),     GUARDIAN_ROLE);
+        assertEq(vault.REBALANCER_ROLE(),   REBALANCER_ROLE);
+        assertEq(vault.RISK_MANAGER_ROLE(), RISK_MANAGER_ROLE);
+        assertEq(vault.SETTER_ROLE(),       SETTER_ROLE);
+        assertEq(vault.TAKER_ROLE(),        TAKER_ROLE);
+        assertEq(vault.DEFAULT_ADMIN_ROLE(), bytes32(0));
+
+        (bool ok_, ) = address(vault).staticcall(abi.encodeWithSignature("UNPAUSER_ROLE()"));
+        assertFalse(ok_);
+
+        for (uint256 i; i < roles_.length; ++i) assertEq(vault.getRoleAdmin(roles_[i]), bytes32(0));
+
+        vm.prank(admin);
+        vault.upgradeToAndCall(address(newImplementation), "");
+
+        for (uint256 i; i < roles_.length; ++i) assertEq(vault.getRoleAdmin(roles_[i]), bytes32(0));
     }
 
     // Informational: the round-1 layout had `decimals` at slot 0 offset 20, `minWithdraw` at
