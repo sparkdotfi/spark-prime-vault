@@ -102,8 +102,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         uint256         fee
     );
 
-    event CancelRedeemRequest(uint256 indexed requestId, uint256 shares);
-
     event RedeemRecipientUpdated(uint256 indexed requestId, address indexed recipient);
 
     event Redeem(
@@ -259,7 +257,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         SafeERC20.forceApprove(IERC20OZ(asset_), savings_, type(uint256).max);
     }
 
-    // Only DEFAULT_ADMIN_ROLE can upgrade the implementation
+    // Only DEFAULT_ADMIN_ROLE can upgrade the implementation.
     function _authorizeUpgrade(address) internal view override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
     /**********************************************************************************************/
@@ -423,10 +421,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         require(requestSavingsShares_ != 0, "SparkPrimeVault/no-request");
 
-        require(
-            msg.sender == request_.owner || hasRole(GUARDIAN_ROLE, msg.sender),
-            "SparkPrimeVault/not-authorized"
-        );
+        if (msg.sender != request_.owner) {
+            require(hasRole(GUARDIAN_ROLE, msg.sender), "SparkPrimeVault/not-authorized");
+            require(recipient_ == request_.owner,       "SparkPrimeVault/invalid-recipient");
+        }
 
         delete _depositRequests[requestId_];
 
@@ -464,7 +462,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         _transfer(msg.sender, address(this), shares_);
 
-        // The fee is burned upfront in shares and is not refunded on cancel.
+        // The fee is burned upfront in shares.
         uint256 fee_ = _divUp(shares_ * redeemFeeRate, WAD);
 
         _burn(address(this), fee_);
@@ -478,41 +476,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         pendingRedeemShares += queuedShares_;
 
         emit RedeemRequest(msg.sender, recipient_, requestId_, shares_, fee_);
-    }
-
-    /**********************************************************************************************/
-    /*** Request cancel functions                                                               ***/
-    /**********************************************************************************************/
-
-    function cancelRedeemRequest(uint256 requestId_, address recipient_) whenNotPaused external {
-        require(recipient_ != address(0), "SparkPrimeVault/invalid-recipient");
-
-        Request memory request_ = _redeemRequests[requestId_];
-
-        require(request_.shares != 0, "SparkPrimeVault/no-request");
-
-        require(
-            msg.sender == request_.owner || hasRole(GUARDIAN_ROLE, msg.sender),
-            "SparkPrimeVault/not-authorized"
-        );
-
-        delete _redeemRequests[requestId_];
-
-        _transfer(address(this), recipient_, request_.shares);
-
-        pendingRedeemShares -= request_.shares;
-
-        if (requestId_ == firstPendingRedeemId) {
-            // Advance head past any cancelled/dead requests.
-            while (
-                firstPendingRedeemId < _redeemRequests.length &&
-                _redeemRequests[firstPendingRedeemId].shares == 0
-            ) {
-                unchecked { ++firstPendingRedeemId; }
-            }
-        }
-
-        emit CancelRedeemRequest(requestId_, request_.shares);
     }
 
     /**********************************************************************************************/
@@ -568,7 +531,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     function transfer(address to_, uint256 amount_) external returns (bool) {
-        require(to_ != address(0), "SparkPrimeVault/invalid-address");
+        require(to_ != address(0) && to_ != address(this), "SparkPrimeVault/invalid-address");
 
         _transfer(msg.sender, to_, amount_);
 
@@ -576,8 +539,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     function transferFrom(address from_, address to_, uint256 amount_) external returns (bool) {
-        require(to_ != address(0),           "SparkPrimeVault/invalid-address");
-        require(balanceOf[from_] >= amount_, "SparkPrimeVault/insufficient-balance");
+        require(to_ != address(0) && to_ != address(this), "SparkPrimeVault/invalid-address");
+        require(balanceOf[from_] >= amount_,               "SparkPrimeVault/insufficient-balance");
 
         if (from_ != msg.sender) {
             uint256 allowance_ = allowance[from_][msg.sender];
@@ -667,46 +630,22 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     /**********************************************************************************************/
-    /*** External view functions                                                                ***/
+    /*** Request getter functions                                                               ***/
     /**********************************************************************************************/
 
-    function DOMAIN_SEPARATOR() external view returns (bytes32) {
-        return _calculateDomainSeparator(block.chainid);
-    }
+    function getPendingDepositRequest(uint256 requestId_)
+        external
+        view
+        returns (address owner_, address recipient_, uint256 shares_)
+    {
+        require(
+            requestId_ >= firstPendingDepositId && requestId_ < _depositRequests.length,
+            "SparkPrimeVault/invalid-request-id"
+        );
 
-    function assetsOf(address owner_) external view returns (uint256) {
-        return convertToAssets(balanceOf[owner_]);
-    }
+        Request storage request_ = _depositRequests[requestId_];
 
-    function availableCapacity() public view returns (uint256) {
-        return maxCapacity > totalSupply ? maxCapacity - totalSupply : 0;
-    }
-
-    function availableLiquidAssets() public view returns (uint256) {
-        return IERC4626Like(savings).maxWithdraw(address(this));
-    }
-
-    function convertToAssets(uint256 shares_) public view returns (uint256) {
-        return (shares_ * nowChi()) / RAY;
-    }
-
-    function convertToShares(uint256 assets_) public view returns (uint256) {
-        return (assets_ * RAY) / nowChi();
-    }
-
-    function implementation() external view returns (address) {
-        return ERC1967Utils.getImplementation();
-    }
-
-    function nowChi() public view returns (uint192) {
-        return
-            block.timestamp > rho
-                ? uint192((_rpow(vsr, block.timestamp - rho) * chi) / RAY)
-                : chi;
-    }
-
-    function totalAssets() public view returns (uint256) {
-        return convertToAssets(totalSupply);
+        return (request_.owner, request_.recipient, request_.shares);
     }
 
     function getPendingDepositRequest(uint256 requestId_)
@@ -832,6 +771,49 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         for (uint256 i_ = startId_; i_ < endId_; ++i_) {
             requests_[i_ - startId_] = _redeemRequests[i_];
         }
+    }
+
+    /**********************************************************************************************/
+    /*** External view functions                                                                ***/
+    /**********************************************************************************************/
+
+    function assetsOf(address owner_) external view returns (uint256) {
+        return convertToAssets(balanceOf[owner_]);
+    }
+
+    function availableCapacity() public view returns (uint256) {
+        return maxCapacity > totalSupply ? maxCapacity - totalSupply : 0;
+    }
+
+    function availableLiquidAssets() public view returns (uint256) {
+        return IERC4626Like(savings).maxWithdraw(address(this));
+    }
+
+    function convertToAssets(uint256 shares_) public view returns (uint256) {
+        return (shares_ * nowChi()) / RAY;
+    }
+
+    function convertToShares(uint256 assets_) public view returns (uint256) {
+        return (assets_ * RAY) / nowChi();
+    }
+
+    function DOMAIN_SEPARATOR() external view returns (bytes32) {
+        return _calculateDomainSeparator(block.chainid);
+    }
+
+    function implementation() external view returns (address) {
+        return ERC1967Utils.getImplementation();
+    }
+
+    function nowChi() public view returns (uint192) {
+        return
+            block.timestamp > rho
+                ? uint192((_rpow(vsr, block.timestamp - rho) * chi) / RAY)
+                : chi;
+    }
+
+    function totalAssets() public view returns (uint256) {
+        return convertToAssets(totalSupply);
     }
 
     /**********************************************************************************************/
@@ -974,7 +956,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
             uint256 requestShares_ = request_.shares;
 
-            if (requestShares_ == 0) continue;  // Cancelled
+            if (requestShares_ == 0) continue;  // Empty
 
             uint256 shares_ = _min(requestShares_, remaining_);
             uint256 assets_ = convertToAssets(shares_);
