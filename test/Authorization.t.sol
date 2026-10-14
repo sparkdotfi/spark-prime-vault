@@ -22,7 +22,6 @@ contract AuthorizationTestBase is TestBase {
         vault.grantRole(RISK_MANAGER_ROLE, riskManager);
         vault.grantRole(SETTER_ROLE,       setter);
         vault.grantRole(TAKER_ROLE,        taker);
-        vault.grantRole(UNPAUSER_ROLE,     unpauser);
         vault.setCapacity(1_000_000e6);
         vm.stopPrank();
 
@@ -55,18 +54,6 @@ contract SetCapacityTests is AuthorizationTestBase {
         vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
         vm.prank(unauthorized);
         vault.setCapacity(2_000_000e6);
-    }
-
-    function test_setCapacity_capacityTooHighBoundary() external {
-        vm.expectRevert("SparkPrimeVault/capacity-too-high");
-        vm.prank(admin);
-        vault.setCapacity(uint256(type(uint128).max) + 1);
-
-        vm.expectEmit(address(vault));
-        emit SparkPrimeVault.CapacitySet(type(uint128).max);
-
-        vm.prank(admin);
-        vault.setCapacity(type(uint128).max);
     }
 
     // Success tests
@@ -112,66 +99,82 @@ contract SetMaxRedeemFeeTests is AuthorizationTestBase {
     function test_setMaxRedeemFee_notAdmin() external {
         vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
         vm.prank(unauthorized);
-        vault.setMaxRedeemFee(0.01e18);
+        vault.setMaxRedeemFeeRate(0.01e18);
     }
 
     function test_setMaxRedeemFee_feeTooHighBoundary() external {
         vm.expectRevert("SparkPrimeVault/fee-too-high");
         vm.prank(admin);
-        vault.setMaxRedeemFee(0.01e18 + 1);
+        vault.setMaxRedeemFeeRate(0.01e18 + 1);
 
         vm.prank(admin);
-        vault.setMaxRedeemFee(0.01e18);  // MAX_REDEEM_FEE is 1%
+        vault.setMaxRedeemFeeRate(0.01e18);  // MAX_REDEEM_FEE is 1%
     }
 
     // Success tests
 
     function test_setMaxRedeemFee() external {
-        assertEq(vault.maxRedeemFee(), 0);
+        assertEq(vault.maxRedeemFeeRate(), 0);
 
         vm.expectEmit(address(vault));
-        emit SparkPrimeVault.MaxRedeemFeeSet(0.01e18);
+        emit SparkPrimeVault.MaxRedeemFeeRateSet(0.01e18);
 
         vm.prank(admin);
-        vault.setMaxRedeemFee(0.01e18);
+        vault.setMaxRedeemFeeRate(0.01e18);
 
-        assertEq(vault.maxRedeemFee(), 0.01e18);
+        assertEq(vault.maxRedeemFeeRate(), 0.01e18);
 
         vm.expectEmit(address(vault));
-        emit SparkPrimeVault.MaxRedeemFeeSet(0);
+        emit SparkPrimeVault.MaxRedeemFeeRateSet(0);
 
         vm.prank(admin);
-        vault.setMaxRedeemFee(0);
+        vault.setMaxRedeemFeeRate(0);
 
-        assertEq(vault.maxRedeemFee(), 0);
+        assertEq(vault.maxRedeemFeeRate(), 0);
     }
 
 }
 
-contract SetMinimumsTests is AuthorizationTestBase {
+contract SetMinDepositTests is AuthorizationTestBase {
 
-    // Failure tests
-
-    function test_setMinimums_notAdmin() external {
+    function test_setMinDeposit_notAdmin() external {
         vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
         vm.prank(unauthorized);
-        vault.setMinimums({ minDeposit_ : 100e6, minWithdraw_ : 50e6 });
+        vault.setMinDeposit(100e6);
     }
 
-    // Success tests
-
-    function test_setMinimums() external {
-        assertEq(vault.minDeposit(),  0);
-        assertEq(vault.minWithdraw(), 0);
+    function test_setMinDeposit() external {
+        assertEq(vault.minDeposit(), 0);
 
         vm.expectEmit(address(vault));
-        emit SparkPrimeVault.MinimumsSet(100e6, 50e6);
+        emit SparkPrimeVault.MinDepositSet(100e6);
 
         vm.prank(admin);
-        vault.setMinimums({ minDeposit_ : 100e6, minWithdraw_ : 50e6});
+        vault.setMinDeposit(100e6);
 
-        assertEq(vault.minDeposit(),  100e6);
-        assertEq(vault.minWithdraw(), 50e6);
+        assertEq(vault.minDeposit(), 100e6);
+    }
+
+}
+
+contract SetMinRedeemTests is AuthorizationTestBase {
+
+    function test_setMinRedeem_notAdmin() external {
+        vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
+        vm.prank(unauthorized);
+        vault.setMinRedeem(100e6);
+    }
+
+    function test_setMinRedeem() external {
+        assertEq(vault.minRedeem(), 0);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.MinRedeemSet(50e6);
+
+        vm.prank(admin);
+        vault.setMinRedeem(50e6);
+
+        assertEq(vault.minRedeem(), 50e6);
     }
 
 }
@@ -305,22 +308,7 @@ contract TakeTests is AuthorizationTestBase {
         vault.take(1_000_000e6);
     }
 
-    function test_take_insufficientUnencumberedSharesBoundary() external {
-        uint256 expectedSavingsShares = spUsdc.convertToShares(1_000_000e6);
-
-        _requestDeposit(user1, 1_000_000e6); // Instant fill
-
-        uint256 unencumberedSparkVaultShares = vault.unencumberedSparkVaultShares();
-
-        assertEq(unencumberedSparkVaultShares, expectedSavingsShares);
-
-        vm.expectRevert("SparkPrimeVault/insufficient-unencumbered-shares");
-        vm.prank(taker);
-        vault.take(unencumberedSparkVaultShares + 1);
-
-        vm.prank(taker);
-        vault.take(unencumberedSparkVaultShares);
-    }
+    // TODO: test_take_insufficientSharesBoundary
 
     // Success tests
 
@@ -333,7 +321,7 @@ contract TakeTests is AuthorizationTestBase {
         assertEq(spUsdc.balanceOf(taker),          0);
 
         vm.expectEmit(address(vault));
-        emit SparkPrimeVault.Take(taker, expectedSavingsShares);
+        emit SparkPrimeVault.Take(expectedSavingsShares);
 
         vm.prank(taker);
         vault.take(expectedSavingsShares);
@@ -344,28 +332,28 @@ contract TakeTests is AuthorizationTestBase {
 
 }
 
-contract ProcessDepositQueueTests is AuthorizationTestBase {
+contract ProcessPendingDepositsTests is AuthorizationTestBase {
 
     // Failure tests
 
-    function test_processDepositQueue_notAuthorized() external {
+    function test_processPendingDeposits_notAuthorized() external {
         vm.expectRevert(_notAuthorized(unauthorized, REBALANCER_ROLE));
         vm.prank(unauthorized);
-        vault.processDepositQueue(type(uint256).max);
+        vault.processPendingDeposits(type(uint256).max, type(uint256).max);
     }
 
-    function test_processDepositQueue_paused() external {
+    function test_processPendingDeposits_paused() external {
         vm.prank(guardian);
         vault.pause();
 
         vm.expectRevert("SparkPrimeVault/paused");
         vm.prank(rebalancer);
-        vault.processDepositQueue(type(uint256).max);
+        vault.processPendingDeposits(type(uint256).max, type(uint256).max);
     }
 
     // Success tests
 
-    function test_processDepositQueue() external {
+    function test_processPendingDeposits() external {
         vm.prank(admin);
         vault.setCapacity(0);
 
@@ -373,45 +361,45 @@ contract ProcessDepositQueueTests is AuthorizationTestBase {
 
         _requestDeposit(user1, 1_000_000e6);  // Queued
 
-        assertEq(vault.balanceOf(user1),                       0);
-        assertEq(vault.sparkVaultSharesEncumberedByDeposits(), expectedSavingsShares);
-        assertEq(vault.depositHead(),                          0);
+        assertEq(vault.balanceOf(user1),              0);
+        assertEq(vault.pendingDepositSavingsShares(), expectedSavingsShares);
+        assertEq(vault.firstPendingDepositId(),       0);
 
         vm.prank(admin);
         vault.setCapacity(1_000_000e6);
 
         vm.prank(rebalancer);
-        vault.processDepositQueue(type(uint256).max);
+        vault.processPendingDeposits(type(uint256).max, type(uint256).max);
 
-        assertEq(vault.balanceOf(user1),                       1_000_000e6 - 1); // Rounding
-        assertEq(vault.sparkVaultSharesEncumberedByDeposits(), 0);
-        assertEq(vault.depositHead(),                          1);
+        assertEq(vault.balanceOf(user1),              1_000_000e6 - 1); // Rounding
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(vault.firstPendingDepositId(),       1);
     }
 
 }
 
-contract ProcessRedeemQueueTests is AuthorizationTestBase {
+contract ProcessPendingRedeemsTests is AuthorizationTestBase {
 
     // Failure tests
 
-    function test_processRedeemQueue_notAuthorized() external {
+    function test_processPendingRedeems_notAuthorized() external {
         vm.expectRevert(_notAuthorized(unauthorized, REBALANCER_ROLE));
         vm.prank(unauthorized);
-        vault.processRedeemQueue(type(uint256).max);
+        vault.processPendingRedeems(type(uint256).max, type(uint256).max);
     }
 
-    function test_processRedeemQueue_paused() external {
+    function test_processPendingRedeems_paused() external {
         vm.prank(guardian);
         vault.pause();
 
         vm.expectRevert("SparkPrimeVault/paused");
         vm.prank(rebalancer);
-        vault.processRedeemQueue(type(uint256).max);
+        vault.processPendingRedeems(type(uint256).max, type(uint256).max);
     }
 
     // Success tests
 
-    function test_processRedeemQueue() external {
+    function test_processPendingRedeems() external {
         _requestDeposit(user1, 1_000_000e6);  // Instant fill
 
         uint256 shares        = vault.balanceOf(user1);
@@ -423,177 +411,91 @@ contract ProcessRedeemQueueTests is AuthorizationTestBase {
         vm.prank(user1);
         vault.requestRedeem(shares, user1);  // Queued
 
-        assertEq(usdc.balanceOf(user1),             0);
-        assertEq(vault.sharesEncumberedByRedeems(), shares);
-        assertEq(vault.redeemHead(),                0);
+        assertEq(usdc.balanceOf(user1),        0);
+        assertEq(vault.pendingRedeemShares(),  shares);
+        assertEq(vault.firstPendingRedeemId(), 0);
 
         vm.prank(taker);
         spUsdc.transfer(address(vault), savingsShares);  // Liquidity returns
 
         vm.prank(rebalancer);
-        vault.processRedeemQueue(type(uint256).max);
+        vault.processPendingRedeems(type(uint256).max, type(uint256).max);
 
-        assertEq(usdc.balanceOf(user1),             shares);
-        assertEq(vault.totalSupply(),               0);
-        assertEq(vault.sharesEncumberedByRedeems(), 0);
-        assertEq(vault.redeemHead(),                1);
+        assertEq(usdc.balanceOf(user1),        shares);
+        assertEq(vault.totalSupply(),          0);
+        assertEq(vault.pendingRedeemShares(),  0);
+        assertEq(vault.firstPendingRedeemId(), 1);
     }
 
 }
 
-contract SetRedeemFeeTests is AuthorizationTestBase {
+contract SetRedeemFeeRateTests is AuthorizationTestBase {
 
     // Failure tests
 
-    function test_setRedeemFee_notAuthorized() external {
+    function test_setRedeemFeeRate_notAuthorized() external {
         vm.expectRevert(_notAuthorized(unauthorized, RISK_MANAGER_ROLE));
         vm.prank(unauthorized);
-        vault.setRedeemFee(0.005e18);
+        vault.setRedeemFeeRate(0.005e18);
     }
 
-    function test_setRedeemFee_feeTooHighBoundary() external {
+    function test_setRedeemFeeRate_feeTooHighBoundary() external {
         vm.expectRevert("SparkPrimeVault/fee-too-high");
         vm.prank(riskManager);
-        vault.setRedeemFee(1);  // Can't set a fee until admin sets the max fee
+        vault.setRedeemFeeRate(1);  // Can't set a fee until admin sets the max fee
 
         vm.prank(riskManager);
-        vault.setRedeemFee(0);  // Max is 0 on deployment
+        vault.setRedeemFeeRate(0);  // Max is 0 on deployment
 
         vm.prank(admin);
-        vault.setMaxRedeemFee(0.005e18);
+        vault.setMaxRedeemFeeRate(0.005e18);
 
         vm.expectRevert("SparkPrimeVault/fee-too-high");
         vm.prank(riskManager);
-        vault.setRedeemFee(0.005e18 + 1);
+        vault.setRedeemFeeRate(0.005e18 + 1);
 
         vm.prank(riskManager);
-        vault.setRedeemFee(0.005e18);
+        vault.setRedeemFeeRate(0.005e18);
     }
 
     // Success tests
 
-    function test_setRedeemFee() external {
+    function test_setRedeemFeeRate() external {
         vm.prank(admin);
-        vault.setMaxRedeemFee(0.01e18);
+        vault.setMaxRedeemFeeRate(0.01e18);
 
-        assertEq(vault.redeemFee(), 0);
-
-        vm.expectEmit(address(vault));
-        emit SparkPrimeVault.RedeemFeeSet(0.005e18);
-
-        vm.prank(riskManager);
-        vault.setRedeemFee(0.005e18);
-
-        assertEq(vault.redeemFee(), 0.005e18);
+        assertEq(vault.redeemFeeRate(), 0);
 
         vm.expectEmit(address(vault));
-        emit SparkPrimeVault.RedeemFeeSet(0.01e18);
+        emit SparkPrimeVault.RedeemFeeRateSet(0.005e18);
 
         vm.prank(riskManager);
-        vault.setRedeemFee(0.01e18);
+        vault.setRedeemFeeRate(0.005e18);
 
-        assertEq(vault.redeemFee(), 0.01e18);
+        assertEq(vault.redeemFeeRate(), 0.005e18);
 
         vm.expectEmit(address(vault));
-        emit SparkPrimeVault.RedeemFeeSet(0);
+        emit SparkPrimeVault.RedeemFeeRateSet(0.01e18);
 
         vm.prank(riskManager);
-        vault.setRedeemFee(0);
+        vault.setRedeemFeeRate(0.01e18);
 
-        assertEq(vault.redeemFee(), 0);
+        assertEq(vault.redeemFeeRate(), 0.01e18);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.RedeemFeeRateSet(0);
+
+        vm.prank(riskManager);
+        vault.setRedeemFeeRate(0);
+
+        assertEq(vault.redeemFeeRate(), 0);
     }
 
 }
 
-contract SetChiTests is AuthorizationTestBase {
+// TODO: RealizeGainTests
 
-    function setUp() public override {
-        super.setUp();
-
-        vm.prank(admin);
-        vault.setVSRBounds(RAY, FOUR_PCT_VSR);
-
-        vm.prank(setter);
-        vault.setVSR(FOUR_PCT_VSR);
-    }
-
-    // Failure tests
-
-    function test_setChi_notAuthorized() external {
-        vm.expectRevert(_notAuthorized(unauthorized, RISK_MANAGER_ROLE));
-        vm.prank(unauthorized);
-        vault.setChi(0.9e27);
-    }
-
-    function test_setChi_notPaused() external {
-        vm.expectRevert("SparkPrimeVault/not-paused");
-        vm.prank(riskManager);
-        vault.setChi(0.9e27);
-
-        vm.prank(guardian);
-        vault.pause();
-
-        vm.prank(riskManager);
-        vault.setChi(0.9e27);
-    }
-
-    function test_setChi_invalidChiBoundary() external {
-        vm.prank(guardian);
-        vault.pause();
-
-        vm.expectRevert("SparkPrimeVault/invalid-chi");
-        vm.prank(riskManager);
-        vault.setChi(0);
-
-        vm.prank(riskManager);
-        vault.setChi(1);
-    }
-
-    // Success tests
-
-    function test_setChi() external {
-        _requestDeposit(user1, 1_000_000e6);  // Instant fill
-
-        skip(1 days);
-
-        vm.prank(guardian);
-        vault.pause();
-
-        uint256 supply = vault.totalSupply();
-        uint256 nowChi = vault.nowChi();
-
-        assertEq(nowChi,                 1.000107459782027902551816735e27);
-        assertEq(uint256(vault.chi()),   RAY);
-        assertEq(uint256(vault.rho()),   block.timestamp - 1 days);
-        assertEq(vault.totalAssets(),    supply * nowChi / RAY);
-        assertEq(vault.assetsOf(user1),  supply * nowChi / RAY);
-        assertEq(vault.balanceOf(user1), supply);
-
-        vm.expectEmit(address(vault));
-        emit SparkPrimeVault.Drip(uint192(nowChi), supply * nowChi / RAY - supply);
-
-        vm.expectEmit(address(vault));
-        emit SparkPrimeVault.ChiSet(0.9e27);
-
-        vm.prank(riskManager);
-        vault.setChi(0.9e27);
-
-        assertEq(uint256(vault.nowChi()), 0.9e27);
-        assertEq(uint256(vault.chi()),    0.9e27);
-        assertEq(uint256(vault.rho()),    block.timestamp);
-        assertEq(vault.totalAssets(),     supply * 0.9e27 / RAY);
-        assertEq(vault.assetsOf(user1),   supply * 0.9e27 / RAY);
-        assertEq(vault.totalSupply(),     supply);
-        assertEq(vault.balanceOf(user1),  supply);
-
-        // Accrual continues from the new chi at the same VSR
-        skip(1 days);
-
-        assertEq(uint256(vault.nowChi()), 0.900096713803825112296635061e27);
-        assertEq(vault.totalAssets(),     supply * 0.900096713803825112296635061e27 / RAY);
-    }
-
-}
+// TODO: RealizeLossTests
 
 contract PauseTests is AuthorizationTestBase {
 
@@ -635,13 +537,13 @@ contract UnpauseTests is AuthorizationTestBase {
     // Failure tests
 
     function test_unpause_notAuthorized() external {
-        vm.expectRevert(_notAuthorized(unauthorized, UNPAUSER_ROLE));
+        vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
         vm.prank(unauthorized);
         vault.unpause();
     }
 
     function test_unpause_guardianCannotUnpause() external {
-        vm.expectRevert(_notAuthorized(guardian, UNPAUSER_ROLE));
+        vm.expectRevert(_notAuthorized(guardian, DEFAULT_ADMIN_ROLE));
         vm.prank(guardian);
         vault.unpause();
     }
@@ -661,7 +563,7 @@ contract UnpauseTests is AuthorizationTestBase {
         vm.expectEmit(address(vault));
         emit SparkPrimeVault.Unpaused();
 
-        vm.prank(unpauser);
+        vm.prank(admin);
         vault.unpause();
 
         assertEq(vault.paused(), false);

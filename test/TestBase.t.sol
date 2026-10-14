@@ -37,7 +37,6 @@ contract TestBase is Test {
     address internal riskManager = makeAddr("riskManager");
     address internal setter      = makeAddr("setter");
     address internal taker       = makeAddr("taker");
-    address internal unpauser    = makeAddr("unpauser");
 
     bytes32 internal DEFAULT_ADMIN_ROLE = 0x00;
     bytes32 internal GUARDIAN_ROLE      = keccak256("GUARDIAN_ROLE");
@@ -45,7 +44,6 @@ contract TestBase is Test {
     bytes32 internal RISK_MANAGER_ROLE  = keccak256("RISK_MANAGER_ROLE");
     bytes32 internal SETTER_ROLE        = keccak256("SETTER_ROLE");
     bytes32 internal TAKER_ROLE         = keccak256("TAKER_ROLE");
-    bytes32 internal UNPAUSER_ROLE      = keccak256("UNPAUSER_ROLE");
 
     IERC20Like      internal usdc   = IERC20Like(Ethereum.USDC);
     ISparkVaultLike internal spUsdc = ISparkVaultLike(Ethereum.SPARK_VAULT_V2_SPUSDC);
