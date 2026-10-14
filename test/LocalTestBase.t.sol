@@ -213,7 +213,7 @@ contract LocalTestBase is Test {
     /// @dev Owner cancels a queued deposit and the planner settles the refund immediately.
     function _cancelDepositAndSettle(address who, uint256 id) internal returns (uint256 cancelId) {
         vm.prank(who);
-        cancelId = vault.cancelDepositRequest(id, who);
+        cancelId = vault.requestDepositCancellation(id, who);
         _processCancelledDeposits(type(uint256).max, type(uint256).max);
     }
 
@@ -291,22 +291,38 @@ contract LocalTestBase is Test {
     /*** Views                                                                                  ***/
     /**********************************************************************************************/
 
+
     function _depositRequest(uint256 id)
         internal view returns (address owner, address recipient, uint256 shares)
     {
-        return vault.depositQueue(id);
+        SparkPrimeVault.Request[] memory r = vault.getPendingDepositRequests(id, id + 1);
+        return (r[0].owner, r[0].recipient, r[0].shares);
     }
 
     function _redeemRequest(uint256 id)
         internal view returns (address owner, address recipient, uint256 shares)
     {
-        return vault.redeemQueue(id);
+        SparkPrimeVault.Request[] memory r = vault.getPendingRedeemRequests(id, id + 1);
+        return (r[0].owner, r[0].recipient, r[0].shares);
     }
 
     function _cancelledDepositRequest(uint256 id)
         internal view returns (address owner, address recipient, uint256 shares)
     {
-        return vault.cancelledDepositQueue(id);
+        SparkPrimeVault.Request[] memory r = vault.getPendingDepositCancellationRequests(id, id + 1);
+        return (r[0].owner, r[0].recipient, r[0].shares);
+    }
+
+    function _depositQueueLength() internal view returns (uint256) {
+        return vault.firstPendingDepositId() + vault.getPendingDepositRequests().length;
+    }
+
+    function _redeemQueueLength() internal view returns (uint256) {
+        return vault.firstPendingRedeemId() + vault.getPendingRedeemRequests().length;
+    }
+
+    function _cancelledDepositQueueLength() internal view returns (uint256) {
+        return vault.firstPendingDepositCancellationId() + vault.getPendingDepositCancellationRequests().length;
     }
 
     function _vaultSpUsdc() internal view returns (uint256) {

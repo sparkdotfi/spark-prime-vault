@@ -164,7 +164,7 @@ contract QueueAuditTest is Test {
         assertEq(vault.pendingDepositSavingsShares(), 0);
     }
 
-    function test_cancelDepositRequest_flowAndProcessing() public {
+    function test_requestDepositCancellation_flowAndProcessing() public {
         vm.prank(admin);
         vault.setCapacity(0);
 

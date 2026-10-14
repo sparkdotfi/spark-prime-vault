@@ -71,7 +71,7 @@ contract UpgradeTest is LocalTestBase {
         depId = _deposit(bob, 50_000e6);
         uint256 dep2Id_ = _deposit(bob, 20_000e6);
         vm.prank(bob);
-        cancelId = vault.cancelDepositRequest(dep2Id_, bob);
+        cancelId = vault.requestDepositCancellation(dep2Id_, bob);
 
         vm.prank(alice);
         vault.approve(bob, 123);
@@ -231,9 +231,9 @@ contract UpgradeTest is LocalTestBase {
         s_.pendingDepositSavingsShares          = vault.pendingDepositSavingsShares();
         s_.pendingCancelledDepositSavingsShares = vault.pendingCancelledDepositSavingsShares();
         s_.pendingRedeemShares                  = vault.pendingRedeemShares();
-        s_.depositHead                          = vault.depositHead();
-        s_.cancelledDepositHead                 = vault.cancelledDepositHead();
-        s_.redeemHead                           = vault.redeemHead();
+        s_.depositHead                          = vault.firstPendingDepositId();
+        s_.cancelledDepositHead                 = vault.firstPendingDepositCancellationId();
+        s_.redeemHead                           = vault.firstPendingRedeemId();
         s_.totalAssets                          = vault.totalAssets();
         s_.nowChi                               = vault.nowChi();
         s_.balAlice                             = vault.balanceOf(alice);
@@ -241,9 +241,9 @@ contract UpgradeTest is LocalTestBase {
         s_.balVault                             = vault.balanceOf(address(vault));
         s_.nonceAlice                           = vault.nonces(alice);
         s_.allowanceAliceBob                    = vault.allowance(alice, bob);
-        (s_.depOwner,    s_.depRecipient,    s_.depShares)    = vault.depositQueue(depId);
-        (s_.cancelOwner, s_.cancelRecipient, s_.cancelShares) = vault.cancelledDepositQueue(cancelId);
-        (s_.redOwner,    s_.redRecipient,    s_.redShares)    = vault.redeemQueue(redId);
+        (s_.depOwner,    s_.depRecipient,    s_.depShares)    = _depositRequest(depId);
+        (s_.cancelOwner, s_.cancelRecipient, s_.cancelShares) = _cancelledDepositRequest(cancelId);
+        (s_.redOwner,    s_.redRecipient,    s_.redShares)    = _redeemRequest(redId);
         s_.spUsdcBal                            = spUsdc.balanceOf(address(vault));
         s_.domainSeparator                      = vault.DOMAIN_SEPARATOR();
     }
@@ -375,7 +375,7 @@ contract UpgradeTest is LocalTestBase {
         assertEq(vault.pendingDepositSavingsShares(),          0);
         assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
         assertEq(vault.pendingRedeemShares(),                  0);
-        assertEq(vault.cancelledDepositHead(),                 1);
+        assertEq(vault.firstPendingDepositCancellationId(),                 1);
         assertGt(vault.balanceOf(bob),                         0);
         assertGt(usdc.balanceOf(alice),                        0);
         assertApproxEqAbs(usdc.balanceOf(bob), 20_000e6, 2);  // settled refund
@@ -454,9 +454,9 @@ contract UpgradeTest is LocalTestBase {
         assertEq(uint256(vm.load(address(vault), bytes32(uint256(18)))), 3);  // depositQueue.length
         assertEq(uint256(vm.load(address(vault), bytes32(uint256(19)))), 1);  // cancelledDepositQueue.length
         assertEq(uint256(vm.load(address(vault), bytes32(uint256(20)))), 1);  // redeemQueue.length
-        assertEq(uint256(vm.load(address(vault), bytes32(uint256(21)))), vault.depositHead());
-        assertEq(uint256(vm.load(address(vault), bytes32(uint256(22)))), vault.cancelledDepositHead());
-        assertEq(uint256(vm.load(address(vault), bytes32(uint256(23)))), vault.redeemHead());
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(21)))), vault.firstPendingDepositId());
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(22)))), vault.firstPendingDepositCancellationId());
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(23)))), vault.firstPendingRedeemId());
 
         // Mapping slots: balanceOf (24), nonces (25), allowance (26).
         assertEq(

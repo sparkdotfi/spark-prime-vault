@@ -191,7 +191,7 @@ contract FlowsAdmin is FlowsUser {
 
         maxRequests = kind == 1 ? type(uint256).max : _bound(maxRequests, 0, 8);
 
-        uint256          head         = vault.depositHead();
+        uint256          head         = vault.firstPendingDepositId();
         uint256[] memory sharesBefore = _snapshotDepositQueue(head);
         uint256[N] memory balsBefore  = _balances();
         uint256          supplyBefore = vault.totalSupply();
@@ -219,7 +219,7 @@ contract FlowsAdmin is FlowsUser {
 
         maxRequests = kind == 1 ? type(uint256).max : _bound(maxRequests, 0, 8);
 
-        uint256          head            = vault.cancelledDepositHead();
+        uint256          head            = vault.firstPendingDepositCancellationId();
         uint256[] memory sharesBefore    = _snapshotCancelledQueue(head);
         uint256          usersUsdcBefore = _usersUsdc();
         uint256          supplyBefore    = vault.totalSupply();
@@ -252,7 +252,7 @@ contract FlowsAdmin is FlowsUser {
 
         maxRequests = kind == 1 ? type(uint256).max : _bound(maxRequests, 0, 8);
 
-        uint256          head            = vault.redeemHead();
+        uint256          head            = vault.firstPendingRedeemId();
         uint256[] memory sharesBefore    = _snapshotRedeemQueue(head);
         uint256          usersUsdcBefore = _usersUsdc();
 

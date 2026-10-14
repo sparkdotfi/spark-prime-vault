@@ -213,7 +213,7 @@ contract RoundingTest is LocalTestBase {
 
         vm.prank(alice);
         vm.expectRevert("SparkPrimeVault/no-request");
-        vault.cancelDepositRequest(id, alice);
+        vault.requestDepositCancellation(id, alice);
     }
 
     /**********************************************************************************************/
@@ -584,7 +584,7 @@ contract RoundingTest is LocalTestBase {
     /***     maxRedeem = min(floor(L * RAY / chi_s), bal_s), L = USDC held by spUSDC            ***/
     /**********************************************************************************************/
 
-    /// @dev The refund moved from `cancelDepositRequest` to the settlement call, same floor, same
+    /// @dev The refund moved from `requestDepositCancellation` to the settlement call, same floor, same
     ///      direction. deposit -> cancel -> settle in one shot: refund = floor(floor(X / c_s) c_s),
     ///      loss < 1 + c_s wei.
     function testFuzz_R10_cancelDepositAndSettle_roundsAgainstCancellingUser(
@@ -601,7 +601,7 @@ contract RoundingTest is LocalTestBase {
         vm.assume(savingsShares != 0);           // else `no-request` (see test_R1_dustDeposit)
 
         vm.prank(alice);
-        uint256 cancelId = vault.cancelDepositRequest(id, alice);
+        uint256 cancelId = vault.requestDepositCancellation(id, alice);
         assertEq(usdc.balanceOf(alice), 0, "cancel itself pays nothing");
         assertEq(vault.pendingCancelledDepositSavingsShares(), savingsShares);
 
@@ -637,7 +637,7 @@ contract RoundingTest is LocalTestBase {
         vm.assume(s >= k);
 
         vm.prank(alice);
-        uint256 cancelId = vault.cancelDepositRequest(id, alice);
+        uint256 cancelId = vault.requestDepositCancellation(id, alice);
 
         uint256 snapshot = vm.snapshotState();
         _processCancelledDeposits(type(uint256).max, 1);
@@ -667,7 +667,7 @@ contract RoundingTest is LocalTestBase {
         assertEq(_depositShares(id), 954_532_691);
 
         vm.prank(alice);
-        vault.cancelDepositRequest(id, alice);
+        vault.requestDepositCancellation(id, alice);
 
         uint256 snapshot = vm.snapshotState();
         _processCancelledDeposits(type(uint256).max, 1);
@@ -695,7 +695,7 @@ contract RoundingTest is LocalTestBase {
         uint256 s  = _depositShares(id);
 
         vm.prank(alice);
-        uint256 cancelId = vault.cancelDepositRequest(id, alice);
+        uint256 cancelId = vault.requestDepositCancellation(id, alice);
 
         _take(s - 12_345);
         assertEq(_vaultSpUsdc(), 12_345);
@@ -706,7 +706,7 @@ contract RoundingTest is LocalTestBase {
         assertEq(left, s - 12_345);
         assertEq(_vaultSpUsdc(), 0);
         assertEq(usdc.balanceOf(alice), 12_345 * spUsdc.nowChi() / RAY);
-        assertEq(vault.cancelledDepositHead(), 0);  // partial fill, entry stays at the head
+        assertEq(vault.firstPendingDepositCancellationId(), 0);  // partial fill, entry stays at the head
     }
 
 
@@ -726,7 +726,7 @@ contract RoundingTest is LocalTestBase {
         vm.assume(s != 0);
 
         vm.prank(alice);
-        uint256 cancelId = vault.cancelDepositRequest(id, alice);
+        uint256 cancelId = vault.requestDepositCancellation(id, alice);
 
         liquidity = bound(liquidity, 0, assets);
         _drainSpUsdcLiquidity(assets - liquidity);
@@ -743,7 +743,7 @@ contract RoundingTest is LocalTestBase {
         assertEq(_vaultSpUsdc(), s - budget);
         assertEq(usdc.balanceOf(alice), budget * chiS / RAY);
         assertLe(usdc.balanceOf(alice), liquidity, "R10: paid more than spUSDC holds");
-        if (budget == 0) assertEq(vault.cancelledDepositHead(), 0);
+        if (budget == 0) assertEq(vault.firstPendingDepositCancellationId(), 0);
     }
 
     /// @dev Batch safety (contrast with C-1 on the redeem queue). Every fill redeems s_i shares for
@@ -801,7 +801,7 @@ contract RoundingTest is LocalTestBase {
             sizes[i]    = _depositShares(id);
             bal        += sizes[i];
             vm.prank(alice);
-            vault.cancelDepositRequest(id, alice);
+            vault.requestDepositCancellation(id, alice);
         }
         assertEq(_vaultSpUsdc(), bal);
     }
@@ -846,8 +846,8 @@ contract RoundingTest is LocalTestBase {
         assertEq(_depositShares(id2), 1239);
 
         vm.startPrank(alice);
-        vault.cancelDepositRequest(id1, alice);
-        uint256 c2 = vault.cancelDepositRequest(id2, alice);
+        vault.requestDepositCancellation(id1, alice);
+        uint256 c2 = vault.requestDepositCancellation(id2, alice);
         vm.stopPrank();
 
         _drainSpUsdcLiquidity(3);

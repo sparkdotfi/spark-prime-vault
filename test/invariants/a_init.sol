@@ -254,21 +254,21 @@ contract Init is Test {
     function _snapshotDepositQueue(uint256 head) internal view returns (uint256[] memory shares) {
         shares = new uint256[](depositQueueLength - head);
         for (uint256 i = head; i < depositQueueLength; i++) {
-            (, , shares[i - head]) = vault.depositQueue(i);
+            (, , shares[i - head]) = _depositRequest(i);
         }
     }
 
     function _snapshotCancelledQueue(uint256 head) internal view returns (uint256[] memory shares) {
         shares = new uint256[](cancelledQueueLength - head);
         for (uint256 i = head; i < cancelledQueueLength; i++) {
-            (, , shares[i - head]) = vault.cancelledDepositQueue(i);
+            (, , shares[i - head]) = _cancelledDepositRequest(i);
         }
     }
 
     function _snapshotRedeemQueue(uint256 head) internal view returns (uint256[] memory shares) {
         shares = new uint256[](redeemQueueLength - head);
         for (uint256 i = head; i < redeemQueueLength; i++) {
-            (, , shares[i - head]) = vault.redeemQueue(i);
+            (, , shares[i - head]) = _redeemRequest(i);
         }
     }
 
@@ -283,7 +283,7 @@ contract Init is Test {
         uint256 consumed;
         uint256 lastConsumed;
         for (uint256 i = 0; i < sharesBefore.length; i++) {
-            (, , uint256 s) = vault.depositQueue(head + i);
+            (, , uint256 s) = _depositRequest(head + i);
             if (s < sharesBefore[i]) {
                 depositFills++;
                 lastConsumed = sharesBefore[i] - s;
@@ -298,14 +298,14 @@ contract Init is Test {
 
     function _countCancelledFills(uint256 head, uint256[] memory sharesBefore) internal {
         for (uint256 i = 0; i < sharesBefore.length; i++) {
-            (, , uint256 s) = vault.cancelledDepositQueue(head + i);
+            (, , uint256 s) = _cancelledDepositRequest(head + i);
             if (s < sharesBefore[i]) cancelledFills++;
         }
     }
 
     function _countRedeemFills(uint256 head, uint256[] memory sharesBefore) internal {
         for (uint256 i = 0; i < sharesBefore.length; i++) {
-            (, , uint256 s) = vault.redeemQueue(head + i);
+            (, , uint256 s) = _redeemRequest(head + i);
             if (s < sharesBefore[i]) redeemFills++;
         }
     }
@@ -323,9 +323,9 @@ contract Init is Test {
             vault.pendingDepositSavingsShares(),
             vault.pendingCancelledDepositSavingsShares(),
             vault.pendingRedeemShares(),
-            vault.depositHead(),
-            vault.cancelledDepositHead(),
-            vault.redeemHead(),
+            vault.firstPendingDepositId(),
+            vault.firstPendingDepositCancellationId(),
+            vault.firstPendingRedeemId(),
             vault.chi(),
             vault.rho(),
             vault.balanceOf(address(vault)),
@@ -339,17 +339,51 @@ contract Init is Test {
             ));
         }
         for (uint256 i = 0; i < depositQueueLength; i++) {
-            (address owner, , uint256 shares) = vault.depositQueue(i);
+            (address owner, , uint256 shares) = _depositRequest(i);
             digest = keccak256(abi.encode(digest, owner, shares));
         }
         for (uint256 i = 0; i < cancelledQueueLength; i++) {
-            (address owner, , uint256 shares) = vault.cancelledDepositQueue(i);
+            (address owner, , uint256 shares) = _cancelledDepositRequest(i);
             digest = keccak256(abi.encode(digest, owner, shares));
         }
         for (uint256 i = 0; i < redeemQueueLength; i++) {
-            (address owner, , uint256 shares) = vault.redeemQueue(i);
+            (address owner, , uint256 shares) = _redeemRequest(i);
             digest = keccak256(abi.encode(digest, owner, shares));
         }
+    }
+
+
+    function _depositRequest(uint256 id)
+        internal view returns (address owner, address recipient, uint256 shares)
+    {
+        SparkPrimeVault.Request[] memory r = vault.getPendingDepositRequests(id, id + 1);
+        return (r[0].owner, r[0].recipient, r[0].shares);
+    }
+
+    function _redeemRequest(uint256 id)
+        internal view returns (address owner, address recipient, uint256 shares)
+    {
+        SparkPrimeVault.Request[] memory r = vault.getPendingRedeemRequests(id, id + 1);
+        return (r[0].owner, r[0].recipient, r[0].shares);
+    }
+
+    function _cancelledDepositRequest(uint256 id)
+        internal view returns (address owner, address recipient, uint256 shares)
+    {
+        SparkPrimeVault.Request[] memory r = vault.getPendingDepositCancellationRequests(id, id + 1);
+        return (r[0].owner, r[0].recipient, r[0].shares);
+    }
+
+    function _depositQueueLength() internal view returns (uint256) {
+        return vault.firstPendingDepositId() + vault.getPendingDepositRequests().length;
+    }
+
+    function _redeemQueueLength() internal view returns (uint256) {
+        return vault.firstPendingRedeemId() + vault.getPendingRedeemRequests().length;
+    }
+
+    function _cancelledDepositQueueLength() internal view returns (uint256) {
+        return vault.firstPendingDepositCancellationId() + vault.getPendingDepositCancellationRequests().length;
     }
 
 }

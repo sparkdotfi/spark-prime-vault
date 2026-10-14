@@ -96,17 +96,17 @@ contract FlowsUser is Init {
 
     // Cancels move the entry into the cancelled-deposit queue; nothing is paid here, so the
     // backing being taken or spent no longer blocks the cancel (the round-1 F-2 skip is gone).
-    function cancelDepositRequest(uint256 idSeed, uint256 recipientIndex, uint256 seed)
-        public counted("cancelDepositRequest")
+    function requestDepositCancellation(uint256 idSeed, uint256 recipientIndex, uint256 seed)
+        public counted("requestDepositCancellation")
     {
         if (vault.paused()) return;
 
-        uint256 head = vault.depositHead();
+        uint256 head = vault.firstPendingDepositId();
         if (head >= depositQueueLength) return;
 
         uint256 id = _bound(idSeed, head, depositQueueLength - 1);
 
-        (address owner, , uint256 shares) = vault.depositQueue(id);
+        (address owner, , uint256 shares) = _depositRequest(id);
         if (shares == 0) return;
 
         bool    byGuardian = seed % 3 == 0;
@@ -119,16 +119,16 @@ contract FlowsUser is Init {
         uint256 usersUsdcBefore        = _usersUsdc();
 
         vm.startPrank(caller);
-        uint256 cancelId = vault.cancelDepositRequest(id, recipient);
+        uint256 cancelId = vault.requestDepositCancellation(id, recipient);
         vm.stopPrank();
 
         assertEq(cancelId, cancelledQueueLength, "handler: unexpected cancel request id");
         cancelledQueueLength++;
 
-        (, , uint256 sharesAfter) = vault.depositQueue(id);
+        (, , uint256 sharesAfter) = _depositRequest(id);
         assertEq(sharesAfter, 0, "handler: cancel left deposit entry open");
 
-        (address cOwner, address cRecipient, uint256 cShares) = vault.cancelledDepositQueue(cancelId);
+        (address cOwner, address cRecipient, uint256 cShares) = _cancelledDepositRequest(cancelId);
         assertEq(cOwner,     owner,     "handler: cancelled entry owner");
         assertEq(cRecipient, recipient, "handler: cancelled entry recipient");
         assertEq(cShares,    shares,    "handler: cancelled entry shares");
@@ -182,12 +182,12 @@ contract FlowsUser is Init {
     {
         if (vault.paused()) return;
 
-        uint256 head = vault.redeemHead();
+        uint256 head = vault.firstPendingRedeemId();
         if (head >= redeemQueueLength) return;
 
         uint256 id = _bound(idSeed, head, redeemQueueLength - 1);
 
-        (address owner, , uint256 shares) = vault.redeemQueue(id);
+        (address owner, , uint256 shares) = _redeemRequest(id);
         if (shares == 0) return;
 
         bool    byGuardian = seed % 3 == 0;
@@ -225,9 +225,9 @@ contract FlowsUser is Init {
                        : q == 1 ? cancelledQueueLength
                        :          redeemQueueLength;
 
-        uint256 head = q == 0 ? vault.depositHead()
-                     : q == 1 ? vault.cancelledDepositHead()
-                     :          vault.redeemHead();
+        uint256 head = q == 0 ? vault.firstPendingDepositId()
+                     : q == 1 ? vault.firstPendingDepositCancellationId()
+                     :          vault.firstPendingRedeemId();
         if (head >= length) return;
 
         // Scan forward from a random start for an open entry (closed ones revert `no-request`).
@@ -254,7 +254,7 @@ contract FlowsUser is Init {
             bool ok;
             string memory reason;
             if      (q == 0) { try vault.updateDepositRecipient(id, recipient)          { ok = true; } catch Error(string memory r) { reason = r; } catch {} }
-            else if (q == 1) { try vault.updateCancelledDepositRecipient(id, recipient) { ok = true; } catch Error(string memory r) { reason = r; } catch {} }
+            else if (q == 1) { try vault.updateDepositCancellationRecipient(id, recipient) { ok = true; } catch Error(string memory r) { reason = r; } catch {} }
             else             { try vault.updateRedeemRecipient(id, recipient)           { ok = true; } catch Error(string memory r) { reason = r; } catch {} }
             vm.stopPrank();
 
@@ -281,16 +281,16 @@ contract FlowsUser is Init {
 
     function _updateRecipient(uint256 q, uint256 id, address recipient) internal {
         if      (q == 0) vault.updateDepositRecipient(id, recipient);
-        else if (q == 1) vault.updateCancelledDepositRecipient(id, recipient);
+        else if (q == 1) vault.updateDepositCancellationRecipient(id, recipient);
         else             vault.updateRedeemRecipient(id, recipient);
     }
 
     function _entry(uint256 q, uint256 id)
         internal view returns (address owner, address recipient, uint256 shares)
     {
-        return q == 0 ? vault.depositQueue(id)
-             : q == 1 ? vault.cancelledDepositQueue(id)
-             :          vault.redeemQueue(id);
+        return q == 0 ? _depositRequest(id)
+             : q == 1 ? _cancelledDepositRequest(id)
+             :          _redeemRequest(id);
     }
 
     /**********************************************************************************************/

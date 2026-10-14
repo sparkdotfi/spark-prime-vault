@@ -62,7 +62,7 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
     function invariant_C_pendingDepositEqualsSumOfOpenDepositEntries() public view {
         uint256 sum;
         for (uint256 i = 0; i < handler.depositQueueLength(); i++) {
-            (, , uint256 shares) = vault.depositQueue(i);
+            (, , uint256 shares) = _depositRequest(i);
             sum += shares;
         }
         assertEq(sum, vault.pendingDepositSavingsShares(), "C: pending deposit mismatch");
@@ -72,7 +72,7 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
     function invariant_D_pendingRedeemEqualsSumOfOpenRedeemEntries() public view {
         uint256 sum;
         for (uint256 i = 0; i < handler.redeemQueueLength(); i++) {
-            (, , uint256 shares) = vault.redeemQueue(i);
+            (, , uint256 shares) = _redeemRequest(i);
             sum += shares;
         }
         assertEq(sum, vault.pendingRedeemShares(), "D: pending redeem mismatch");
@@ -82,7 +82,7 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
     function invariant_Q_pendingCancelledEqualsSumOfOpenCancelledEntries() public view {
         uint256 sum;
         for (uint256 i = 0; i < handler.cancelledQueueLength(); i++) {
-            (, , uint256 shares) = vault.cancelledDepositQueue(i);
+            (, , uint256 shares) = _cancelledDepositRequest(i);
             sum += shares;
         }
         assertEq(sum, vault.pendingCancelledDepositSavingsShares(), "Q: pending cancelled mismatch");
@@ -91,24 +91,24 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
     // E. Every entry strictly before a head is closed (filled or cancelled); heads never pass the
     //    queue length. Covers the deposit, cancelled-deposit and redeem queues.
     function invariant_E_headBookkeeping() public view {
-        uint256 depositHead   = vault.depositHead();
-        uint256 cancelledHead = vault.cancelledDepositHead();
-        uint256 redeemHead    = vault.redeemHead();
+        uint256 depositHead   = vault.firstPendingDepositId();
+        uint256 cancelledHead = vault.firstPendingDepositCancellationId();
+        uint256 redeemHead    = vault.firstPendingRedeemId();
 
         assertLe(depositHead,   handler.depositQueueLength(),   "E: depositHead past length");
         assertLe(cancelledHead, handler.cancelledQueueLength(), "E: cancelledDepositHead past length");
         assertLe(redeemHead,    handler.redeemQueueLength(),    "E: redeemHead past length");
 
         for (uint256 i = 0; i < depositHead; i++) {
-            (, , uint256 shares) = vault.depositQueue(i);
+            (, , uint256 shares) = _depositRequest(i);
             assertEq(shares, 0, "E: open deposit entry before depositHead");
         }
         for (uint256 i = 0; i < cancelledHead; i++) {
-            (, , uint256 shares) = vault.cancelledDepositQueue(i);
+            (, , uint256 shares) = _cancelledDepositRequest(i);
             assertEq(shares, 0, "E: open cancelled entry before cancelledDepositHead");
         }
         for (uint256 i = 0; i < redeemHead; i++) {
-            (, , uint256 shares) = vault.redeemQueue(i);
+            (, , uint256 shares) = _redeemRequest(i);
             assertEq(shares, 0, "E: open redeem entry before redeemHead");
         }
     }
@@ -311,7 +311,7 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
         // Workaround: one entry per call never reverts, but strands the last share.
         for (uint256 i; i < 110; i++) _processRedeems(type(uint256).max, 1);
 
-        assertEq(vault.redeemHead(),      99);
+        assertEq(vault.firstPendingRedeemId(),      99);
         assertEq(usdc.balanceOf(alice),   99);
         assertEq(_vaultSpUsdc(),          1);
         assertEq(vault.pendingRedeemShares(), 11);
@@ -331,9 +331,9 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
         uint256 idB = _deposit(bob,   100e6);
 
         vm.prank(alice);
-        vault.cancelDepositRequest(idA, alice);
+        vault.requestDepositCancellation(idA, alice);
         vm.prank(bob);
-        vault.cancelDepositRequest(idB, bob);
+        vault.requestDepositCancellation(idB, bob);
 
         uint256 queued = vault.pendingCancelledDepositSavingsShares();
         assertEq(queued, _vaultSpUsdc());
@@ -349,21 +349,21 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
         assertEq(usdc.balanceOf(alice), 100e6 - 1);  // 1-wei deposit/redeem floor round trip
         assertEq(usdc.balanceOf(bob),   49_999_999);
         assertEq(usdc.balanceOf(address(spUsdc)), 150e6 - (100e6 - 1) - 49_999_999);
-        assertEq(vault.cancelledDepositHead(), 1);  // bob's partial entry stays at the head
+        assertEq(vault.firstPendingDepositCancellationId(), 1);  // bob's partial entry stays at the head
         assertEq(vault.pendingCancelledDepositSavingsShares(), queued - budget);
 
         // Nothing left in spUSDC: the call is a no-op, no revert.
         _drainAllSpUsdcLiquidity();
         _processCancelledDeposits(type(uint256).max, 1);
         assertEq(usdc.balanceOf(bob), 49_999_999);
-        assertEq(vault.cancelledDepositHead(), 1);
+        assertEq(vault.firstPendingDepositCancellationId(), 1);
 
         // Once liquidity is back the remainder goes through.
         _returnSpUsdcLiquidity(100e6);
         _processCancelledDeposits(type(uint256).max, 1);
         assertEq(usdc.balanceOf(bob), 99_999_999);
         assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
-        assertEq(vault.cancelledDepositHead(), 2);
+        assertEq(vault.firstPendingDepositCancellationId(), 2);
     }
 
     /**********************************************************************************************/

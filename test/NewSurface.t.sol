@@ -34,7 +34,7 @@ abstract contract NewSurfaceBase is LocalTestBase {
         uint256         fee
     );
     event DepositRecipientUpdated(uint256 indexed requestId, address indexed recipient);
-    event CancelledDepositRecipientUpdated(uint256 indexed requestId, address indexed recipient);
+    event DepositCancellationRecipientUpdated(uint256 indexed requestId, address indexed recipient);
     event RedeemRecipientUpdated(uint256 indexed requestId, address indexed recipient);
     event LossRealized(uint192 chi, uint256 loss);
     event GainRealized(uint192 chi, uint256 gain);
@@ -63,10 +63,8 @@ abstract contract NewSurfaceBase is LocalTestBase {
     /*** Helpers                                                                                ***/
     /**********************************************************************************************/
 
-    function _depositLength() internal view returns (uint256 len) {
-        while (true) {
-            try vault.depositQueue(len) { len++; } catch { return len; }
-        }
+    function _depositLength() internal view returns (uint256) {
+        return _depositQueueLength();
     }
 
     function _unauthorized(address who, bytes32 role) internal pure returns (bytes memory) {
@@ -118,7 +116,7 @@ contract NewSurfaceTest is NewSurfaceBase {
 
         assertEq(vault.balanceOf(bob),   SH_1M);   // 990_405_184_109 spPRIME, ~999_999.99 USDC
         assertEq(vault.balanceOf(alice), 0);
-        assertEq(vault.depositHead(),    1);
+        assertEq(vault.firstPendingDepositId(),    1);
     }
 
     function test_updateDepositRecipient_strangerGuardianAdminAndRecipientRevert() public {
@@ -200,7 +198,7 @@ contract NewSurfaceTest is NewSurfaceBase {
         _setCapacity(0);
         uint256 id = _deposit(alice, ONE_M);
         vm.prank(alice);
-        vault.cancelDepositRequest(id, alice);
+        vault.requestDepositCancellation(id, alice);
 
         vm.prank(alice);
         vm.expectRevert("SparkPrimeVault/no-request");
@@ -232,7 +230,7 @@ contract NewSurfaceTest is NewSurfaceBase {
         assertEq(usdc.balanceOf(bob),    expectedAssets);
         assertEq(usdc.balanceOf(alice),  0);
         assertEq(vault.balanceOf(alice), 0);
-        assertEq(vault.redeemHead(),     1);
+        assertEq(vault.firstPendingRedeemId(),     1);
     }
 
     function test_updateRedeemRecipient_strangerGuardianAndRecipientRevert() public {
@@ -277,25 +275,25 @@ contract NewSurfaceTest is NewSurfaceBase {
         vault.updateRedeemRecipient(cancelled, bob);
     }
 
-    // `updateCancelledDepositRecipient` (lines 465-477): same shape, for the USDC refund.
-    function test_updateCancelledDepositRecipient_ownerRedirectsRefund() public {
+    // `updateDepositCancellationRecipient` (lines 465-477): same shape, for the USDC refund.
+    function test_updateDepositCancellationRecipient_ownerRedirectsRefund() public {
         _setCapacity(0);
         uint256 id = _deposit(alice, ONE_M);
         vm.prank(alice);
-        uint256 cid = vault.cancelDepositRequest(id, alice);
+        uint256 cid = vault.requestDepositCancellation(id, alice);
 
         vm.prank(mallory);
         vm.expectRevert("SparkPrimeVault/not-authorized");
-        vault.updateCancelledDepositRecipient(cid, mallory);
+        vault.updateDepositCancellationRecipient(cid, mallory);
 
         vm.prank(guardian);
         vm.expectRevert("SparkPrimeVault/not-authorized");
-        vault.updateCancelledDepositRecipient(cid, guardian);
+        vault.updateDepositCancellationRecipient(cid, guardian);
 
         vm.prank(alice);
         vm.expectEmit(address(vault));
-        emit CancelledDepositRecipientUpdated(cid, bob);
-        vault.updateCancelledDepositRecipient(cid, bob);
+        emit DepositCancellationRecipientUpdated(cid, bob);
+        vault.updateDepositCancellationRecipient(cid, bob);
 
         ( address owner, address recipient, uint256 shares ) = _cancelledDepositRequest(cid);
         assertEq(owner,     alice);
@@ -310,28 +308,28 @@ contract NewSurfaceTest is NewSurfaceBase {
 
         vm.prank(alice);
         vm.expectRevert("SparkPrimeVault/no-request");  // settled entry
-        vault.updateCancelledDepositRecipient(cid, alice);
+        vault.updateDepositCancellationRecipient(cid, alice);
     }
 
     // The cancelled entry keeps the depositor as `owner` even when the GUARDIAN cancelled and
     // named itself as recipient (F-1), so the depositor can re-point the refund to themselves
     // before settlement. This is the first user-side mitigation of F-1.
-    function test_updateCancelledDepositRecipient_ownerReclaimsGuardianChosenRecipient() public {
+    function test_updateDepositCancellationRecipient_ownerReclaimsGuardianChosenRecipient() public {
         _setCapacity(0);
         uint256 id = _deposit(alice, ONE_M);
 
         vm.prank(guardian);
-        uint256 cid = vault.cancelDepositRequest(id, guardian);
+        uint256 cid = vault.requestDepositCancellation(id, guardian);
         ( address owner, address recipient, ) = _cancelledDepositRequest(cid);
         assertEq(owner,     alice);
         assertEq(recipient, guardian);
 
         vm.prank(guardian);
         vm.expectRevert("SparkPrimeVault/not-authorized");
-        vault.updateCancelledDepositRecipient(cid, guardian);
+        vault.updateDepositCancellationRecipient(cid, guardian);
 
         vm.prank(alice);
-        vault.updateCancelledDepositRecipient(cid, alice);
+        vault.updateDepositCancellationRecipient(cid, alice);
 
         _processCancelledDeposits(type(uint256).max, type(uint256).max);
         assertEq(usdc.balanceOf(alice),    A_1M);
@@ -349,7 +347,7 @@ contract NewSurfaceTest is NewSurfaceBase {
         vm.expectRevert("SparkPrimeVault/invalid-recipient");
         vault.updateDepositRecipient(99, address(0));
         vm.expectRevert("SparkPrimeVault/invalid-recipient");
-        vault.updateCancelledDepositRecipient(0, address(0));
+        vault.updateDepositCancellationRecipient(0, address(0));
         vm.expectRevert("SparkPrimeVault/invalid-recipient");
         vault.updateRedeemRecipient(0, address(0));
     }
@@ -918,7 +916,7 @@ contract NewSurfaceRealizeGainTest is NewSurfaceBase {
         assertTrue(vault.transfer(carol, 1));
         _unpause();
         vm.prank(bob);
-        vault.cancelDepositRequest(bobId, bob);
+        vault.requestDepositCancellation(bobId, bob);
         assertEq(vault.pendingCancelledDepositSavingsShares(), S_100K);
         assertEq(_vaultSpUsdc(), S_1M + S_100K);
         assertGt(ta, 0);
@@ -1033,11 +1031,11 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
 
         _processRedeems(type(uint256).max, 3);
         assertEq(usdc.balanceOf(alice), 0);
-        assertEq(vault.redeemHead(),    3);
+        assertEq(vault.firstPendingRedeemId(),    3);
 
         _processRedeems(type(uint256).max, 1);
         assertEq(usdc.balanceOf(alice), 999_999_999_998);
-        assertEq(vault.redeemHead(),    4);
+        assertEq(vault.firstPendingRedeemId(),    4);
     }
 
     function test_requestRedeem_zeroSharesRevertsWithMinRedeem() public {
@@ -1058,18 +1056,18 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
             vm.prank(mallory);
             assertEq(vault.requestDeposit(0, mallory), i);
         }
-        assertEq(vault.depositHead(), 2);  // each ghost walked one step, none filled
+        assertEq(vault.firstPendingDepositId(), 2);  // each ghost walked one step, none filled
         assertEq(_depositLength(),    3);
 
         _setCapacity(type(uint128).max);
         uint256 id = _deposit(bob, ONE_M);
         assertEq(id,                     3);
         assertEq(vault.balanceOf(bob),   SH_1M);
-        assertEq(vault.depositHead(),    4);
+        assertEq(vault.firstPendingDepositId(),    4);
         assertEq(_depositLength(),       4);
     }
 
-    function test_cancelDepositRequest_headCancelAdvancesPastGhostsAndCancelled() public {
+    function test_requestDepositCancellation_headCancelAdvancesPastGhostsAndCancelled() public {
         _setCapacity(0);
         uint256 idA = _deposit(alice, ONE_M);
         _fund(mallory, 0);
@@ -1077,21 +1075,21 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         vault.requestDeposit(0, mallory);        // ghost at 1
         uint256 idB = _deposit(bob,   HUNDRED_K);  // 2
         uint256 idC = _deposit(carol, HUNDRED_K);  // 3
-        assertEq(vault.depositHead(), 0);
+        assertEq(vault.firstPendingDepositId(), 0);
 
         vm.prank(bob);
-        vault.cancelDepositRequest(idB, bob);   // non-head cancel
-        assertEq(vault.depositHead(), 0);
+        vault.requestDepositCancellation(idB, bob);   // non-head cancel
+        assertEq(vault.firstPendingDepositId(), 0);
 
         vm.prank(alice);
-        vault.cancelDepositRequest(idA, alice); // head cancel: skips ghost 1 and cancelled 2
-        assertEq(vault.depositHead(), 3);
+        vault.requestDepositCancellation(idA, alice); // head cancel: skips ghost 1 and cancelled 2
+        assertEq(vault.firstPendingDepositId(), 3);
 
         vm.prank(carol);
-        vault.cancelDepositRequest(idC, carol);
-        assertEq(vault.depositHead(), 4);
+        vault.requestDepositCancellation(idC, carol);
+        assertEq(vault.firstPendingDepositId(), 4);
         assertEq(_depositLength(),    4);
-        assertLe(vault.depositHead(), _depositLength());
+        assertLe(vault.firstPendingDepositId(), _depositLength());
     }
 
     function test_requestDeposit_gasOfWalkingGhostsPaidOnce() public {
@@ -1102,19 +1100,19 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
             vm.prank(mallory);
             vault.requestDeposit(0, mallory);
         }
-        assertEq(vault.depositHead(), 0);
+        assertEq(vault.firstPendingDepositId(), 0);
         assertEq(_depositLength(),    501);
 
         _setCapacity(type(uint128).max);
         _processDeposits(type(uint256).max, 1);  // fills alice, head = 1, 500 ghosts ahead
-        assertEq(vault.depositHead(), 1);
+        assertEq(vault.firstPendingDepositId(), 1);
 
         _fund(bob, ONE_M);
         vm.prank(bob);
         uint256 g0 = gasleft();
         vault.requestDeposit(ONE_M, bob);
         uint256 gasBob = g0 - gasleft();
-        assertEq(vault.depositHead(),  502);
+        assertEq(vault.firstPendingDepositId(),  502);
         assertEq(vault.balanceOf(bob), SH_1M);
 
         _fund(carol, ONE_M);
@@ -1122,7 +1120,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         g0 = gasleft();
         vault.requestDeposit(ONE_M, carol);
         uint256 gasCarol = g0 - gasleft();
-        assertEq(vault.depositHead(), 503);
+        assertEq(vault.firstPendingDepositId(), 503);
 
         emit log_named_uint("gas: requestDeposit walking 500 ghosts", gasBob);
         emit log_named_uint("gas: requestDeposit with no walk       ", gasCarol);
@@ -1152,11 +1150,11 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         vm.expectRevert(stdError.indexOOBError);
         vault.updateDepositRecipient(0, mallory);
         vm.expectRevert(stdError.indexOOBError);
-        vault.updateCancelledDepositRecipient(0, mallory);
+        vault.updateDepositCancellationRecipient(0, mallory);
         vm.expectRevert(stdError.indexOOBError);
         vault.updateRedeemRecipient(0, mallory);
-        vm.expectRevert();  // public getter reverts with empty data
-        vault.depositQueue(0);
+        vm.expectRevert("SparkPrimeVault/invalid-range");  // range getter guards the index
+        vault.getPendingDepositRequests(0, 1);
     }
 
     /**********************************************************************************************/

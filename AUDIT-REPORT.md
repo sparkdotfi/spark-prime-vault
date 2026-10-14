@@ -1,5 +1,8 @@
 # spPRIME (`src/SparkPrimeVault.sol`) review and testing campaign: final report, round 3
 
+> **Update for `072e8d0` (2026-10-14):** pure renames and read-only additions, no behaviour change. `cancelDepositRequest` is now `requestDepositCancellation`, `updateCancelledDepositRecipient` is `updateDepositCancellationRecipient`, events `DepositCancellationRequest` / `DepositCancellationRecipientUpdated`, heads are `firstPendingDepositId` / `firstPendingDepositCancellationId` / `firstPendingRedeemId`. The queue arrays became internal; new views `getPending{Deposit,DepositCancellation,Redeem}Requests()` (head to end) and `(startId, endId)` (any range, `invalid-range` past the end) replace the public array getters. Suite re-based on the new names plus `test/Views.t.sol` (6 tests): 603 tests, 602 pass, 1 deliberate failing proof. Findings and severities unchanged from round 3.
+
+
 Target: upstream `refactor/more-simplifying` @ `9269fe0` (2026-10-14), unpatched. Branch `review/poc-tests-v2`.
 Rounds 2 and 1 are kept below as appendices. Round 3 covers the pushes `ff828d2` (owner-only recipient updaters, `realizeLoss` bounds, cancelled-queue budget via `maxRedeem`, new `realizeGain`) and `9269fe0` (rename of `redeemFee` to `redeemFeeRate`).
 

@@ -84,11 +84,8 @@ contract RedeemQueueTest is LocalTestBase {
     }
 
     // redeemQueue has no length getter; probe by index.
-    function _queueLength() internal view returns (uint256 len) {
-        while (true) {
-            try vault.redeemQueue(len) returns (address, address, uint256) { ++len; }
-            catch { break; }
-        }
+    function _queueLength() internal view returns (uint256) {
+        return _redeemQueueLength();
     }
 
     /**********************************************************************************************/
@@ -134,7 +131,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(usdc.balanceOf(alice),       0);
         assertEq(usdc.balanceOf(bob),         0);
         assertEq(vault.pendingRedeemShares(), 1_040_520);
-        assertEq(vault.redeemHead(),          0);
+        assertEq(vault.firstPendingRedeemId(),          0);
         assertEq(_vaultSpUsdc(),              1_002_833);
 
         // Workaround: one request per call re-reads maxWithdraw and is always safe (single-fill
@@ -144,7 +141,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(usdc.balanceOf(alice),         525_300);
         assertEq(_vaultSpUsdc(),                501_416);
         assertEq(vault.availableLiquidAssets(), 525_299);
-        assertEq(vault.redeemHead(),            1);
+        assertEq(vault.firstPendingRedeemId(),            1);
         assertEq(vault.pendingRedeemShares(),   520_260);
 
         _processRedeems(type(uint256).max, 1);
@@ -154,7 +151,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(_vaultSpUsdc(),              1);
         assertEq(_queued(id2),                2);
         assertEq(vault.pendingRedeemShares(), 2);
-        assertEq(vault.redeemHead(),          1);
+        assertEq(vault.firstPendingRedeemId(),          1);
     }
 
     // Same bug with the USDC-liquidity constraint binding: spUSDC holds L = 999_999_999_998 USDC
@@ -189,7 +186,7 @@ contract RedeemQueueTest is LocalTestBase {
         vm.expectRevert("SparkVault/insufficient-balance");
         vault.processRedeemQueue(type(uint256).max, 3);
 
-        assertEq(vault.redeemHead(),          0);
+        assertEq(vault.firstPendingRedeemId(),          0);
         assertEq(vault.pendingRedeemShares(), 990_405_184_108);
 
         // Split 2 + 1: the budget is re-derived on the second call, so it works.
@@ -198,7 +195,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(usdc.balanceOf(alice), a1);
         assertEq(usdc.balanceOf(bob),   a2);
         assertEq(_vaultSpUsdc(),        954_532_691_143 - b1 - b2);
-        assertEq(vault.redeemHead(),    2);
+        assertEq(vault.firstPendingRedeemId(),    2);
 
         _processRedeems(type(uint256).max, 1);
 
@@ -209,7 +206,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(_vaultSpUsdc(),              1);
         assertEq(_queued(2),                  2);
         assertEq(vault.pendingRedeemShares(), 2);
-        assertEq(vault.redeemHead(),          2);
+        assertEq(vault.firstPendingRedeemId(),          2);
     }
 
     // Single-fill bound: for ONE fill, assets = floor(shares * chi_p / RAY) <= A and
@@ -295,13 +292,13 @@ contract RedeemQueueTest is LocalTestBase {
                 assertGe(burned, aggregateBurn);
                 assertLe(burned, aggregateBurn + n - 1);
                 assertEq(vault.pendingRedeemShares(), 0);
-                assertEq(vault.redeemHead(), n);
+                assertEq(vault.firstPendingRedeemId(), n);
             }
         } catch Error(string memory reason) {
             // The over-burn hit the balance: the bug above.
             assertEq(reason, "SparkVault/insufficient-balance");
             assertGt(aggregateBurn + n - 1, spUsdcBefore);
-            assertEq(vault.redeemHead(), 0);
+            assertEq(vault.firstPendingRedeemId(), 0);
         }
     }
 
@@ -322,7 +319,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(vault.pendingRedeemShares(),      DEPOSIT_1M_SHARES);
         assertEq(vault.totalSupply(),              DEPOSIT_1M_SHARES);
         assertEq(_vaultSpUsdc(),                   DEPOSIT_1M_SPUSDC);
-        assertEq(vault.redeemHead(),               0);
+        assertEq(vault.firstPendingRedeemId(),               0);
 
         _processRedeems(type(uint256).max, 10);
 
@@ -334,7 +331,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(vault.pendingRedeemShares(),     693_283_628_876);
         assertEq(vault.balanceOf(address(vault)), 693_283_628_876);
         assertEq(vault.totalSupply(),             693_283_628_876);
-        assertEq(vault.redeemHead(),              0);  // partial entry stays at the head
+        assertEq(vault.firstPendingRedeemId(),              0);  // partial entry stays at the head
 
         // Liquidity returns; the remainder is paid, but now the vault's spUSDC claim binds
         // (668_172_883_800 spUSDC = 699_999_999_999 USDC < 700_000_000_001 liquidity).
@@ -350,11 +347,11 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(vault.pendingRedeemShares(),     0);
         assertEq(vault.balanceOf(address(vault)), 0);
         assertEq(vault.totalSupply(),             0);
-        assertEq(vault.redeemHead(),              1);
+        assertEq(vault.firstPendingRedeemId(),              1);
 
         // Nothing left to do.
         _processRedeems(type(uint256).max, 10);
-        assertEq(vault.redeemHead(), 1);
+        assertEq(vault.firstPendingRedeemId(), 1);
     }
 
     // (b) spUSDC is fully liquid, but the vault only holds 300_000e6 spUSDC after take().
@@ -376,7 +373,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(_queued(id),                     679_130_821_283);
         assertEq(vault.pendingRedeemShares(),     679_130_821_283);
         assertEq(vault.balanceOf(address(vault)), 679_130_821_283);
-        assertEq(vault.redeemHead(),              0);
+        assertEq(vault.firstPendingRedeemId(),              0);
 
         // 1 wei of spUSDC is worth 1 wei USDC, which converts to 0 prime shares: no-op.
         assertEq(vault.availableLiquidAssets(), 1);
@@ -392,7 +389,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(usdc.balanceOf(alice),       314_289_916_712 + 685_710_083_285);
         assertEq(_queued(id),                 0);
         assertEq(vault.pendingRedeemShares(), 0);
-        assertEq(vault.redeemHead(),          1);
+        assertEq(vault.firstPendingRedeemId(),          1);
     }
 
     /**********************************************************************************************/
@@ -438,7 +435,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(_queued(idC),                    49_520_259_204);
         assertEq(vault.pendingRedeemShares(),     49_520_259_204);
         assertEq(vault.balanceOf(address(vault)), 49_520_259_204);
-        assertEq(vault.redeemHead(),              idC);
+        assertEq(vault.firstPendingRedeemId(),              idC);
         assertEq(_vaultSpUsdc(), 3 * DEPOSIT_100K_SPUSDC - 95_453_269_113 - 47_726_634_558);
 
         _returnSpUsdcLiquidity(150_000e6);
@@ -448,7 +445,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(_queued(idC),                    0);
         assertEq(vault.pendingRedeemShares(),     0);
         assertEq(vault.balanceOf(address(vault)), 0);
-        assertEq(vault.redeemHead(),              3);
+        assertEq(vault.firstPendingRedeemId(),              3);
         assertEq(_vaultSpUsdc(),                  95_453_269_115);     // bob's backing + 1 wei
         assertEq(vault.totalSupply(),             DEPOSIT_100K_SHARES);  // bob's shares
     }
@@ -457,7 +454,7 @@ contract RedeemQueueTest is LocalTestBase {
         (uint256 idA, uint256 idB, uint256 idC) = _threeDepositorsQueued();
 
         _processRedeems(type(uint256).max, 0);
-        assertEq(vault.redeemHead(),    0);
+        assertEq(vault.firstPendingRedeemId(),    0);
         assertEq(usdc.balanceOf(alice), 0);
 
         _processRedeems(type(uint256).max, 2);
@@ -468,18 +465,18 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(_queued(idA),                0);
         assertEq(_queued(idB),                0);
         assertEq(_queued(idC),                DEPOSIT_100K_SHARES);
-        assertEq(vault.redeemHead(),          2);
+        assertEq(vault.firstPendingRedeemId(),          2);
         assertEq(vault.pendingRedeemShares(), DEPOSIT_100K_SHARES);
 
         _processRedeems(type(uint256).max, 1);
 
         assertEq(usdc.balanceOf(carol),       99_999_999_998);
-        assertEq(vault.redeemHead(),          3);
+        assertEq(vault.firstPendingRedeemId(),          3);
         assertEq(vault.pendingRedeemShares(), 0);
 
         // maxRequests_ beyond the queue length is clamped.
         _processRedeems(type(uint256).max, type(uint256).max);
-        assertEq(vault.redeemHead(), 3);
+        assertEq(vault.firstPendingRedeemId(), 3);
     }
 
     function test_processRedeemQueue_maxShares() public {
@@ -490,7 +487,7 @@ contract RedeemQueueTest is LocalTestBase {
 
         assertEq(usdc.balanceOf(alice),       99_999_999_997);
         assertEq(_queued(idA),                1);
-        assertEq(vault.redeemHead(),          0);
+        assertEq(vault.firstPendingRedeemId(),          0);
         assertEq(vault.pendingRedeemShares(), 2 * DEPOSIT_100K_SHARES + 1);
         assertEq(_vaultSpUsdc(),              3 * DEPOSIT_100K_SPUSDC - 95_453_269_112);
 
@@ -502,7 +499,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(_queued(idA),                0);
         assertEq(_queued(idB),                DEPOSIT_100K_SHARES - 10);
         assertEq(_queued(idC),                DEPOSIT_100K_SHARES);
-        assertEq(vault.redeemHead(),          1);
+        assertEq(vault.firstPendingRedeemId(),          1);
         assertEq(vault.pendingRedeemShares(), 2 * DEPOSIT_100K_SHARES - 10);
         assertEq(_vaultSpUsdc(),              3 * DEPOSIT_100K_SPUSDC - 95_453_269_112 - 1 - 10);
     }
@@ -513,7 +510,7 @@ contract RedeemQueueTest is LocalTestBase {
 
         _processRedeems(0, 10);
 
-        assertEq(vault.redeemHead(),          0);
+        assertEq(vault.firstPendingRedeemId(),          0);
         assertEq(vault.pendingRedeemShares(), 3 * DEPOSIT_100K_SHARES);
         assertEq(_vaultSpUsdc(),              spBefore);
         assertEq(usdc.balanceOf(alice),       0);
@@ -522,7 +519,7 @@ contract RedeemQueueTest is LocalTestBase {
     function test_processRedeemQueue_emptyQueue_noop() public {
         _deposit(alice, 100_000e6);
         _processRedeems(type(uint256).max, 10);
-        assertEq(vault.redeemHead(),          0);
+        assertEq(vault.firstPendingRedeemId(),          0);
         assertEq(vault.pendingRedeemShares(), 0);
         assertEq(_vaultSpUsdc(),              DEPOSIT_100K_SPUSDC);
     }
@@ -543,7 +540,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(usdc.balanceOf(bob),         0);
         assertEq(_queued(idA),                49_520_259_205);
         assertEq(_queued(idB),                1_000e6);
-        assertEq(vault.redeemHead(),          0);
+        assertEq(vault.firstPendingRedeemId(),          0);
         assertEq(vault.pendingRedeemShares(), 49_520_259_205 + 1_000e6);
     }
 
@@ -666,7 +663,7 @@ contract RedeemQueueTest is LocalTestBase {
 
         // The ghost is skipped by processing and the head moves past it.
         _processRedeems(type(uint256).max, 10);
-        assertEq(vault.redeemHead(), 1);
+        assertEq(vault.firstPendingRedeemId(), 1);
     }
 
     // The fee is burned from escrow, so a request of the full balance with a 1% fee is accepted.
@@ -845,7 +842,7 @@ contract RedeemQueueTest is LocalTestBase {
             uint256 g = gasleft();
             _processRedeems(type(uint256).max, 50);
             totalGas += g - gasleft();
-            assertEq(vault.redeemHead(), (b + 1) * 50);
+            assertEq(vault.firstPendingRedeemId(), (b + 1) * 50);
         }
         emit log_named_uint("gas for 200 fills (4 calls of 50)", totalGas);
         emit log_named_uint("gas per fill",                      totalGas / n);
@@ -855,7 +852,7 @@ contract RedeemQueueTest is LocalTestBase {
             assertEq(usdc.balanceOf(users[i]), 4_999_999_998);
             assertEq(_queued(i),               0);
         }
-        assertEq(vault.redeemHead(),              200);
+        assertEq(vault.firstPendingRedeemId(),              200);
         assertEq(vault.pendingRedeemShares(),     0);
         assertEq(vault.balanceOf(address(vault)), 0);
         assertEq(vault.totalSupply(),             0);
@@ -879,7 +876,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(usdc.balanceOf(alice),       0);
         assertEq(_queued(id),                 DEPOSIT_100K_SHARES);
         assertEq(vault.pendingRedeemShares(), DEPOSIT_100K_SHARES);
-        assertEq(vault.redeemHead(),          0);
+        assertEq(vault.firstPendingRedeemId(),          0);
     }
 
     function test_processRedeemQueue_afterFullTake_noop() public {
@@ -895,7 +892,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(usdc.balanceOf(alice),       0);
         assertEq(_queued(id),                 DEPOSIT_100K_SHARES);
         assertEq(vault.pendingRedeemShares(), DEPOSIT_100K_SHARES);
-        assertEq(vault.redeemHead(),          0);
+        assertEq(vault.firstPendingRedeemId(),          0);
 
         // 1 spUSDC share back: worth 1 wei USDC, converts to 0 prime shares, still a no-op.
         _returnToVault(1);
@@ -956,11 +953,11 @@ contract RedeemQueueTest is LocalTestBase {
 
         _processRedeems(type(uint256).max, 11);
         assertEq(usdc.balanceOf(bob), 0);
-        assertEq(vault.redeemHead(),  11);
+        assertEq(vault.firstPendingRedeemId(),  11);
 
         _processRedeems(type(uint256).max, 1);
         assertEq(usdc.balanceOf(bob), 98_999_999_998);  // 1% fee on bob's real request
-        assertEq(vault.redeemHead(),  12);
+        assertEq(vault.firstPendingRedeemId(),  12);
 
         // `minRedeem = 1` share is enough to close the path.
         _setMinRedeem(1);
@@ -1026,20 +1023,20 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(vault.balanceOf(address(vault)), 2 * DEPOSIT_100K_SHARES);
         assertEq(vault.pendingRedeemShares(),     2 * DEPOSIT_100K_SHARES);
         assertEq(_queued(idB),                    0);
-        assertEq(vault.redeemHead(),              0);
+        assertEq(vault.firstPendingRedeemId(),              0);
 
         _processRedeems(type(uint256).max, 2);  // slot 1: alice, slot 2: the hole
 
         assertEq(usdc.balanceOf(alice), 99_999_999_998);
         assertEq(usdc.balanceOf(carol), 0);
         assertEq(_queued(idA),          0);
-        assertEq(vault.redeemHead(),    2);
+        assertEq(vault.firstPendingRedeemId(),    2);
 
         _processRedeems(type(uint256).max, 1);  // fills carol
 
         assertEq(usdc.balanceOf(carol), 99_999_999_998);
         assertEq(_queued(idC),          0);
-        assertEq(vault.redeemHead(),    3);
+        assertEq(vault.firstPendingRedeemId(),    3);
 
         // Contrast: a head cancel is free for the planner. alice re-queues, bob re-queues, alice
         // cancels at the head; one slot reaches bob.
@@ -1048,10 +1045,10 @@ contract RedeemQueueTest is LocalTestBase {
         _requestRedeem(bob, DEPOSIT_100K_SHARES);
         vm.prank(alice);
         vault.cancelRedeemRequest(idA2, alice);
-        assertEq(vault.redeemHead(), 4);
+        assertEq(vault.firstPendingRedeemId(), 4);
         _processRedeems(type(uint256).max, 1);
         assertEq(usdc.balanceOf(bob), 99_999_999_998);
-        assertEq(vault.redeemHead(),  5);
+        assertEq(vault.firstPendingRedeemId(),  5);
     }
 
     /**********************************************************************************************/
@@ -1134,8 +1131,8 @@ contract RedeemQueueTest is LocalTestBase {
             for (uint256 i; i < qlen2; ++i) open += _queued(i);
             assertEq(vault.balanceOf(address(vault)), vault.pendingRedeemShares());
             assertEq(vault.pendingRedeemShares(),     open);
-            assertLe(vault.redeemHead(),              qlen2);
-            for (uint256 i; i < vault.redeemHead(); ++i) assertEq(_queued(i), 0);
+            assertLe(vault.firstPendingRedeemId(),              qlen2);
+            for (uint256 i; i < vault.firstPendingRedeemId(); ++i) assertEq(_queued(i), 0);
             assertEq(vault.balanceOf(address(vault)) + _sumUserBalances(users), vault.totalSupply());
         }
     }
@@ -1246,14 +1243,14 @@ contract RedeemQueueTest is LocalTestBase {
         uint256 idC = _requestRedeem(carol, DEPOSIT_100K_SHARES);  // 3
         assertEq(idA, 0);
         assertEq(idC, 3);
-        assertEq(vault.redeemHead(), 0);
+        assertEq(vault.firstPendingRedeemId(), 0);
 
         vm.expectEmit(true, true, true, true, address(vault));
         emit CancelRedeemRequest(idA, DEPOSIT_100K_SHARES);
         vm.prank(alice);
         vault.cancelRedeemRequest(idA, alice);
 
-        assertEq(vault.redeemHead(),          3);  // jumped over 0, 1, 2
+        assertEq(vault.firstPendingRedeemId(),          3);  // jumped over 0, 1, 2
         assertEq(vault.balanceOf(alice),      DEPOSIT_100K_SHARES);
         assertEq(vault.pendingRedeemShares(), DEPOSIT_100K_SHARES);
 
@@ -1269,7 +1266,7 @@ contract RedeemQueueTest is LocalTestBase {
         // One slot is now enough to reach carol (the ghosts no longer cost `maxRequests_`).
         _processRedeems(type(uint256).max, 1);
         assertEq(usdc.balanceOf(carol), 99_999_999_998);
-        assertEq(vault.redeemHead(),    4);
+        assertEq(vault.firstPendingRedeemId(),    4);
     }
 
     // Cancelling a non-head entry leaves the head alone; the hole is skipped later (and still
@@ -1279,19 +1276,19 @@ contract RedeemQueueTest is LocalTestBase {
 
         vm.prank(idB == 1 ? bob : bob);
         vault.cancelRedeemRequest(idB, bob);
-        assertEq(vault.redeemHead(), 0);
+        assertEq(vault.firstPendingRedeemId(), 0);
 
         vm.prank(carol);
         vault.cancelRedeemRequest(idC, carol);
-        assertEq(vault.redeemHead(), 0);
+        assertEq(vault.firstPendingRedeemId(), 0);
 
         _processRedeems(type(uint256).max, 1);  // pays alice, head lands on the hole at 1
         assertEq(usdc.balanceOf(alice), 99_999_999_998);
         assertEq(_queued(idA),          0);
-        assertEq(vault.redeemHead(),    1);
+        assertEq(vault.firstPendingRedeemId(),    1);
 
         _processRedeems(type(uint256).max, 10);  // walks over the two holes
-        assertEq(vault.redeemHead(),          3);
+        assertEq(vault.firstPendingRedeemId(),          3);
         assertEq(vault.pendingRedeemShares(), 0);
     }
 
@@ -1306,17 +1303,17 @@ contract RedeemQueueTest is LocalTestBase {
         vault.cancelRedeemRequest(idA, alice);
 
         assertEq(_queueLength(),              1);
-        assertEq(vault.redeemHead(),          1);
+        assertEq(vault.firstPendingRedeemId(),          1);
         assertEq(vault.pendingRedeemShares(), 0);
 
         _processRedeems(type(uint256).max, 10);  // nothing to do, no revert
-        assertEq(vault.redeemHead(), 1);
+        assertEq(vault.firstPendingRedeemId(), 1);
 
         uint256 idB = _requestRedeem(bob, DEPOSIT_100K_SHARES);
         assertEq(idB, 1);
         _processRedeems(type(uint256).max, 1);
         assertEq(usdc.balanceOf(bob), 99_999_999_998);
-        assertEq(vault.redeemHead(),  2);
+        assertEq(vault.firstPendingRedeemId(),  2);
     }
 
     // Partial fill (liquidity bound) leaves the entry at the head; the owner cancels the
@@ -1333,7 +1330,7 @@ contract RedeemQueueTest is LocalTestBase {
 
         assertEq(usdc.balanceOf(alice),       299_999_999_999);
         assertEq(_queued(idA),                693_283_628_876);
-        assertEq(vault.redeemHead(),          0);
+        assertEq(vault.firstPendingRedeemId(),          0);
         assertEq(vault.pendingRedeemShares(), 693_283_628_876 + DEPOSIT_100K_SHARES);
 
         vm.prank(alice);
@@ -1342,14 +1339,14 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(vault.balanceOf(alice),          693_283_628_876);
         assertEq(vault.balanceOf(address(vault)), DEPOSIT_100K_SHARES);
         assertEq(vault.pendingRedeemShares(),     DEPOSIT_100K_SHARES);
-        assertEq(vault.redeemHead(),              2);  // past 0 (cancelled) and 1 (ghost)
+        assertEq(vault.firstPendingRedeemId(),              2);  // past 0 (cancelled) and 1 (ghost)
         assertEq(_queued(idA),                    0);
 
         _returnSpUsdcLiquidity(100_000e6);
         _processRedeems(type(uint256).max, 1);
         assertEq(usdc.balanceOf(carol), 99_999_999_998);
         assertEq(_queued(idC),          0);
-        assertEq(vault.redeemHead(),    3);
+        assertEq(vault.firstPendingRedeemId(),    3);
     }
 
     function test_cancelRedeemRequest_revertsRecipientZero() public {
@@ -1381,7 +1378,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(r,  bob);
         assertEq(sh, DEPOSIT_100K_SHARES - 1);
         assertEq(usdc.balanceOf(bob), 1);
-        assertEq(vault.redeemHead(),  1);
+        assertEq(vault.firstPendingRedeemId(),  1);
 
         // The deleted entry is dead for cancel; the slot still exists in the array.
         vm.prank(alice);
@@ -1468,19 +1465,19 @@ contract RedeemQueueTest is LocalTestBase {
         vm.expectRevert("Blacklistable: account is blacklisted");
         vault.processRedeemQueue(type(uint256).max, 10);
         assertEq(usdc.balanceOf(bob), 0);
-        assertEq(vault.redeemHead(),  0);
+        assertEq(vault.firstPendingRedeemId(),  0);
 
         // Guardian cancel (shares back to the owner) remains the planner's unblock for C-2.
         vm.prank(guardian);
         vault.cancelRedeemRequest(idA, alice);
         assertEq(vault.balanceOf(alice), DEPOSIT_100K_SHARES);
-        assertEq(vault.redeemHead(),     1);
+        assertEq(vault.firstPendingRedeemId(),     1);
 
         _processRedeems(type(uint256).max, 10);
         assertEq(usdc.balanceOf(bob),         99_999_999_998);
         assertEq(usdc.balanceOf(mallory),     0);
         assertEq(_queued(idB),                0);
-        assertEq(vault.redeemHead(),          2);
+        assertEq(vault.firstPendingRedeemId(),          2);
         assertEq(vault.pendingRedeemShares(), 0);
     }
 
@@ -1517,7 +1514,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(usdc.balanceOf(bob),         99_999_999_998);  // queue unblocked
         assertEq(_queued(idA),                0);
         assertEq(_queued(idB),                0);
-        assertEq(vault.redeemHead(),          2);
+        assertEq(vault.firstPendingRedeemId(),          2);
         assertEq(vault.pendingRedeemShares(), 0);
     }
 
@@ -1556,7 +1553,7 @@ contract RedeemQueueTest is LocalTestBase {
 
         _processRedeems(type(uint256).max, 10);
         assertEq(usdc.balanceOf(carol), 0);
-        assertEq(vault.redeemHead(),    2);
+        assertEq(vault.firstPendingRedeemId(),    2);
     }
 
     /**********************************************************************************************/
@@ -1596,21 +1593,21 @@ contract RedeemQueueTest is LocalTestBase {
         vault.processRedeemQueue(1, 1);
 
         assertEq(usdc.balanceOf(alice), 0);
-        assertEq(vault.redeemHead(),    0);
+        assertEq(vault.firstPendingRedeemId(),    0);
 
         // Guardian cancel (refund to the owner) unblocks; the attacker is made whole and can
         // re-jam for gas only. The head now advances on cancel, so alice is reachable with 1 slot.
         vm.prank(guardian);
         vault.cancelRedeemRequest(jamId, attacker);
         assertEq(vault.balanceOf(attacker), attackerShares);
-        assertEq(vault.redeemHead(),        1);
+        assertEq(vault.firstPendingRedeemId(),        1);
 
         vm.prank(attacker);
         vault.requestRedeem(1, blacklisted);  // id 2, behind alice
 
         _processRedeems(type(uint256).max, 1);
         assertEq(usdc.balanceOf(alice), 999_999_999_998);
-        assertEq(vault.redeemHead(),    2);
+        assertEq(vault.firstPendingRedeemId(),    2);
 
         // The next honest redeemer is stuck behind the new jam again.
         _deposit(bob, 10e6);

@@ -78,10 +78,10 @@ contract ReviewTest is TestBase {
         assertGt(vault.pendingDepositSavingsShares(), 0);
 
         vm.prank(guardian);
-        uint256 cancelId = vault.cancelDepositRequest(id, thief);
+        uint256 cancelId = vault.requestDepositCancellation(id, thief);
 
         // The cancelled entry records the owner (bob) but pays `recipient_` (thief).
-        (address owner, address recipient, uint256 shares) = vault.cancelledDepositQueue(cancelId);
+        (address owner, address recipient, uint256 shares) = _cancelledDepositRequest(cancelId);
         assertEq(owner,     bob);
         assertEq(recipient, thief);
         assertGt(shares,    0);
@@ -129,14 +129,14 @@ contract ReviewTest is TestBase {
         // Round 2: bob's cancel succeeds (it only moves the entry), but the settlement has no
         // spUSDC to redeem: nothing is paid, the entry stays open, bob is still out 100k.
         vm.prank(bob);
-        uint256 cancelId = vault.cancelDepositRequest(id, bob);
+        uint256 cancelId = vault.requestDepositCancellation(id, bob);
         assertEq(vault.pendingCancelledDepositSavingsShares(), queued);
 
         _settleCancels();
 
-        (, , uint256 left) = vault.cancelledDepositQueue(cancelId);
+        (, , uint256 left) = _cancelledDepositRequest(cancelId);
         assertEq(left, queued);
-        assertEq(vault.cancelledDepositHead(), 0);
+        assertEq(vault.firstPendingDepositCancellationId(), 0);
         assertEq(usdcT.balanceOf(bob), 900_000e6);
     }
 
@@ -167,12 +167,12 @@ contract ReviewTest is TestBase {
         assertLt(held, bobShares);
 
         vm.prank(bob);
-        uint256 cancelId = vault.cancelDepositRequest(bobId, bob);
+        uint256 cancelId = vault.requestDepositCancellation(bobId, bob);
         _settleCancels();
 
-        (, , uint256 left) = vault.cancelledDepositQueue(cancelId);
+        (, , uint256 left) = _cancelledDepositRequest(cancelId);
         assertEq(left, bobShares - held);                 // Partial fill, entry stays at head
-        assertEq(vault.cancelledDepositHead(), 0);
+        assertEq(vault.firstPendingDepositCancellationId(), 0);
         assertApproxEqAbs(usdcT.balanceOf(bob), 950_000e6, 2);
     }
 
@@ -195,7 +195,7 @@ contract ReviewTest is TestBase {
         assertGt(vault.balanceOf(bob),   0, "bob filled");
         assertGt(vault.balanceOf(carol), 0, "carol filled in the same call");
         assertEq(vault.pendingDepositSavingsShares(), 0);
-        assertEq(vault.depositHead(), 3);
+        assertEq(vault.firstPendingDepositId(), 3);
     }
 
     /*******************************************************************************************/
@@ -236,7 +236,7 @@ contract ReviewTest is TestBase {
 
         assertEq(vault.balanceOf(bob), 0,                    "zero shares minted");
         assertEq(vault.pendingDepositSavingsShares(), before - 1, "but 1 spUSDC share consumed");
-        (, , uint256 left) = vault.depositQueue(id);
+        (, , uint256 left) = _depositRequest(id);
         assertEq(left, before - 1);
     }
 
@@ -246,8 +246,8 @@ contract ReviewTest is TestBase {
 
     function test_F5_zeroDepositRequestsBloatQueue() public {
         for (uint256 i; i < 50; ++i) _deposit(alice, 0);
-        assertEq(vault.depositHead(), 50);
-        (, , uint256 s) = vault.depositQueue(49);
+        assertEq(vault.firstPendingDepositId(), 50);
+        (, , uint256 s) = _depositRequest(49);
         assertEq(s, 0);
     }
 
@@ -261,7 +261,7 @@ contract ReviewTest is TestBase {
         vm.stopPrank();
 
         assertEq(vault.pendingRedeemShares(), 0);  // every entry is a 0-share ghost
-        (, , uint256 s) = vault.redeemQueue(19);
+        (, , uint256 s) = _redeemRequest(19);
         assertEq(s, 0);
     }
 

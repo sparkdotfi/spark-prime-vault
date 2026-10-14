@@ -889,14 +889,14 @@ contract AdminTest is LocalTestBase {
         assertEq(vault.pendingDepositSavingsShares(), queued_);
 
         vm.prank(alice);
-        uint256 cancelId_ = vault.cancelDepositRequest(id_, alice);
+        uint256 cancelId_ = vault.requestDepositCancellation(id_, alice);
         assertEq(vault.pendingCancelledDepositSavingsShares(), queued_);
 
         _processCancelledDeposits(type(uint256).max, 10);
         (, , uint256 left_) = _cancelledDepositRequest(cancelId_);
         assertEq(left_,                   queued_);
         assertEq(usdc.balanceOf(alice),   0);
-        assertEq(vault.cancelledDepositHead(), 0);
+        assertEq(vault.firstPendingDepositCancellationId(), 0);
     }
 
     /**********************************************************************************************/
@@ -951,9 +951,9 @@ contract AdminTest is LocalTestBase {
         assertEq(fresh_.pendingDepositSavingsShares(),          0);
         assertEq(fresh_.pendingCancelledDepositSavingsShares(), 0);
         assertEq(fresh_.pendingRedeemShares(),                  0);
-        assertEq(fresh_.depositHead(),                          0);
-        assertEq(fresh_.cancelledDepositHead(),                 0);
-        assertEq(fresh_.redeemHead(),                           0);
+        assertEq(fresh_.firstPendingDepositId(),                          0);
+        assertEq(fresh_.firstPendingDepositCancellationId(),                 0);
+        assertEq(fresh_.firstPendingRedeemId(),                           0);
         assertEq(usdc.allowance(address(fresh_), address(spUsdc)), type(uint256).max);
 
         assertTrue(fresh_.hasRole(DEFAULT_ADMIN_ROLE, admin));

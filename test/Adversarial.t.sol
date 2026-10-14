@@ -109,46 +109,25 @@ contract AdversarialTest is LocalTestBase {
     }
 
     function _sumOpenDeposits() internal view returns (uint256 sum) {
-        for (uint256 i = 0; ; ++i) {
-            try vault.depositQueue(i) returns (address, address, uint256 s) { sum += s; }
-            catch { break; }
-        }
+        uint256 n = _depositQueueLength();
+        for (uint256 i = 0; i < n; ++i) { ( , , uint256 s) = _depositRequest(i); sum += s; }
     }
 
     function _sumOpenRedeems() internal view returns (uint256 sum) {
-        for (uint256 i = 0; ; ++i) {
-            try vault.redeemQueue(i) returns (address, address, uint256 s) { sum += s; }
-            catch { break; }
-        }
+        uint256 n = _redeemQueueLength();
+        for (uint256 i = 0; i < n; ++i) { ( , , uint256 s) = _redeemRequest(i); sum += s; }
     }
 
     function _sumOpenCancelled() internal view returns (uint256 sum) {
-        for (uint256 i = 0; ; ++i) {
-            try vault.cancelledDepositQueue(i) returns (address, address, uint256 s) { sum += s; }
-            catch { break; }
-        }
+        uint256 n = _cancelledDepositQueueLength();
+        for (uint256 i = 0; i < n; ++i) { ( , , uint256 s) = _cancelledDepositRequest(i); sum += s; }
     }
 
-    function _cancelledQueueLength() internal view returns (uint256 n) {
-        for (uint256 i = 0; ; ++i) {
-            try vault.cancelledDepositQueue(i) returns (address, address, uint256) { n++; }
-            catch { break; }
-        }
+    function _cancelledQueueLength() internal view returns (uint256) {
+        return _cancelledDepositQueueLength();
     }
 
-    function _depositQueueLength() internal view returns (uint256 n) {
-        for (uint256 i = 0; ; ++i) {
-            try vault.depositQueue(i) returns (address, address, uint256) { n++; }
-            catch { break; }
-        }
-    }
 
-    function _redeemQueueLength() internal view returns (uint256 n) {
-        for (uint256 i = 0; ; ++i) {
-            try vault.redeemQueue(i) returns (address, address, uint256) { n++; }
-            catch { break; }
-        }
-    }
 
     /**********************************************************************************************/
     /*** 1. Rounding extraction round trips                                                     ***/
@@ -282,7 +261,7 @@ contract AdversarialTest is LocalTestBase {
 
         assertEq(jamId, 1);
         assertEq(vault.pendingDepositSavingsShares(), 1);
-        assertEq(vault.depositHead(), 1);
+        assertEq(vault.firstPendingDepositId(), 1);
         assertEq(usdc.balanceOf(attacker), 0);
 
         // Alice redeems 10% and the planner pays her: capacity frees.
@@ -334,7 +313,7 @@ contract AdversarialTest is LocalTestBase {
         assertEq(jamLeft, 0);                       // jam entry closed, 0 shares minted
         assertEq(vault.balanceOf(attacker), 0);
         assertEq(vault.pendingDepositSavingsShares(), 0);
-        assertEq(vault.depositHead(), 3);
+        assertEq(vault.firstPendingDepositId(), 3);
         assertEq(
             vault.totalSupply() - supplyBefore,
             vault.convertToShares(spUsdc.convertToAssets(victimQueued))
@@ -357,7 +336,7 @@ contract AdversarialTest is LocalTestBase {
 
         vm.prank(attacker);
         vm.expectRevert("SparkPrimeVault/no-request");
-        vault.cancelDepositRequest(id, attacker);
+        vault.requestDepositCancellation(id, attacker);
 
         // Next depositor is still instant once capacity exists.
         _setCapacity(type(uint128).max);
@@ -404,12 +383,12 @@ contract AdversarialTest is LocalTestBase {
 
         _processDeposits(type(uint256).max, 10);
         assertEq(vault.pendingDepositSavingsShares(), 1);
-        assertEq(vault.depositHead(), 1);
+        assertEq(vault.firstPendingDepositId(), 1);
 
         _setCapacity(vault.totalSupply() + 3);
         _processDeposits(type(uint256).max, 10);
         assertEq(vault.pendingDepositSavingsShares(), 0);
-        assertEq(vault.depositHead(), 2);
+        assertEq(vault.firstPendingDepositId(), 2);
     }
 
     /**********************************************************************************************/
@@ -928,12 +907,12 @@ contract AdversarialTest is LocalTestBase {
         for (uint256 i; i < 50; ++i) vault.requestDeposit(0, attacker);
         vm.stopPrank();
 
-        assertEq(vault.depositHead(), 50);
+        assertEq(vault.firstPendingDepositId(), 50);
         assertEq(vault.pendingDepositSavingsShares(), 0);
 
         _deposit(victim, 1e6);
         assertGt(vault.balanceOf(victim), 0);  // instant
-        assertEq(vault.depositHead(), 51);
+        assertEq(vault.firstPendingDepositId(), 51);
     }
 
     // Ghosts can only be placed in front of a request while the queue is open. Measures the
@@ -959,20 +938,20 @@ contract AdversarialTest is LocalTestBase {
         uint256 g1 = gasleft();
         vault.processDepositQueue(type(uint256).max, 1001);
         uint256 gas1 = g1 - gasleft();
-        assertEq(vault.depositHead(), 1002);
+        assertEq(vault.firstPendingDepositId(), 1002);
 
         // Call 2: 1000 ghosts only.
         vm.prank(rebalancer);
         uint256 g2 = gasleft();
         vault.processDepositQueue(type(uint256).max, 1000);
         uint256 gas2 = g2 - gasleft();
-        assertEq(vault.depositHead(), 2002);
+        assertEq(vault.firstPendingDepositId(), 2002);
         assertEq(vault.balanceOf(victim), 0);
 
         // Call 3: victim.
         _processDeposits(type(uint256).max, 1);
         assertGt(vault.balanceOf(victim), 0);
-        assertEq(vault.depositHead(), 2003);
+        assertEq(vault.firstPendingDepositId(), 2003);
 
         // NOTE: slots are warm inside one test tx; on mainnet each skip is a cold SLOAD, add ~2_000.
         uint256 perGhost = gas2 / 1000;
@@ -1010,12 +989,12 @@ contract AdversarialTest is LocalTestBase {
         uint256 g1 = gasleft();
         vault.processRedeemQueue(type(uint256).max, 1000);
         uint256 gas1 = g1 - gasleft();
-        assertEq(vault.redeemHead(), 1000);
+        assertEq(vault.firstPendingRedeemId(), 1000);
         assertEq(usdc.balanceOf(alice), 0);
 
         vm.prank(rebalancer);
         vault.processRedeemQueue(type(uint256).max, 1001);
-        assertEq(vault.redeemHead(), 2001);
+        assertEq(vault.firstPendingRedeemId(), 2001);
         assertGt(usdc.balanceOf(alice), 0);
 
         uint256 perGhost = gas1 / 1000;
@@ -1042,7 +1021,7 @@ contract AdversarialTest is LocalTestBase {
         vault.processRedeemQueue(type(uint256).max, 200);
         uint256 gas = g - gasleft();
 
-        assertEq(vault.redeemHead(), 200);
+        assertEq(vault.firstPendingRedeemId(), 200);
         assertEq(usdc.balanceOf(attacker), 200);           // 1 wei USDC per 1-share entry
         assertEq(vaultSp - _vaultSpUsdc(), 200);           // 1 spUSDC share burned per fill (R9)
 
@@ -1101,7 +1080,7 @@ contract AdversarialTest is LocalTestBase {
         uint256 g1 = gasleft();
         vault.processRedeemQueue(type(uint256).max, 1000);
         uint256 gas1 = g1 - gasleft();
-        assertEq(vault.redeemHead(), 1000);
+        assertEq(vault.firstPendingRedeemId(), 1000);
         assertEq(usdc.balanceOf(alice), 0);
 
         _processRedeems(type(uint256).max, 1);
@@ -1128,7 +1107,7 @@ contract AdversarialTest is LocalTestBase {
         vm.stopPrank();
 
         _processDeposits(type(uint256).max, 100);
-        assertEq(vault.depositHead(), 1);
+        assertEq(vault.firstPendingDepositId(), 1);
 
         _setRedeemFeeRate(0.01e18);
         _requestRedeem(alice, vault.balanceOf(alice) / 2);
@@ -1138,11 +1117,11 @@ contract AdversarialTest is LocalTestBase {
 
         _drainAllSpUsdcLiquidity();
         _processRedeems(type(uint256).max, 100);
-        assertEq(vault.redeemHead(), 0);
+        assertEq(vault.firstPendingRedeemId(), 0);
 
         _returnSpUsdcLiquidity(1_000e6);
         _processRedeems(type(uint256).max, 100);
-        assertEq(vault.redeemHead(), 11);
+        assertEq(vault.firstPendingRedeemId(), 11);
     }
 
     /**********************************************************************************************/
@@ -1273,7 +1252,7 @@ contract AdversarialTest is LocalTestBase {
         _fillCapacityExactly(bob, 1e6);
         vm.startPrank(alice);
         uint256 id = vault.requestDeposit(100e6, address(rec));   // queued
-        vault.cancelDepositRequest(id, address(rec));             // moved to the cancel queue
+        vault.requestDepositCancellation(id, address(rec));             // moved to the cancel queue
         vm.stopPrank();
         assertEq(rec.calls(), 0);
 
@@ -1549,7 +1528,7 @@ contract AdversarialTest is LocalTestBase {
         (, , uint256 dq) = _depositRequest(dId);
         assertGt(dq, 0);
         vm.prank(rando);
-        uint256 cId = vault.cancelDepositRequest(dId, rando);
+        uint256 cId = vault.requestDepositCancellation(dId, rando);
         assertEq(vault.pendingDepositSavingsShares(), 0);
         assertEq(vault.pendingCancelledDepositSavingsShares(), dq);
 
@@ -1611,7 +1590,7 @@ contract AdversarialTest is LocalTestBase {
                 if (n > 0) {
                     uint256 id = (r >> 48) % n;
                     (address o, , uint256 s) = _depositRequest(id);
-                    if (s != 0 && o == u) { vm.prank(u); vault.cancelDepositRequest(id, u); }
+                    if (s != 0 && o == u) { vm.prank(u); vault.requestDepositCancellation(id, u); }
                 }
             } else if (op == 4) {
                 uint256 n = _redeemQueueLength();
@@ -1650,7 +1629,7 @@ contract AdversarialTest is LocalTestBase {
                     vm.prank(caller);
                     if (which == 0)      vault.updateDepositRecipient(id, caller);
                     else if (which == 1) vault.updateRedeemRecipient(id, caller);
-                    else                 vault.updateCancelledDepositRecipient(id, caller);
+                    else                 vault.updateDepositCancellationRecipient(id, caller);
                 }
             }
 
@@ -1669,17 +1648,17 @@ contract AdversarialTest is LocalTestBase {
             "spUSDC backing below queued claims"
         );
 
-        uint256 dh = vault.depositHead();
+        uint256 dh = vault.firstPendingDepositId();
         for (uint256 i; i < dh; ++i) {
             (, , uint256 s) = _depositRequest(i);
             assertEq(s, 0, "open deposit entry before head");
         }
-        uint256 rh = vault.redeemHead();
+        uint256 rh = vault.firstPendingRedeemId();
         for (uint256 i; i < rh; ++i) {
             (, , uint256 s) = _redeemRequest(i);
             assertEq(s, 0, "open redeem entry before head");
         }
-        uint256 ch = vault.cancelledDepositHead();
+        uint256 ch = vault.firstPendingDepositCancellationId();
         for (uint256 i; i < ch; ++i) {
             (, , uint256 s) = _cancelledDepositRequest(i);
             assertEq(s, 0, "open cancelled entry before head");
@@ -1695,28 +1674,28 @@ contract AdversarialTest is LocalTestBase {
         _fillCapacityExactly(alice, 100e6);
         uint256 id0 = _deposit(bob, 10e6);
         uint256 id1 = _deposit(rando, 10e6);
-        assertEq(vault.depositHead(), 1);
+        assertEq(vault.firstPendingDepositId(), 1);
 
         _setCapacity(type(uint128).max);
         _processDeposits(type(uint256).max, 1);   // fills bob only
-        assertEq(vault.depositHead(), 2);
+        assertEq(vault.firstPendingDepositId(), 2);
         (, , uint256 s1) = _depositRequest(id1);
         assertGt(s1, 0);
         assertEq(vault.pendingDepositSavingsShares(), s1);
 
         // New deposit while rando is open: NOT instant, head untouched.
         uint256 id3 = _deposit(victim, 1e6);
-        assertEq(vault.depositHead(), 2);
+        assertEq(vault.firstPendingDepositId(), 2);
         assertEq(vault.balanceOf(victim), 0);
 
         _processDeposits(type(uint256).max, 10);
         assertEq(vault.pendingDepositSavingsShares(), 0);
-        assertEq(vault.depositHead(), 4);
+        assertEq(vault.firstPendingDepositId(), 4);
 
         // Now pending == 0: next deposit resets head to its own index (5) and fills.
         uint256 id4 = _deposit(victim, 1e6);
         assertEq(id4, 4);
-        assertEq(vault.depositHead(), 5);
+        assertEq(vault.firstPendingDepositId(), 5);
         assertGt(vault.balanceOf(victim), 0);
         id0; id3;
     }
@@ -1755,7 +1734,7 @@ contract AdversarialTest is LocalTestBase {
         vault.processRedeemQueue(type(uint256).max, 1);
 
         assertEq(usdc.balanceOf(alice), 0);
-        assertEq(vault.redeemHead(), 0);
+        assertEq(vault.firstPendingRedeemId(), 0);
 
         // Guardian cancel (refunding the owner) unblocks; attacker gets the share back and can
         // re-jam for gas only.
@@ -1766,7 +1745,7 @@ contract AdversarialTest is LocalTestBase {
         vm.prank(attacker);
         vault.requestRedeem(1, blacklisted);   // id 2, behind alice now: alice can be paid
 
-        assertEq(vault.redeemHead(), 1);       // cancel walked the head past id 0
+        assertEq(vault.firstPendingRedeemId(), 1);       // cancel walked the head past id 0
         _processRedeems(type(uint256).max, 1); // pays alice (id 1)
         assertGt(usdc.balanceOf(alice), 999_990e6);
 
@@ -1807,9 +1786,9 @@ contract AdversarialTest is LocalTestBase {
         (, , uint256 whaleShares) = _depositRequest(whaleId);
 
         vm.prank(attacker);
-        vault.cancelDepositRequest(whaleId, attacker);        // cancel id 0 (head)
+        vault.requestDepositCancellation(whaleId, attacker);        // cancel id 0 (head)
         vm.prank(victim);
-        vault.cancelDepositRequest(victimId, victim);         // cancel id 1
+        vault.requestDepositCancellation(victimId, victim);         // cancel id 1
 
         // spUSDC has only 1_000 USDC of liquidity left.
         _drainSpUsdcLiquidity(usdc.balanceOf(address(spUsdc)) - 1_000e6);
@@ -1821,7 +1800,7 @@ contract AdversarialTest is LocalTestBase {
         assertEq(usdc.balanceOf(attacker), spUsdc.convertToAssets(budget));
         assertLe(1_000e6 - usdc.balanceOf(attacker), 2);     // ~1_000 USDC, floor rounding
         assertEq(usdc.balanceOf(victim), 0);
-        assertEq(vault.cancelledDepositHead(), 0);           // whale still at the head
+        assertEq(vault.firstPendingDepositCancellationId(), 0);           // whale still at the head
         (, , uint256 whaleLeft) = _cancelledDepositRequest(0);
         assertEq(whaleLeft, whaleShares - budget);
         assertLe(usdc.balanceOf(address(spUsdc)), 1);        // spUSDC drained to dust
@@ -1831,7 +1810,7 @@ contract AdversarialTest is LocalTestBase {
             _returnSpUsdcLiquidity(1_000e6);
             _processCancelledDeposits(type(uint256).max, 10);
             assertEq(usdc.balanceOf(victim), 0);
-            assertEq(vault.cancelledDepositHead(), 0);
+            assertEq(vault.firstPendingDepositCancellationId(), 0);
         }
         assertApproxEqAbs(usdc.balanceOf(attacker), 4_000e6, 8);
 
@@ -1841,7 +1820,7 @@ contract AdversarialTest is LocalTestBase {
         assertApproxEqAbs(usdc.balanceOf(attacker), 10_000_000e6, 10);
         assertApproxEqAbs(usdc.balanceOf(victim), 100e6, 2);
         assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
-        assertEq(vault.cancelledDepositHead(), 2);
+        assertEq(vault.firstPendingDepositCancellationId(), 2);
     }
 
     // Cancel-queue bloat: dust deposits (2 wei -> 1 spUSDC share) cancelled in bulk are real
@@ -1854,25 +1833,25 @@ contract AdversarialTest is LocalTestBase {
         vm.startPrank(attacker);
         uint256 g0 = gasleft();
         uint256 d = vault.requestDeposit(2, attacker);
-        vault.cancelDepositRequest(d, attacker);
+        vault.requestDepositCancellation(d, attacker);
         uint256 perDust = g0 - gasleft();
         for (uint256 i; i < 499; ++i) {
             d = vault.requestDeposit(2, attacker);
-            vault.cancelDepositRequest(d, attacker);
+            vault.requestDepositCancellation(d, attacker);
         }
         vm.stopPrank();
         assertEq(_cancelledQueueLength(), 500);
 
         uint256 vId = _deposit(victim, 100e6);
         vm.prank(victim);
-        uint256 vc = vault.cancelDepositRequest(vId, victim);
+        uint256 vc = vault.requestDepositCancellation(vId, victim);
         assertEq(vc, 500);
 
         vm.prank(rebalancer);
         uint256 g1 = gasleft();
         vault.processCancelledDepositQueue(type(uint256).max, 500);
         uint256 plannerGas = g1 - gasleft();
-        assertEq(vault.cancelledDepositHead(), 500);
+        assertEq(vault.firstPendingDepositCancellationId(), 500);
         assertEq(usdc.balanceOf(victim), 0);
         assertEq(usdc.balanceOf(attacker), 500);          // 1 wei back per 2 wei in
 
@@ -1978,11 +1957,11 @@ contract AdversarialTest is LocalTestBase {
         uint256 id = _deposit(victim, 1_000_000e6);
 
         vm.prank(victim);
-        uint256 cId = vault.cancelDepositRequest(id, victim);
+        uint256 cId = vault.requestDepositCancellation(id, victim);
 
         vm.prank(attacker);
         vm.expectRevert("SparkPrimeVault/not-authorized");
-        vault.updateCancelledDepositRecipient(cId, attacker);
+        vault.updateDepositCancellationRecipient(cId, attacker);
 
         _processCancelledDeposits(type(uint256).max, 1);
 
@@ -2008,14 +1987,14 @@ contract AdversarialTest is LocalTestBase {
         vault.updateDepositRecipient(id, attacker);
 
         vm.prank(victim);
-        uint256 cId = vault.cancelDepositRequest(id, safe);
+        uint256 cId = vault.requestDepositCancellation(id, safe);
         (address o, address r, ) = _cancelledDepositRequest(cId);
         assertEq(o, victim);                                   // owner carries over
         assertEq(r, safe);
 
         vm.prank(attacker);
         vm.expectRevert("SparkPrimeVault/not-authorized");
-        vault.updateCancelledDepositRecipient(cId, attacker);
+        vault.updateDepositCancellationRecipient(cId, attacker);
 
         // The deposit entry is closed: even the owner cannot repoint it anymore.
         vm.prank(victim);
@@ -2175,7 +2154,7 @@ contract AdversarialTest is LocalTestBase {
         vm.expectRevert();                                     // index out of bounds
         vault.updateDepositRecipient(dId + 1, attacker);
         vm.expectRevert();
-        vault.updateCancelledDepositRecipient(0, attacker);    // empty queue
+        vault.updateDepositCancellationRecipient(0, attacker);    // empty queue
         vm.expectRevert("SparkPrimeVault/invalid-recipient");
         vault.updateRedeemRecipient(rId, address(0));
         vm.stopPrank();
@@ -2219,11 +2198,11 @@ contract AdversarialTest is LocalTestBase {
         vault.requestDeposit(2, attacker);                     // id 1: 1 share, open, at head
         for (uint256 i; i < 1000; ++i) vault.requestDeposit(0, attacker);   // ids 2..1001
         vm.stopPrank();
-        assertEq(vault.depositHead(), 1);
+        assertEq(vault.firstPendingDepositId(), 1);
 
         _setCapacity(type(uint128).max);
         _processDeposits(type(uint256).max, 1);                // closes id 1 only
-        assertEq(vault.depositHead(), 2);                      // head on the first ghost
+        assertEq(vault.firstPendingDepositId(), 2);                      // head on the first ghost
 
         // Baseline: an instant deposit with nothing to walk (fresh vault state is similar).
         _fund(victim, 20e6);
@@ -2231,7 +2210,7 @@ contract AdversarialTest is LocalTestBase {
         uint256 g0 = gasleft();
         vault.requestDeposit(10e6, victim);
         uint256 walked = g0 - gasleft();
-        assertEq(vault.depositHead(), 1003);                   // walked 1000 ghosts, filled self
+        assertEq(vault.firstPendingDepositId(), 1003);                   // walked 1000 ghosts, filled self
         assertGt(vault.balanceOf(victim), 0);
 
         vm.prank(victim);
@@ -2255,19 +2234,19 @@ contract AdversarialTest is LocalTestBase {
     // front-running with ghosts cannot inflate the victim's walk.
     function test_griefing_ghostsWalkThemselvesWhenHeadIsOnZeroEntries() public {
         _fillCapacityExactly(alice, 1_000e6);                  // capacity 0: no instant fills
-        assertEq(vault.depositHead(), 1);
+        assertEq(vault.firstPendingDepositId(), 1);
 
         vm.startPrank(attacker);
         for (uint256 i; i < 300; ++i) vault.requestDeposit(0, attacker);   // ids 1..300
         vm.stopPrank();
-        assertEq(vault.depositHead(), 300);                    // each ghost walked the previous
+        assertEq(vault.firstPendingDepositId(), 300);                    // each ghost walked the previous
 
         _fund(victim, 1e6);
         vm.prank(victim);
         uint256 g0 = gasleft();
         vault.requestDeposit(1e6, victim);                     // id 301: walks only id 300
         uint256 gas = g0 - gasleft();
-        assertEq(vault.depositHead(), 301);
+        assertEq(vault.firstPendingDepositId(), 301);
         emit log_named_uint("victim requestDeposit gas behind 300 self-walked ghosts", gas);
         assertLt(gas, 300_000);
     }
@@ -2283,9 +2262,9 @@ contract AdversarialTest is LocalTestBase {
 
         vm.prank(victim);
         uint256 g0 = gasleft();
-        vault.cancelDepositRequest(vId, victim);
+        vault.requestDepositCancellation(vId, victim);
         uint256 gas = g0 - gasleft();
-        assertEq(vault.depositHead(), 1002);
+        assertEq(vault.firstPendingDepositId(), 1002);
         emit log_named_uint("victim cancel gas with 1000 ghosts behind (warm)", gas);
         assertLt(gas, 1_500_000);
 
@@ -2300,7 +2279,7 @@ contract AdversarialTest is LocalTestBase {
         uint256 g1 = gasleft();
         vault.cancelRedeemRequest(rId, bob);
         uint256 gasR = g1 - gasleft();
-        assertEq(vault.redeemHead(), 1001);
+        assertEq(vault.firstPendingRedeemId(), 1001);
         emit log_named_uint("bob cancelRedeem gas with 1000 ghosts behind (warm)", gasR);
         assertLt(gasR, 1_500_000);
     }
@@ -2472,7 +2451,7 @@ contract AdversarialTest is LocalTestBase {
         _setCapacity(vault.totalSupply());
         uint256 bId = _deposit(bob, 100_000e6);
         vm.prank(bob);
-        uint256 cId = vault.cancelDepositRequest(bId, bob);
+        uint256 cId = vault.requestDepositCancellation(bId, bob);
 
         _returnToVault(spUsdc.convertToShares(50_000e6));
         vm.prank(admin);
