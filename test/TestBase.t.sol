@@ -160,8 +160,8 @@ abstract contract TestBase is Test {
     }
 
     function _assertRedeemQueueState(AssertQueueStateParams memory state) internal view {
-        assertEq(spPRIME.sharesEncumberedByRedeems(), state.encumberedShares);
-        assertEq(spPRIME.redeemHead(),                state.head);
+        assertEq(spPRIME.pendingRedeemShares(),  state.pendingShares);
+        assertEq(spPRIME.firstPendingRedeemId(), state.head);
     }
 
     function _assertBalances(AssertBalancesParams memory params) internal view {
@@ -189,22 +189,15 @@ abstract contract TestBase is Test {
         uint256 requestId,
         address owner,
         address recipient,
-        uint256 shares,
-        uint256 fee
+        uint256 shares
     )
         internal view
     {
-        (
-            address owner_,
-            address recipient_,
-            uint256 shares_,
-            uint256 fee_
-        ) = spPRIME.redeemQueue(requestId);
+        ( address owner_, address recipient_, uint256 shares_ ) = spPRIME.getPendingRedeemRequest(requestId);
 
         assertEq(owner_,     owner);
         assertEq(recipient_, recipient);
         assertEq(shares_,    shares);
-        assertEq(fee_,       fee);
     }
 
 }
