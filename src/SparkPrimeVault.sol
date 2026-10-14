@@ -407,17 +407,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         return _requestDeposit(assets_, recipient_);
     }
 
-    function updateDepositRecipient(uint256 requestId_, address recipient_) external {
-        require(recipient_ != address(0), "SparkPrimeVault/invalid-recipient");
-
-        Request storage request_ = depositRequests[requestId_];
-
-        require(request_.shares != 0,         "SparkPrimeVault/no-request");
-        require(msg.sender == request_.owner, "SparkPrimeVault/not-authorized");
-
-        emit DepositRecipientUpdated(requestId_, request_.recipient = recipient_);
-    }
-
     function requestDepositCancellation(uint256 requestId_, address recipient_)
         whenNotPaused
         external
@@ -455,20 +444,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         emit DepositCancellationRequest(requestId_, newRequestId_);
     }
 
-    function updateDepositCancellationRecipient(uint256 requestId_, address recipient_) external {
-        require(recipient_ != address(0), "SparkPrimeVault/invalid-recipient");
-
-        Request storage request_ = depositCancellationRequests[requestId_];
-
-        require(request_.shares != 0,         "SparkPrimeVault/no-request");
-        require(msg.sender == request_.owner, "SparkPrimeVault/not-authorized");
-
-        emit DepositCancellationRecipientUpdated(
-            requestId_,
-            request_.recipient = recipient_
-        );
-    }
-
     function requestRedeem(uint256 shares_, address recipient_)
         external
         whenNotPaused
@@ -497,6 +472,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         emit RedeemRequest(msg.sender, recipient_, requestId_, shares_, fee_);
     }
 
+    /**********************************************************************************************/
+    /*** Request cancel functions                                                               ***/
+    /**********************************************************************************************/
+
     function cancelRedeemRequest(uint256 requestId_, address recipient_) whenNotPaused external {
         require(recipient_ != address(0), "SparkPrimeVault/invalid-recipient");
 
@@ -523,6 +502,35 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         }
 
         emit CancelRedeemRequest(requestId_, request_.shares);
+    }
+
+    /**********************************************************************************************/
+    /*** Request update functions                                                               ***/
+    /**********************************************************************************************/
+
+    function updateDepositRecipient(uint256 requestId_, address recipient_) external {
+        require(recipient_ != address(0), "SparkPrimeVault/invalid-recipient");
+
+        Request storage request_ = depositRequests[requestId_];
+
+        require(request_.shares != 0,         "SparkPrimeVault/no-request");
+        require(msg.sender == request_.owner, "SparkPrimeVault/not-authorized");
+
+        emit DepositRecipientUpdated(requestId_, request_.recipient = recipient_);
+    }
+
+    function updateDepositCancellationRecipient(uint256 requestId_, address recipient_) external {
+        require(recipient_ != address(0), "SparkPrimeVault/invalid-recipient");
+
+        Request storage request_ = depositCancellationRequests[requestId_];
+
+        require(request_.shares != 0,         "SparkPrimeVault/no-request");
+        require(msg.sender == request_.owner, "SparkPrimeVault/not-authorized");
+
+        emit DepositCancellationRecipientUpdated(
+            requestId_,
+            request_.recipient = recipient_
+        );
     }
 
     function updateRedeemRecipient(uint256 requestId_, address recipient_) external {
@@ -655,18 +663,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         return _calculateDomainSeparator(block.chainid);
     }
 
-    function convertToAssets(uint256 shares_) public view returns (uint256) {
-        return (shares_ * nowChi()) / RAY;
-    }
-
-    function convertToShares(uint256 assets_) public view returns (uint256) {
-        return (assets_ * RAY) / nowChi();
-    }
-
-    function totalAssets() public view returns (uint256) {
-        return convertToAssets(totalSupply);
-    }
-
     function assetsOf(address owner_) external view returns (uint256) {
         return convertToAssets(balanceOf[owner_]);
     }
@@ -679,6 +675,14 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         return IERC4626Like(savings).maxWithdraw(address(this));
     }
 
+    function convertToAssets(uint256 shares_) public view returns (uint256) {
+        return (shares_ * nowChi()) / RAY;
+    }
+
+    function convertToShares(uint256 assets_) public view returns (uint256) {
+        return (assets_ * RAY) / nowChi();
+    }
+
     function implementation() external view returns (address) {
         return ERC1967Utils.getImplementation();
     }
@@ -688,6 +692,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
             block.timestamp > rho
                 ? uint192((_rpow(vsr, block.timestamp - rho) * chi) / RAY)
                 : chi;
+    }
+
+    function totalAssets() public view returns (uint256) {
+        return convertToAssets(totalSupply);
     }
 
     /**********************************************************************************************/
@@ -725,6 +733,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
             _processDepositQueue(type(uint256).max, 1);
         }
     }
+
+    /**********************************************************************************************/
+    /*** Queue internal helper functions                                                        ***/
+    /**********************************************************************************************/
 
     function _processDepositQueue(uint256 maxSavingsShares_, uint256 maxRequests_) internal {
         drip();
