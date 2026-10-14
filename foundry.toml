@@ -6,6 +6,9 @@ solc_version = "0.8.34"
 evm_version = "osaka"
 optimizer = true
 optimizer_runs = 200
+fs_permissions = [
+    { access = "read", path = "test/tables" },
+]
 
 [fuzz]
 runs = 1000
