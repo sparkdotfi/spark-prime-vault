@@ -15,7 +15,7 @@ An upgradeable, yield-accruing vault token backed by an underlying asset (e.g., 
 ### 2. Deposits & Deposit Queue
 
 - **Instant Fill**: If no deposit queue exists and capacity is available (`totalSupply < maxCapacity`), `spPRIME` shares are minted immediately to `receiver`.
-- **Queueing**: If capacity is filled or a queue exists, excess assets are deposited into `spUSDC` and pushed to the FIFO `depositRequests`. Queued depositors earn `spUSDC` yield while waiting.
+- **Queueing**: If capacity is filled or a queue exists, excess assets are deposited into `spUSDC` and pushed to the FIFO `_depositRequests`. Queued depositors earn `spUSDC` yield while waiting.
 - **Processing**: The `REBALANCER_ROLE` calls `processDepositQueue(maxAssets)` to mint `spPRIME` to queued depositors as vault capacity becomes available.
 - **Cancellation**: A queued deposit can be cancelled at any time by the `owner`, `receiver`, or `GUARDIAN_ROLE` via `requestDepositCancellation(requestId)`, returning the underlying assets plus all accrued `spUSDC` yield to the `owner`.
 

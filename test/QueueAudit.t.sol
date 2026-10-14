@@ -92,19 +92,19 @@ contract QueueAuditTest is Test {
         uint256 reqIdAlice = vault.requestDeposit(1000e18, alice);
         assertEq(reqIdAlice, 0);
         assertEq(vault.balanceOf(alice), 1000e18);
-        assertEq(vault.depositHead(), 1, "depositHead advanced to 1");
+        assertEq(vault.firstPendingDepositId(), 1, "firstPendingDepositId advanced to 1");
 
         vm.prank(bob);
         uint256 reqIdBob = vault.requestDeposit(500e18, bob);
         assertEq(reqIdBob, 1);
         assertEq(vault.balanceOf(bob), 500e18, "Bob instantly filled!");
-        assertEq(vault.depositHead(), 2, "depositHead advanced to 2");
+        assertEq(vault.firstPendingDepositId(), 2, "firstPendingDepositId advanced to 2");
 
         vm.prank(charlie);
         uint256 reqIdCharlie = vault.requestDeposit(250e18, charlie);
         assertEq(reqIdCharlie, 2);
         assertEq(vault.balanceOf(charlie), 250e18, "Charlie instantly filled!");
-        assertEq(vault.depositHead(), 3, "depositHead advanced to 3");
+        assertEq(vault.firstPendingDepositId(), 3, "firstPendingDepositId advanced to 3");
     }
 
     function test_instantDeposit_afterPriorRequestCancelled() public {
@@ -114,11 +114,11 @@ contract QueueAuditTest is Test {
         vm.prank(alice);
         uint256 reqIdAlice = vault.requestDeposit(1000e18, alice);
         assertEq(reqIdAlice, 0);
-        assertEq(vault.depositHead(), 0);
+        assertEq(vault.firstPendingDepositId(), 0);
 
         vm.prank(alice);
         vault.requestDepositCancellation(reqIdAlice, alice);
-        assertEq(vault.depositHead(), 1);
+        assertEq(vault.firstPendingDepositId(), 1);
 
         vm.prank(admin);
         vault.setCapacity(1_000_000e18);
@@ -127,7 +127,7 @@ contract QueueAuditTest is Test {
         uint256 reqIdBob = vault.requestDeposit(500e18, bob);
         assertEq(reqIdBob, 1);
         assertEq(vault.balanceOf(bob), 500e18, "Bob instantly filled despite Alice cancellation!");
-        assertEq(vault.depositHead(), 2);
+        assertEq(vault.firstPendingDepositId(), 2);
     }
 
     function test_depositQueue_batchProcessingAndPartialFill() public {
@@ -150,7 +150,7 @@ contract QueueAuditTest is Test {
         assertEq(vault.balanceOf(alice), 1000e18);
         assertEq(vault.balanceOf(bob), 250e18);
         assertEq(vault.balanceOf(charlie), 0);
-        assertEq(vault.depositHead(), 1);
+        assertEq(vault.firstPendingDepositId(), 1);
 
         vm.prank(admin);
         vault.setCapacity(2250e18);
@@ -160,7 +160,7 @@ contract QueueAuditTest is Test {
 
         assertEq(vault.balanceOf(bob), 500e18);
         assertEq(vault.balanceOf(charlie), 500e18);
-        assertEq(vault.depositHead(), 3);
+        assertEq(vault.firstPendingDepositId(), 3);
         assertEq(vault.pendingDepositSavingsShares(), 0);
     }
 
@@ -184,7 +184,7 @@ contract QueueAuditTest is Test {
 
         uint256 aliceBalAfter = asset.balanceOf(alice);
         assertEq(aliceBalAfter - aliceBalBefore, 1000e18, "Alice received 100% refund of deposit!");
-        assertEq(vault.depositCancellationHead(), 1);
+        assertEq(vault.firstPendingDepositCancellationId(), 1);
         assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
     }
 
@@ -210,8 +210,8 @@ contract QueueAuditTest is Test {
         // Alice receives only 400 (partial cancellation fill)
         uint256 balAfter = asset.balanceOf(alice);
         assertEq(balAfter - balBefore, 400e18);
-        // depositCancellationHead remains 0 because request is partially filled
-        assertEq(vault.depositCancellationHead(), 0);
+        // firstPendingDepositCancellationId remains 0 because request is partially filled
+        assertEq(vault.firstPendingDepositCancellationId(), 0);
         assertEq(vault.pendingCancelledDepositSavingsShares(), 600e18);
 
         // Savings liquidity frees up: maxRedeem restored to 1000
@@ -222,7 +222,7 @@ contract QueueAuditTest is Test {
 
         // Alice receives remaining 600
         assertEq(asset.balanceOf(alice) - balBefore, 1000e18);
-        assertEq(vault.depositCancellationHead(), 1);
+        assertEq(vault.firstPendingDepositCancellationId(), 1);
         assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
     }
 
@@ -242,7 +242,7 @@ contract QueueAuditTest is Test {
         vault.processRedeemQueue(type(uint256).max, 1);
 
         assertEq(asset.balanceOf(alice), 90_500e18);
-        assertEq(vault.redeemHead(), 0);
+        assertEq(vault.firstPendingRedeemId(), 0);
 
         uint256 aliceSharesBefore = vault.balanceOf(alice);
         vm.prank(alice);
@@ -250,7 +250,7 @@ contract QueueAuditTest is Test {
         uint256 aliceSharesAfter = vault.balanceOf(alice);
 
         assertEq(aliceSharesAfter - aliceSharesBefore, 500e18);
-        assertEq(vault.redeemHead(), 1, "redeemHead advanced after cancel");
+        assertEq(vault.firstPendingRedeemId(), 1, "firstPendingRedeemId advanced after cancel");
         assertEq(vault.pendingRedeemShares(), 0);
     }
 
