@@ -3,7 +3,7 @@ pragma solidity ^0.8.34;
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
 
-import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
+import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
 
 /**********************************************************************************************/
 /*** Mocks                                                                                  ***/
@@ -410,7 +410,7 @@ contract AdversarialTest is LocalTestBase {
         assertEq(vault.totalSupply(), phantom);
         assertEq(vault.availableCapacity(), 1_000_000e6 - phantom);
 
-        // No path burns them: redeem queue is empty, so _processRedeemQueue does nothing.
+        // No path burns them: redeem queue is empty, so _processPendingRedeems does nothing.
         _processRedeems(type(uint256).max, 10);
         assertEq(vault.balanceOf(address(vault)), phantom);
 
@@ -936,14 +936,14 @@ contract AdversarialTest is LocalTestBase {
         // Call 1: bob (1 request) + 1000 ghosts.
         vm.prank(rebalancer);
         uint256 g1 = gasleft();
-        vault.processDepositQueue(type(uint256).max, 1001);
+        vault.processPendingDeposits(type(uint256).max, 1001);
         uint256 gas1 = g1 - gasleft();
         assertEq(vault.firstPendingDepositId(), 1002);
 
         // Call 2: 1000 ghosts only.
         vm.prank(rebalancer);
         uint256 g2 = gasleft();
-        vault.processDepositQueue(type(uint256).max, 1000);
+        vault.processPendingDeposits(type(uint256).max, 1000);
         uint256 gas2 = g2 - gasleft();
         assertEq(vault.firstPendingDepositId(), 2002);
         assertEq(vault.balanceOf(victim), 0);
@@ -987,13 +987,13 @@ contract AdversarialTest is LocalTestBase {
 
         vm.prank(rebalancer);
         uint256 g1 = gasleft();
-        vault.processRedeemQueue(type(uint256).max, 1000);
+        vault.processPendingRedeems(type(uint256).max, 1000);
         uint256 gas1 = g1 - gasleft();
         assertEq(vault.firstPendingRedeemId(), 1000);
         assertEq(usdc.balanceOf(alice), 0);
 
         vm.prank(rebalancer);
-        vault.processRedeemQueue(type(uint256).max, 1001);
+        vault.processPendingRedeems(type(uint256).max, 1001);
         assertEq(vault.firstPendingRedeemId(), 2001);
         assertGt(usdc.balanceOf(alice), 0);
 
@@ -1018,7 +1018,7 @@ contract AdversarialTest is LocalTestBase {
 
         vm.prank(rebalancer);
         uint256 g = gasleft();
-        vault.processRedeemQueue(type(uint256).max, 200);
+        vault.processPendingRedeems(type(uint256).max, 200);
         uint256 gas = g - gasleft();
 
         assertEq(vault.firstPendingRedeemId(), 200);
@@ -1078,7 +1078,7 @@ contract AdversarialTest is LocalTestBase {
 
         vm.prank(rebalancer);
         uint256 g1 = gasleft();
-        vault.processRedeemQueue(type(uint256).max, 1000);
+        vault.processPendingRedeems(type(uint256).max, 1000);
         uint256 gas1 = g1 - gasleft();
         assertEq(vault.firstPendingRedeemId(), 1000);
         assertEq(usdc.balanceOf(alice), 0);
@@ -1705,7 +1705,7 @@ contract AdversarialTest is LocalTestBase {
     /**********************************************************************************************/
 
     // A redeem whose recipient cannot receive USDC (Circle blacklist on mainnet USDC) makes
-    // processRedeemQueue revert whenever the loop reaches that entry: the FIFO queue is blocked
+    // processPendingRedeems revert whenever the loop reaches that entry: the FIFO queue is blocked
     // for everyone behind it until a guardian cancels the entry. The owner gets the shares back
     // on cancel, so the attacker's only cost is gas, and they can resubmit immediately.
     function test_BUG_blacklistedRecipientBlocksRedeemQueue() public {
@@ -1726,12 +1726,12 @@ contract AdversarialTest is LocalTestBase {
 
         vm.prank(rebalancer);
         vm.expectRevert("Blacklistable: account is blacklisted");
-        vault.processRedeemQueue(type(uint256).max, 10);
+        vault.processPendingRedeems(type(uint256).max, 10);
 
         // No way to skip: maxShares/maxRequests cannot jump over the head entry.
         vm.prank(rebalancer);
         vm.expectRevert("Blacklistable: account is blacklisted");
-        vault.processRedeemQueue(type(uint256).max, 1);
+        vault.processPendingRedeems(type(uint256).max, 1);
 
         assertEq(usdc.balanceOf(alice), 0);
         assertEq(vault.firstPendingRedeemId(), 0);
@@ -1754,7 +1754,7 @@ contract AdversarialTest is LocalTestBase {
         _requestRedeem(bob, vault.balanceOf(bob));
         vm.prank(rebalancer);
         vm.expectRevert("Blacklistable: account is blacklisted");
-        vault.processRedeemQueue(type(uint256).max, 10);
+        vault.processPendingRedeems(type(uint256).max, 10);
     }
 
     // spUSDC's own deposit cap is a hard dependency: once it is hit, requestDeposit reverts
@@ -1849,7 +1849,7 @@ contract AdversarialTest is LocalTestBase {
 
         vm.prank(rebalancer);
         uint256 g1 = gasleft();
-        vault.processCancelledDepositQueue(type(uint256).max, 500);
+        vault.processPendingDepositCancellations(type(uint256).max, 500);
         uint256 plannerGas = g1 - gasleft();
         assertEq(vault.firstPendingDepositCancellationId(), 500);
         assertEq(usdc.balanceOf(victim), 0);
@@ -1901,7 +1901,7 @@ contract AdversarialTest is LocalTestBase {
     /*** 13. Recipient updates are owner-only (round 2 attacks, re-pinned as regressions)        ***/
     /**********************************************************************************************/
 
-    // Regression for round-2 R2-1 (redeem): mallory sees the planner's processRedeemQueue in the
+    // Regression for round-2 R2-1 (redeem): mallory sees the planner's processPendingRedeems in the
     // mempool and tries to repoint alice's head entry to herself. The call reverts and the
     // planner pays alice in full.
     function test_updateRecipient_strangerCannotRepointRedeem_victimPaid() public {
@@ -2047,7 +2047,7 @@ contract AdversarialTest is LocalTestBase {
 
         vm.prank(rebalancer);
         vm.expectRevert("Blacklistable: account is blacklisted");
-        vault.processRedeemQueue(type(uint256).max, 10);
+        vault.processPendingRedeems(type(uint256).max, 10);
 
         vm.prank(guardian);
         vault.cancelRedeemRequest(aId2, alice);

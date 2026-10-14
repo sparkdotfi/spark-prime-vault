@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
-import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
+import { SparkPrimeVault } from "../../../src/SparkPrimeVault.sol";
 
 /// @dev Upgrade target for the upgrade tests: identical layout (inherits the V1 contract on
 ///      `refactor/more-simplifying`, slots 0..26 ending in `allowance` at 26), one appended

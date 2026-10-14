@@ -2,7 +2,7 @@
 pragma solidity ^0.8.34;
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
-import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
+import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
 
 /// @dev The queue arrays became internal at 072e8d0; these views are now the only way to read them.
 contract ViewsTest is LocalTestBase {

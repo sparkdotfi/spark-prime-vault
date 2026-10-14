@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
-import { stdError } from "../lib/forge-std/src/StdError.sol";
+import { stdError } from "../../lib/forge-std/src/StdError.sol";
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
 
@@ -31,7 +31,7 @@ import { LocalTestBase } from "./LocalTestBase.t.sol";
 ///          the head lands on the new entry (src 728-735).
 ///        - a full fill `delete`s the entry (src 775); a cancel `delete`s it, pushes it to
 ///          `cancelledDepositQueue` and walks the head if it was the head (src 446-460); refunds
-///          are paid by `processCancelledDepositQueue` (src 781-815).
+///          are paid by `processPendingDepositCancellations` (src 781-815).
 contract DepositQueueTest is LocalTestBase {
 
     event DepositRequest(
@@ -503,7 +503,7 @@ contract DepositQueueTest is LocalTestBase {
         _assertQueueConsistent();
     }
 
-    function test_processDepositQueue_partialThenCompleteFill() public {
+    function test_processPendingDeposits_partialThenCompleteFill() public {
         uint256 id = _queue(alice, ONE_M);
         _setCapacity(type(uint128).max);
 
@@ -534,7 +534,7 @@ contract DepositQueueTest is LocalTestBase {
         _assertQueueConsistent();
     }
 
-    function test_processDepositQueue_partialFillFromCapacityThenRaise() public {
+    function test_processPendingDeposits_partialFillFromCapacityThenRaise() public {
         uint256 id = _queue(alice, ONE_M);
         _setCapacity(SH_1M / 2);
 
@@ -561,7 +561,7 @@ contract DepositQueueTest is LocalTestBase {
     /*** H3: capacity below totalSupply                                                         ***/
     /**********************************************************************************************/
 
-    function test_processDepositQueue_capacityBelowTotalSupplyIsNoop() public {
+    function test_processPendingDeposits_capacityBelowTotalSupplyIsNoop() public {
         _deposit(alice, ONE_M);  // instant, supply = SH_1M
         uint256 bobId = _queue(bob, HUNDRED_K);
 
@@ -783,7 +783,7 @@ contract DepositQueueTest is LocalTestBase {
         vault.requestDepositCancellation(1, alice);
     }
 
-    function test_processDepositQueue_skipsRunOfCancelledEntries() public {
+    function test_processPendingDeposits_skipsRunOfCancelledEntries() public {
         (uint256 a, uint256 b, ) = _queueThree();
 
         _cancel(alice, a);
@@ -815,7 +815,7 @@ contract DepositQueueTest is LocalTestBase {
     // INFO: cancelled entries behind a live head still count toward `maxRequests_` (src 750
     // budgets by index, src 757 `continue` does not refund the slot). Head cancels no longer do,
     // because the cancel itself walks the head.
-    function test_processDepositQueue_cancelledEntriesConsumeMaxRequests() public {
+    function test_processPendingDeposits_cancelledEntriesConsumeMaxRequests() public {
         (, uint256 b, ) = _queueThree();
 
         _cancel(bob, b);
@@ -839,7 +839,7 @@ contract DepositQueueTest is LocalTestBase {
     /*** H5: FIFO fairness                                                                      ***/
     /**********************************************************************************************/
 
-    function test_processDepositQueue_fifoFiveDepositorsCapacityForTwoAndAHalf() public {
+    function test_processPendingDeposits_fifoFiveDepositorsCapacityForTwoAndAHalf() public {
         uint256 a = _queue(alice,   HUNDRED_K);
         uint256 b = _deposit(bob,   HUNDRED_K);
         uint256 c = _deposit(carol, HUNDRED_K);
@@ -895,7 +895,7 @@ contract DepositQueueTest is LocalTestBase {
     /*** H6: yield while queued                                                                 ***/
     /**********************************************************************************************/
 
-    function test_processDepositQueue_queuedDepositorReceivesSpUsdcYield() public {
+    function test_processPendingDeposits_queuedDepositorReceivesSpUsdcYield() public {
         uint256 id = _queue(alice, ONE_M);
         assertEq(_shares(id), S_1M);
 
@@ -984,7 +984,7 @@ contract DepositQueueTest is LocalTestBase {
     // the queued depositor is filled later at the higher chi and gets fewer spPRIME for the same
     // spUSDC, worth exactly what he brought. The depositor filled instantly one block earlier is a
     // holder and shares the gain.
-    function test_processDepositQueue_queuedDepositorDoesNotShareRealizedGain() public {
+    function test_processPendingDeposits_queuedDepositorDoesNotShareRealizedGain() public {
         _deposit(alice, HUNDRED_K);           // holder
         _warp(12);
         _deposit(carol, HUNDRED_K);           // instant fill one block before the gain
@@ -1289,11 +1289,11 @@ contract DepositQueueTest is LocalTestBase {
 
         vm.prank(rebalancer);
         vm.expectRevert("SparkPrimeVault/paused");
-        vault.processDepositQueue(type(uint256).max, 10);
+        vault.processPendingDeposits(type(uint256).max, 10);
 
         vm.prank(rebalancer);
         vm.expectRevert("SparkPrimeVault/paused");
-        vault.processCancelledDepositQueue(type(uint256).max, 10);
+        vault.processPendingDepositCancellations(type(uint256).max, 10);
 
         // take() is not gated: the queued depositor's backing can leave during a pause (F-7).
         _take(S_1M + S_100K);
@@ -1310,7 +1310,7 @@ contract DepositQueueTest is LocalTestBase {
     /*** H9: bounds                                                                             ***/
     /**********************************************************************************************/
 
-    function test_processDepositQueue_maxRequestsHonouredExactly() public {
+    function test_processPendingDeposits_maxRequestsHonouredExactly() public {
         (uint256 a, uint256 b, uint256 c) = _queueThree();
         _setCapacity(type(uint128).max);
 
@@ -1335,7 +1335,7 @@ contract DepositQueueTest is LocalTestBase {
         _assertQueueConsistent();
     }
 
-    function test_processDepositQueue_maxSavingsSharesHonouredExactlyAcrossEntries() public {
+    function test_processPendingDeposits_maxSavingsSharesHonouredExactlyAcrossEntries() public {
         (uint256 a, uint256 b, uint256 c) = _queueThree();
         _setCapacity(type(uint128).max);
 
@@ -1356,7 +1356,7 @@ contract DepositQueueTest is LocalTestBase {
         _assertQueueConsistent();
     }
 
-    function test_processDepositQueue_maxSavingsSharesZeroIsNoop() public {
+    function test_processPendingDeposits_maxSavingsSharesZeroIsNoop() public {
         _queueThree();
         _setCapacity(type(uint128).max);
 
@@ -1367,7 +1367,7 @@ contract DepositQueueTest is LocalTestBase {
         assertEq(vault.firstPendingDepositId(),                 0);
     }
 
-    function test_processDepositQueue_maxRequestsZeroIsNoop() public {
+    function test_processPendingDeposits_maxRequestsZeroIsNoop() public {
         _queueThree();
         _setCapacity(type(uint128).max);
 
@@ -1378,7 +1378,7 @@ contract DepositQueueTest is LocalTestBase {
         assertEq(vault.firstPendingDepositId(),                 0);
     }
 
-    function test_processDepositQueue_emptyQueueIsNoop() public {
+    function test_processPendingDeposits_emptyQueueIsNoop() public {
         _processDeposits(type(uint256).max, 10);
         _processDeposits(0, 0);
 
@@ -1392,13 +1392,13 @@ contract DepositQueueTest is LocalTestBase {
         assertEq(vault.totalSupply(), SH_1M);
     }
 
-    function test_processDepositQueue_revertsNotRebalancer() public {
+    function test_processPendingDeposits_revertsNotRebalancer() public {
         _queue(alice, ONE_M);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSignature(
             "AccessControlUnauthorizedAccount(address,bytes32)", alice, REBALANCER_ROLE
         ));
-        vault.processDepositQueue(type(uint256).max, 10);
+        vault.processPendingDeposits(type(uint256).max, 10);
     }
 
     /**********************************************************************************************/
@@ -1464,7 +1464,7 @@ contract DepositQueueTest is LocalTestBase {
     // mints shares against backing that already left (known F-2). The cancel itself now always
     // succeeds; the refund settlement is clamped to the vault's spUSDC balance (src 784) and is a
     // silent no-op while the balance is 0.
-    function test_processDepositQueue_fillsAfterTakeRemovedBacking() public {
+    function test_processPendingDeposits_fillsAfterTakeRemovedBacking() public {
         uint256 a = _queue(alice, ONE_M);
         uint256 b = _deposit(bob, HUNDRED_K);
 
@@ -1516,7 +1516,7 @@ contract DepositQueueTest is LocalTestBase {
 
     // Partial processing after a take: fill proceeds even when the vault holds fewer spUSDC than
     // pendingDepositSavingsShares (nothing checks the balance).
-    function test_processDepositQueue_partialTakeStillFillsFully() public {
+    function test_processPendingDeposits_partialTakeStillFillsFully() public {
         _queue(alice, ONE_M);
         _take(S_1M / 2);
         _setCapacity(type(uint128).max);
@@ -1560,7 +1560,7 @@ contract DepositQueueTest is LocalTestBase {
 
     // The refund settlement is bounded by the vault's spUSDC balance and pays partially, leaving
     // the remainder open at the cancelled head.
-    function test_processCancelledDepositQueue_partialRefundWhenBackingShort() public {
+    function test_processPendingDepositCancellations_partialRefundWhenBackingShort() public {
         uint256 a = _queue(alice, HUNDRED_K);
         _take(S_100K / 2);
         assertEq(_vaultSpUsdc(), 47_726_634_557);
@@ -1759,7 +1759,7 @@ contract DepositQueueTest is LocalTestBase {
     // Checks after every step: pendingDepositSavingsShares == sum(open), the same for the
     // cancelled queue, every entry before each head is zero, heads never exceed lengths, head
     // never decreases, supply <= capacity, and USDC refunded == spUSDC value of settled shares.
-    function testFuzz_processDepositQueue_pendingEqualsSumOfOpenEntries(uint256 seed) public {
+    function testFuzz_processPendingDeposits_pendingEqualsSumOfOpenEntries(uint256 seed) public {
         uint256 cap = bound(uint256(keccak256(abi.encode(seed, "cap"))), 0, 3_000_000e6);
         _setCapacity(cap);
 

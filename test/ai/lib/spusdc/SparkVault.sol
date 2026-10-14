@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.25;
 
-import { ERC1967Utils }   from "../../../lib/oz/contracts/proxy/ERC1967/ERC1967Utils.sol";
-import { SafeERC20 }      from "../../../lib/oz/contracts/token/ERC20/utils/SafeERC20.sol";
-import { IERC20 }         from "../../../lib/oz/contracts/token/ERC20/IERC20.sol";
-import { IERC20Metadata } from "../../../lib/oz/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import { ERC1967Utils }   from "../../../../lib/oz/contracts/proxy/ERC1967/ERC1967Utils.sol";
+import { SafeERC20 }      from "../../../../lib/oz/contracts/token/ERC20/utils/SafeERC20.sol";
+import { IERC20 }         from "../../../../lib/oz/contracts/token/ERC20/IERC20.sol";
+import { IERC20Metadata } from "../../../../lib/oz/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 import { AccessControlEnumerableUpgradeable }
-    from "../../../lib/oz-upgradeable/contracts/access/extensions/AccessControlEnumerableUpgradeable.sol";
+    from "../../../../lib/oz-upgradeable/contracts/access/extensions/AccessControlEnumerableUpgradeable.sol";
 
-import { UUPSUpgradeable } from "../../../lib/oz-upgradeable/contracts/proxy/utils/UUPSUpgradeable.sol";
+import { UUPSUpgradeable } from "../../../../lib/oz-upgradeable/contracts/proxy/utils/UUPSUpgradeable.sol";
 
 import { ISparkVault } from "./ISparkVault.sol";
 

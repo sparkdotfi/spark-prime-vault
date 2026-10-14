@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
-import { Test } from "../lib/forge-std/src/Test.sol";
+import { Test } from "../../lib/forge-std/src/Test.sol";
 
-import { ERC1967Proxy }       from "../lib/oz/contracts/proxy/ERC1967/ERC1967Proxy.sol";
-import { ERC20 }              from "../lib/oz/contracts/token/ERC20/ERC20.sol";
+import { ERC1967Proxy }       from "../../lib/oz/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import { ERC20 }              from "../../lib/oz/contracts/token/ERC20/ERC20.sol";
 
 import { SparkVault }      from "./lib/spusdc/SparkVault.sol";
-import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
+import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
 
 // 6-decimal mock USDC with public mint/burn.
 contract MockUSDC is ERC20 {
@@ -197,17 +197,17 @@ contract LocalTestBase is Test {
 
     function _processDeposits(uint256 maxSavingsShares, uint256 maxRequests) internal {
         vm.prank(rebalancer);
-        vault.processDepositQueue(maxSavingsShares, maxRequests);
+        vault.processPendingDeposits(maxSavingsShares, maxRequests);
     }
 
     function _processRedeems(uint256 maxShares, uint256 maxRequests) internal {
         vm.prank(rebalancer);
-        vault.processRedeemQueue(maxShares, maxRequests);
+        vault.processPendingRedeems(maxShares, maxRequests);
     }
 
     function _processCancelledDeposits(uint256 maxSavingsShares, uint256 maxRequests) internal {
         vm.prank(rebalancer);
-        vault.processCancelledDepositQueue(maxSavingsShares, maxRequests);
+        vault.processPendingDepositCancellations(maxSavingsShares, maxRequests);
     }
 
     /// @dev Owner cancels a queued deposit and the planner settles the refund immediately.

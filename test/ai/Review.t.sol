@@ -64,7 +64,7 @@ contract ReviewTest is TestBase {
 
     function _settleCancels() internal {
         vm.prank(rebalancer);
-        vault.processCancelledDepositQueue(type(uint256).max, type(uint256).max);
+        vault.processPendingDepositCancellations(type(uint256).max, type(uint256).max);
     }
 
     /*******************************************************************************************/
@@ -109,7 +109,7 @@ contract ReviewTest is TestBase {
     }
 
     /*******************************************************************************************/
-    /*** F-2: deposit-queue spUSDC is not ring-fenced from take() / processRedeemQueue        ***/
+    /*** F-2: deposit-queue spUSDC is not ring-fenced from take() / processPendingRedeems        ***/
     /*******************************************************************************************/
 
     function test_F2_takeSpendsQueuedDepositBacking() public {
@@ -140,7 +140,7 @@ contract ReviewTest is TestBase {
         assertEq(usdcT.balanceOf(bob), 900_000e6);
     }
 
-    function test_F2_processRedeemQueuePaysRedeemersWithQueuedDepositBacking() public {
+    function test_F2_processPendingRedeemsPaysRedeemersWithQueuedDepositBacking() public {
         _deposit(alice, 1_000_000e6);
         uint256 bobId = _deposit(bob, 100_000e6);  // queued
 
@@ -156,7 +156,7 @@ contract ReviewTest is TestBase {
         vault.requestRedeem(50_000e6, alice);
 
         vm.prank(rebalancer);
-        vault.processRedeemQueue(type(uint256).max, 10);
+        vault.processPendingRedeems(type(uint256).max, 10);
 
         assertApproxEqAbs(usdcT.balanceOf(alice), 50_000e6, 1);   // paid from bob's backing
 
@@ -177,10 +177,10 @@ contract ReviewTest is TestBase {
     }
 
     /*******************************************************************************************/
-    /*** F-3: _processDepositQueue honours maxRequests (FIXED upstream)                       ***/
+    /*** F-3: _processPendingDeposits honours maxRequests (FIXED upstream)                       ***/
     /*******************************************************************************************/
 
-    function test_F3_processDepositQueueFillsAllRequestsInOneCall() public {
+    function test_F3_processPendingDepositsFillsAllRequestsInOneCall() public {
         _deposit(alice, 1_000_000e6);              // capacity full
         _deposit(bob,   10_000e6);                 // queued
         _deposit(carol, 10_000e6);                 // queued
@@ -189,7 +189,7 @@ contract ReviewTest is TestBase {
         vault.setCapacity(2_000_000e6);            // plenty of room for both
 
         vm.prank(rebalancer);
-        vault.processDepositQueue(type(uint256).max, 10);
+        vault.processPendingDeposits(type(uint256).max, 10);
 
         // FIXED (F-3): both requests fill in one call.
         assertGt(vault.balanceOf(bob),   0, "bob filled");
@@ -232,7 +232,7 @@ contract ReviewTest is TestBase {
         vault.setCapacity(cap);
 
         vm.prank(rebalancer);
-        vault.processDepositQueue(type(uint256).max, 10);
+        vault.processPendingDeposits(type(uint256).max, 10);
 
         assertEq(vault.balanceOf(bob), 0,                    "zero shares minted");
         assertEq(vault.pendingDepositSavingsShares(), before - 1, "but 1 spUSDC share consumed");

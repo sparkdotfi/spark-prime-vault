@@ -180,8 +180,8 @@ contract FlowsAdmin is FlowsUser {
     /*** Queue processing                                                                       ***/
     /**********************************************************************************************/
 
-    function processDepositQueue(uint256 maxSavingsShares, uint256 maxRequests, uint256 seed)
-        public counted("processDepositQueue")
+    function processPendingDeposits(uint256 maxSavingsShares, uint256 maxRequests, uint256 seed)
+        public counted("processPendingDeposits")
     {
         if (vault.paused()) return;
 
@@ -197,7 +197,7 @@ contract FlowsAdmin is FlowsUser {
         uint256          supplyBefore = vault.totalSupply();
 
         vm.startPrank(rebalancer);
-        vault.processDepositQueue(maxSavingsShares, maxRequests);
+        vault.processPendingDeposits(maxSavingsShares, maxRequests);
         vm.stopPrank();
 
         _countDepositFills(head, sharesBefore, supplyBefore);
@@ -208,8 +208,8 @@ contract FlowsAdmin is FlowsUser {
     // Pays cancelled deposits by spUSDC `redeem` with a budget of min(max, spUSDC.maxRedeem(vault)),
     // which caps at both the vault's spUSDC balance and spUSDC's USDC liquidity, so since ff828d2
     // the call must never revert. Any revert is counted and its reason kept (invariant P).
-    function processCancelledDepositQueue(uint256 maxSavingsShares, uint256 maxRequests, uint256 seed)
-        public counted("processCancelledDepositQueue")
+    function processPendingDepositCancellations(uint256 maxSavingsShares, uint256 maxRequests, uint256 seed)
+        public counted("processPendingDepositCancellations")
     {
         if (vault.paused()) return;
 
@@ -225,7 +225,7 @@ contract FlowsAdmin is FlowsUser {
         uint256          supplyBefore    = vault.totalSupply();
 
         vm.startPrank(rebalancer);
-        try vault.processCancelledDepositQueue(maxSavingsShares, maxRequests) {
+        try vault.processPendingDepositCancellations(maxSavingsShares, maxRequests) {
             vm.stopPrank();
             _countCancelledFills(head, sharesBefore);
             usersRefundedUsdc += _usersUsdc() - usersUsdcBefore;
@@ -241,8 +241,8 @@ contract FlowsAdmin is FlowsUser {
         }
     }
 
-    function processRedeemQueue(uint256 maxShares, uint256 maxRequests, uint256 seed)
-        public counted("processRedeemQueue")
+    function processPendingRedeems(uint256 maxShares, uint256 maxRequests, uint256 seed)
+        public counted("processPendingRedeems")
     {
         if (vault.paused()) return;
 
@@ -260,7 +260,7 @@ contract FlowsAdmin is FlowsUser {
         // so a multi-entry fill bounded by the vault's spUSDC *balance* (not spUSDC liquidity) can
         // exceed the balance by up to one share per entry and revert. Observed, not asserted.
         vm.startPrank(rebalancer);
-        try vault.processRedeemQueue(maxShares, maxRequests) {
+        try vault.processPendingRedeems(maxShares, maxRequests) {
             vm.stopPrank();
             _countRedeemFills(head, sharesBefore);
             usersRedeemedUsdc += _usersUsdc() - usersUsdcBefore;

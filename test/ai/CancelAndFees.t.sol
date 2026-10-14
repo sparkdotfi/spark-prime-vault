@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
-import { stdError } from "../lib/forge-std/src/StdError.sol";
+import { stdError } from "../../lib/forge-std/src/StdError.sol";
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
 
@@ -636,7 +636,7 @@ contract CancelAndFeesTest is LocalTestBase {
     /*** 3. Cancelled-deposit queue mechanics                                                   ***/
     /**********************************************************************************************/
 
-    function test_processCancelledDepositQueue_maxRequestsHonoured() public {
+    function test_processPendingDepositCancellations_maxRequestsHonoured() public {
         _setCapacity(0);
         uint256 idA = _deposit(alice, 100e6);
         uint256 idB = _deposit(bob,   100e6);
@@ -667,7 +667,7 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(vault.firstPendingDepositCancellationId(), 3);
     }
 
-    function test_processCancelledDepositQueue_maxSavingsSharesPartialFill() public {
+    function test_processPendingDepositCancellations_maxSavingsSharesPartialFill() public {
         uint256 id  = _queueDeposit(alice, 100e6);
         uint256 cid = _cancelDeposit(alice, id, alice);
 
@@ -692,22 +692,22 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(_vaultSpUsdc(), 0);
     }
 
-    function test_processCancelledDepositQueue_revertsNotRebalancer() public {
+    function test_processPendingDepositCancellations_revertsNotRebalancer() public {
         uint256 id = _queueDeposit(alice, 100e6);
         _cancelDeposit(alice, id, alice);
 
         vm.prank(alice);
         vm.expectRevert();  // AccessControlUnauthorizedAccount
-        vault.processCancelledDepositQueue(type(uint256).max, 1);
+        vault.processPendingDepositCancellations(type(uint256).max, 1);
 
         vm.prank(guardian);
         vm.expectRevert();
-        vault.processCancelledDepositQueue(type(uint256).max, 1);
+        vault.processPendingDepositCancellations(type(uint256).max, 1);
     }
 
     // The cancelled queue is settled from the vault's whole spUSDC balance, which includes the
     // backing of deposits still queued: a settlement can spend other depositors' spUSDC.
-    function test_processCancelledDepositQueue_spendsOtherQueuedDepositorsBacking() public {
+    function test_processPendingDepositCancellations_spendsOtherQueuedDepositorsBacking() public {
         _setCapacity(0);
         uint256 idA = _deposit(alice, 100e6);
         _deposit(bob, 100e6);
@@ -803,7 +803,7 @@ contract CancelAndFeesTest is LocalTestBase {
     // B-3 (round 2) is fixed: the budget is `spUSDC.maxRedeem(vault)`, so when spUSDC itself is
     // short of USDC the settlement pays what is liquid, FIFO, leaves the head on the partially
     // paid entry, is a no-op while nothing is liquid, and completes once liquidity returns.
-    function test_processCancelledDepositQueue_clampsToSpUsdcLiquidity() public {
+    function test_processPendingDepositCancellations_clampsToSpUsdcLiquidity() public {
         _setCapacity(0);
         uint256 idA = _deposit(alice, 100e6);
         uint256 idB = _deposit(bob,   100e6);
@@ -849,7 +849,7 @@ contract CancelAndFeesTest is LocalTestBase {
 
     // `maxRequests_` still binds under the liquidity clamp: with 1 request bob is never reached
     // even when liquidity would cover both.
-    function test_processCancelledDepositQueue_liquidityClampRespectsMaxRequests() public {
+    function test_processPendingDepositCancellations_liquidityClampRespectsMaxRequests() public {
         _setCapacity(0);
         uint256 idA = _deposit(alice, 100e6);
         uint256 idB = _deposit(bob,   100e6);
@@ -869,7 +869,7 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(vault.firstPendingDepositCancellationId(), 1);
     }
 
-    function test_processDepositQueue_stillMintsAfterTakeSpentBacking() public {
+    function test_processPendingDeposits_stillMintsAfterTakeSpentBacking() public {
         _setCapacity(0);
         _deposit(alice, 100e6);
         _deposit(bob,   100e6);
@@ -1011,7 +1011,7 @@ contract CancelAndFeesTest is LocalTestBase {
 
     // The fee surplus is also what settles cancelled deposits: with alice's fee still in the
     // vault, a cancelled deposit can be refunded even after Arkis took every queued share.
-    function test_processCancelledDepositQueue_feeSurplusCoversRefund() public {
+    function test_processPendingDepositCancellations_feeSurplusCoversRefund() public {
         _setRedeemFeeRate(0.01e18);
         _deposit(alice, 1_000_000e6);
         _requestRedeem(alice, SH_1M);
@@ -1094,7 +1094,7 @@ contract CancelAndFeesTest is LocalTestBase {
     /*** 8. Ghost entries and gas                                                               ***/
     /**********************************************************************************************/
 
-    function test_processDepositQueue_gasWith500GhostEntries() public {
+    function test_processPendingDeposits_gasWith500GhostEntries() public {
         // Baseline: carol queued, alice behind her, no ghosts.
         _setCapacity(0);
         _deposit(carol, 10e6);
@@ -1104,7 +1104,7 @@ contract CancelAndFeesTest is LocalTestBase {
         _cool();
         vm.prank(rebalancer);
         uint256 gas = gasleft();
-        vault.processDepositQueue(type(uint256).max, 502);
+        vault.processPendingDeposits(type(uint256).max, 502);
         uint256 baseline = gas - gasleft();
 
         assertEq(vault.balanceOf(carol), 9_904_050);
@@ -1130,7 +1130,7 @@ contract CancelAndFeesTest is LocalTestBase {
         _cool();
         vm.prank(rebalancer);
         gas = gasleft();
-        vault.processDepositQueue(type(uint256).max, 502);
+        vault.processPendingDeposits(type(uint256).max, 502);
         uint256 withGhosts = gas - gasleft();
 
         assertEq(vault.balanceOf(carol), 2 * 9_904_050);
@@ -1138,8 +1138,8 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(vault.firstPendingDepositId(),    504);
         assertEq(vault.pendingDepositSavingsShares(), 0);
 
-        emit log_named_uint("processDepositQueue gas, 2 real requests",             baseline);
-        emit log_named_uint("processDepositQueue gas, 2 real + 500 ghost requests", withGhosts);
+        emit log_named_uint("processPendingDeposits gas, 2 real requests",             baseline);
+        emit log_named_uint("processPendingDeposits gas, 2 real + 500 ghost requests", withGhosts);
         emit log_named_uint("gas per ghost entry",                                  (withGhosts - baseline) / 500);
 
         assertGt(withGhosts, baseline + 500 * 2_000);  // at least one cold SLOAD per ghost
@@ -1167,7 +1167,7 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(vault.firstPendingDepositId(), 11);
     }
 
-    function test_processRedeemQueue_gasWith500GhostEntries() public {
+    function test_processPendingRedeems_gasWith500GhostEntries() public {
         _setRedeemFeeRate(0.01e18);
         _deposit(alice, 100e6);
         _deposit(bob,   100e6);
@@ -1177,7 +1177,7 @@ contract CancelAndFeesTest is LocalTestBase {
         _cool();
         vm.prank(rebalancer);
         uint256 gas = gasleft();
-        vault.processRedeemQueue(type(uint256).max, 501);
+        vault.processPendingRedeems(type(uint256).max, 501);
         uint256 baseline = gas - gasleft();
         assertEq(usdc.balanceOf(bob), 98_999_997);  // 98_050_111 net shares
         assertEq(vault.firstPendingRedeemId(),  1);
@@ -1198,14 +1198,14 @@ contract CancelAndFeesTest is LocalTestBase {
         _cool();
         vm.prank(rebalancer);
         gas = gasleft();
-        vault.processRedeemQueue(type(uint256).max, 501);
+        vault.processPendingRedeems(type(uint256).max, 501);
         uint256 withGhosts = gas - gasleft();
 
         assertEq(usdc.balanceOf(bob), 2 * 98_999_997);
         assertEq(vault.firstPendingRedeemId(),  502);
 
-        emit log_named_uint("processRedeemQueue gas, 1 real request",              baseline);
-        emit log_named_uint("processRedeemQueue gas, 1 real + 500 ghost requests", withGhosts);
+        emit log_named_uint("processPendingRedeems gas, 1 real request",              baseline);
+        emit log_named_uint("processPendingRedeems gas, 1 real + 500 ghost requests", withGhosts);
         emit log_named_uint("gas per ghost entry",                                 (withGhosts - baseline) / 500);
 
         vm.prank(alice);
@@ -1297,7 +1297,7 @@ contract CancelAndFeesTest is LocalTestBase {
     /*** 11. Fee locked at request                                                              ***/
     /**********************************************************************************************/
 
-    function test_processRedeemQueue_feeChangeAfterRequestHasNoEffect() public {
+    function test_processPendingRedeems_feeChangeAfterRequestHasNoEffect() public {
         _setRedeemFeeRate(0.01e18);
         _deposit(alice, 1_000_000e6);
         _deposit(bob,   1_000_000e6);
@@ -1395,14 +1395,14 @@ contract CancelAndFeesTest is LocalTestBase {
     }
 
     // A refund already in the cancelled queue is also frozen by pause; take() is not.
-    function test_processCancelledDepositQueue_revertsWhilePaused() public {
+    function test_processPendingDepositCancellations_revertsWhilePaused() public {
         uint256 id = _queueDeposit(alice, 100e6);
         _cancelDeposit(alice, id, alice);
         _pause();
 
         vm.prank(rebalancer);
         vm.expectRevert("SparkPrimeVault/paused");
-        vault.processCancelledDepositQueue(type(uint256).max, 1);
+        vault.processPendingDepositCancellations(type(uint256).max, 1);
 
         _take(SS_100);
         assertEq(_vaultSpUsdc(), 0);
@@ -1646,7 +1646,7 @@ contract CancelAndFeesTest is LocalTestBase {
     }
 
     // The same yield is credited at fill: a late fill mints more shares than an early one.
-    function test_processDepositQueue_fillCreditsSpUsdcYieldAccruedWhileQueued() public {
+    function test_processPendingDeposits_fillCreditsSpUsdcYieldAccruedWhileQueued() public {
         _deposit(carol, 1_000_000e6);
         assertEq(vault.balanceOf(carol), SH_1M);
 
@@ -1766,7 +1766,7 @@ contract CancelAndFeesTest is LocalTestBase {
     }
 
     // Gas the rebalancer pays per cancelled entry it settles, cold.
-    function test_processCancelledDepositQueue_gasPerEntry() public {
+    function test_processPendingDepositCancellations_gasPerEntry() public {
         _setCapacity(0);
         uint256 id0 = _deposit(stranger, 100e6);
         _cancelDeposit(stranger, id0, stranger);
@@ -1774,7 +1774,7 @@ contract CancelAndFeesTest is LocalTestBase {
         _cool();
         vm.prank(rebalancer);
         uint256 gas = gasleft();
-        vault.processCancelledDepositQueue(type(uint256).max, 1);
+        vault.processPendingDepositCancellations(type(uint256).max, 1);
         uint256 one = gas - gasleft();
 
         for (uint256 i; i < 50; ++i) {
@@ -1786,14 +1786,14 @@ contract CancelAndFeesTest is LocalTestBase {
         _cool();
         vm.prank(rebalancer);
         gas = gasleft();
-        vault.processCancelledDepositQueue(type(uint256).max, 50);
+        vault.processPendingDepositCancellations(type(uint256).max, 50);
         uint256 fifty = gas - gasleft();
 
         assertEq(vault.firstPendingDepositCancellationId(), 51);
         assertEq(usdc.balanceOf(stranger), 51 * 99_999_999);
 
-        emit log_named_uint("processCancelledDepositQueue gas, 1 entry",   one);
-        emit log_named_uint("processCancelledDepositQueue gas, 50 entries", fifty);
+        emit log_named_uint("processPendingDepositCancellations gas, 1 entry",   one);
+        emit log_named_uint("processPendingDepositCancellations gas, 50 entries", fifty);
         emit log_named_uint("marginal gas per settled entry",              (fifty - one) / 49);
 
         assertGt((fifty - one) / 49, 10_000);  // each settlement is a full spUSDC redeem

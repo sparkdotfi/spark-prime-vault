@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
-import { IAccessControl } from "../lib/oz/contracts/access/IAccessControl.sol";
-import { ERC1967Proxy }   from "../lib/oz/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import { IAccessControl } from "../../lib/oz/contracts/access/IAccessControl.sol";
+import { ERC1967Proxy }   from "../../lib/oz/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
-import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
+import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
 
 import { SparkPrimeVaultV2Mock } from "./mocks/SparkPrimeVaultV2Mock.sol";
 

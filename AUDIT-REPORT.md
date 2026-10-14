@@ -1,5 +1,7 @@
 # spPRIME (`src/SparkPrimeVault.sol`) review and testing campaign: final report, round 3
 
+> **Update for `731c1c8` (2026-10-14):** the review suite now lives under `test/ai/` (paths in the per-worker reports are relative to that directory). Upstream renamed the planner calls to `processPendingDeposits`, `processPendingRedeems`, `processPendingDepositCancellations`, dropped the unused `UNPAUSER_ROLE` (closes I-3 / V2-18), changed `Take` to `Take(uint256 shares)`, removed its own `test/QueueAudit.t.sol`, and added a code comment acknowledging that `realizeGain` is front-runnable (R3-1). Suite: 595 tests, 594 pass, 1 deliberate failing proof. Findings otherwise unchanged.
+
 > **Update for `072e8d0` (2026-10-14):** pure renames and read-only additions, no behaviour change. `cancelDepositRequest` is now `requestDepositCancellation`, `updateCancelledDepositRecipient` is `updateDepositCancellationRecipient`, events `DepositCancellationRequest` / `DepositCancellationRecipientUpdated`, heads are `firstPendingDepositId` / `firstPendingDepositCancellationId` / `firstPendingRedeemId`. The queue arrays became internal; new views `getPending{Deposit,DepositCancellation,Redeem}Requests()` (head to end) and `(startId, endId)` (any range, `invalid-range` past the end) replace the public array getters. Suite re-based on the new names plus `test/Views.t.sol` (6 tests): 603 tests, 602 pass, 1 deliberate failing proof. Findings and severities unchanged from round 3.
 
 
@@ -16,7 +18,7 @@ Rounds 2 and 1 are kept below as appendices. Round 3 covers the pushes `ff828d2`
 | High | 3 | R3-1 (new), V2-2 (F-1 regression, still open), V2-3' (`realizeLoss` floor) |
 | Medium | 5 | V2-4 (C-1), V2-5 (C-2), V2-7, V2-8 (C-4), F-2 (design) |
 | Low | 13 | V2-9..V2-14, C-7..C-11, G-1, G-2 |
-| Informational | 12 | see section 4 |
+| Informational | 11 | see section 4 (I-3 closed at `731c1c8`) |
 
 Fixed by the push (regression tests now pin the fix): V2-1 Critical (recipient updaters are owner-only and reject dead entries), V2-3 brick (full loss rejected, `chi` can no longer reach zero at 6-decimal supply), V2-6 (cancelled-queue settlement budgets by `spUSDC.maxRedeem`, pays what liquidity allows, proven batch-safe).
 

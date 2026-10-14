@@ -239,17 +239,17 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
         handler.zeroShareFills();
     }
 
-    // O. processRedeemQueue only ever reverted with spUSDC's insufficient-balance (ceil burn).
-    function invariant_O_processRedeemQueueRevertsOnlyOnCeilBurn() public view {
-        assertEq(handler.redeemProcessRevertsOther(), 0, "O: unexpected processRedeemQueue revert");
+    // O. processPendingRedeems only ever reverted with spUSDC's insufficient-balance (ceil burn).
+    function invariant_O_processPendingRedeemsRevertsOnlyOnCeilBurn() public view {
+        assertEq(handler.redeemProcessRevertsOther(), 0, "O: unexpected processPendingRedeems revert");
     }
 
-    // P. processCancelledDepositQueue never reverts: its budget is spUSDC.maxRedeem(vault), which
+    // P. processPendingDepositCancellations never reverts: its budget is spUSDC.maxRedeem(vault), which
     //    caps at both the vault's spUSDC balance and spUSDC's USDC liquidity (fixed at ff828d2).
-    function invariant_P_processCancelledDepositQueueNeverReverts() public view {
+    function invariant_P_processPendingDepositCancellationsNeverReverts() public view {
         assertEq(
             handler.cancelProcessReverts(), 0,
-            string.concat("P: processCancelledDepositQueue reverted: ", handler.lastCancelProcessRevert())
+            string.concat("P: processPendingDepositCancellations reverted: ", handler.lastCancelProcessRevert())
         );
     }
 
@@ -280,7 +280,7 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
     /*** Bug reproductions                                                                      ***/
     /**********************************************************************************************/
 
-    // N-1 (round 1, still present). `_processRedeemQueue` bounds `remaining_` by
+    // N-1 (round 1, still present). `_processPendingRedeems` bounds `remaining_` by
     // `convertToShares(maxWithdraw(vault))` but pays each entry with spUSDC `withdraw(assets_)`,
     // which burns ceil(assets_*RAY/chi_s) shares. When the vault's spUSDC *balance* (not spUSDC
     // liquidity) is the binding limit, the per-entry ceilings add up past the balance and the call
@@ -292,7 +292,7 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
     // `maxRequests_ = 1` succeeds 99 times and then does nothing (1 share is left stranded).
     //
     // This test PASSES by asserting the revert; it is a proof, not a regression.
-    function test_BUG_processRedeemQueueRevertsOnCeilBurnWhenBalanceBinds() public {
+    function test_BUG_processPendingRedeemsRevertsOnCeilBurnWhenBalanceBinds() public {
         address alice = makeAddr("alice");
 
         _deposit(alice, 100e6);
@@ -306,7 +306,7 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
 
         vm.prank(rebalancer);
         vm.expectRevert("SparkVault/insufficient-balance");
-        vault.processRedeemQueue(type(uint256).max, 110);
+        vault.processPendingRedeems(type(uint256).max, 110);
 
         // Workaround: one entry per call never reverts, but strands the last share.
         for (uint256 i; i < 110; i++) _processRedeems(type(uint256).max, 1);
@@ -317,12 +317,12 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
         assertEq(vault.pendingRedeemShares(), 11);
     }
 
-    // N-2 (round 2) is FIXED at ff828d2: `_processCancelledDepositQueue` sizes `remaining_` by
+    // N-2 (round 2) is FIXED at ff828d2: `_processPendingDepositCancellations` sizes `remaining_` by
     // `spUSDC.maxRedeem(vault)`, which caps at spUSDC's USDC liquidity, so with 150 USDC of
     // liquidity and two 100 USDC refunds queued the batch pays alice in full, bob partially, and
     // stops; the rest is paid once liquidity is back. The second call with no liquidity left is a
     // no-op instead of a revert.
-    function test_processCancelledDepositQueuePaysUpToSpUsdcLiquidity() public {
+    function test_processPendingDepositCancellationsPaysUpToSpUsdcLiquidity() public {
         address alice = makeAddr("alice");
         address bob   = makeAddr("bob");
 

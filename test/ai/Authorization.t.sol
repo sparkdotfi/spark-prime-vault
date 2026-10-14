@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
-import { stdError } from "../lib/forge-std/src/StdError.sol";
+import { stdError } from "../../lib/forge-std/src/StdError.sol";
 
-import { IAccessControl } from "../lib/oz/contracts/access/IAccessControl.sol";
+import { IAccessControl } from "../../lib/oz/contracts/access/IAccessControl.sol";
 
-import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
+import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
 
@@ -13,7 +13,7 @@ import { LocalTestBase } from "./LocalTestBase.t.sol";
 ///      on `refactor/more-simplifying`. Every role-gated function is exercised by all seven role
 ///      holders plus a stranger: the authorized actor succeeds, every other actor reverts with the
 ///      exact OZ custom error. Round 2 changes: `realizeLoss` replaces `setChi`,
-///      `setMinDeposit`/`setMinRedeem` replace `setMinimums`, `processCancelledDepositQueue` is a
+///      `setMinDeposit`/`setMinRedeem` replace `setMinimums`, `processPendingDepositCancellations` is a
 ///      new REBALANCER entry point. `pause` is GUARDIAN again as of 0bc9288. Round 3 (ff828d2):
 ///      the three `update*Recipient` functions are owner-only and `realizeGain` is a new
 ///      DEFAULT_ADMIN entry point that is not gated on `paused`.
@@ -358,49 +358,49 @@ contract AuthorizationTest is LocalTestBase {
     /*** REBALANCER_ROLE                                                                        ***/
     /**********************************************************************************************/
 
-    function test_processDepositQueue_notAuthorized() public {
+    function test_processPendingDeposits_notAuthorized() public {
         address[8] memory actors_ = _actors();
         for (uint256 i; i < actors_.length; ++i) {
             if (actors_[i] == rebalancer) continue;
             vm.prank(actors_[i]);
             _expectUnauthorized(actors_[i], REBALANCER_ROLE);
-            vault.processDepositQueue(type(uint256).max, 10);
+            vault.processPendingDeposits(type(uint256).max, 10);
         }
     }
 
-    function test_processDepositQueue_authorized() public {
+    function test_processPendingDeposits_authorized() public {
         vm.prank(rebalancer);
-        vault.processDepositQueue(type(uint256).max, 10);
+        vault.processPendingDeposits(type(uint256).max, 10);
     }
 
-    function test_processRedeemQueue_notAuthorized() public {
+    function test_processPendingRedeems_notAuthorized() public {
         address[8] memory actors_ = _actors();
         for (uint256 i; i < actors_.length; ++i) {
             if (actors_[i] == rebalancer) continue;
             vm.prank(actors_[i]);
             _expectUnauthorized(actors_[i], REBALANCER_ROLE);
-            vault.processRedeemQueue(type(uint256).max, 10);
+            vault.processPendingRedeems(type(uint256).max, 10);
         }
     }
 
-    function test_processRedeemQueue_authorized() public {
+    function test_processPendingRedeems_authorized() public {
         vm.prank(rebalancer);
-        vault.processRedeemQueue(type(uint256).max, 10);
+        vault.processPendingRedeems(type(uint256).max, 10);
     }
 
-    function test_processCancelledDepositQueue_notAuthorized() public {
+    function test_processPendingDepositCancellations_notAuthorized() public {
         address[8] memory actors_ = _actors();
         for (uint256 i; i < actors_.length; ++i) {
             if (actors_[i] == rebalancer) continue;
             vm.prank(actors_[i]);
             _expectUnauthorized(actors_[i], REBALANCER_ROLE);
-            vault.processCancelledDepositQueue(type(uint256).max, 10);
+            vault.processPendingDepositCancellations(type(uint256).max, 10);
         }
     }
 
-    function test_processCancelledDepositQueue_authorized() public {
+    function test_processPendingDepositCancellations_authorized() public {
         vm.prank(rebalancer);
-        vault.processCancelledDepositQueue(type(uint256).max, 10);
+        vault.processPendingDepositCancellations(type(uint256).max, 10);
     }
 
     /**********************************************************************************************/
@@ -506,7 +506,7 @@ contract AuthorizationTest is LocalTestBase {
     }
 
     // Round 2: cancel no longer pays; it moves the entry to the cancelled-deposit queue and the
-    // rebalancer settles it with `processCancelledDepositQueue`.
+    // rebalancer settles it with `processPendingDepositCancellations`.
     function test_requestDepositCancellation_owner() public {
         uint256 id_ = _queueDeposit(alice, 100e6);
         (, , uint256 queued_) = _depositRequest(id_);
@@ -822,21 +822,21 @@ contract AuthorizationTest is LocalTestBase {
         _pausedFixture();
         vm.prank(rebalancer);
         vm.expectRevert("SparkPrimeVault/paused");
-        vault.processDepositQueue(type(uint256).max, 10);
+        vault.processPendingDeposits(type(uint256).max, 10);
     }
 
     function test_pause_blocksProcessRedeemQueue() public {
         _pausedFixture();
         vm.prank(rebalancer);
         vm.expectRevert("SparkPrimeVault/paused");
-        vault.processRedeemQueue(type(uint256).max, 10);
+        vault.processPendingRedeems(type(uint256).max, 10);
     }
 
     function test_pause_blocksProcessCancelledDepositQueue() public {
         (, uint256 cancelId_, ) = _pausedFixture();
         vm.prank(rebalancer);
         vm.expectRevert("SparkPrimeVault/paused");
-        vault.processCancelledDepositQueue(type(uint256).max, 10);
+        vault.processPendingDepositCancellations(type(uint256).max, 10);
         (, , uint256 left_) = _cancelledDepositRequest(cancelId_);
         assertGt(left_, 0);
     }
@@ -998,15 +998,15 @@ contract AuthorizationTest is LocalTestBase {
 
         vm.prank(rebalancer);
         _expectUnauthorized(rebalancer, REBALANCER_ROLE);
-        vault.processDepositQueue(type(uint256).max, 10);
+        vault.processPendingDeposits(type(uint256).max, 10);
 
         vm.prank(rebalancer);
         _expectUnauthorized(rebalancer, REBALANCER_ROLE);
-        vault.processRedeemQueue(type(uint256).max, 10);
+        vault.processPendingRedeems(type(uint256).max, 10);
 
         vm.prank(rebalancer);
         _expectUnauthorized(rebalancer, REBALANCER_ROLE);
-        vault.processCancelledDepositQueue(type(uint256).max, 10);
+        vault.processPendingDepositCancellations(type(uint256).max, 10);
 
         // All three queues are intact and frozen; bob's refund is unpaid until a planner exists.
         (, , uint256 depShares_)    = _depositRequest(depId_);
@@ -1022,9 +1022,9 @@ contract AuthorizationTest is LocalTestBase {
         vault.grantRole(REBALANCER_ROLE, newRebalancer_);
 
         vm.startPrank(newRebalancer_);
-        vault.processDepositQueue(type(uint256).max, 10);
-        vault.processRedeemQueue(type(uint256).max, 10);
-        vault.processCancelledDepositQueue(type(uint256).max, 10);
+        vault.processPendingDeposits(type(uint256).max, 10);
+        vault.processPendingRedeems(type(uint256).max, 10);
+        vault.processPendingDepositCancellations(type(uint256).max, 10);
         vm.stopPrank();
 
         (, , depShares_)    = _depositRequest(depId_);

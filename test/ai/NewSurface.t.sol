@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
-import { stdError } from "../lib/forge-std/src/StdError.sol";
+import { stdError } from "../../lib/forge-std/src/StdError.sol";
 
-import { IAccessControl } from "../lib/oz/contracts/access/IAccessControl.sol";
+import { IAccessControl } from "../../lib/oz/contracts/access/IAccessControl.sol";
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
 
@@ -890,13 +890,13 @@ contract NewSurfaceRealizeGainTest is NewSurfaceBase {
 
         vm.prank(rebalancer);
         vm.expectRevert(stdError.arithmeticError);
-        vault.processDepositQueue(type(uint256).max, type(uint256).max);
+        vault.processPendingDeposits(type(uint256).max, type(uint256).max);
         vm.prank(rebalancer);
         vm.expectRevert(stdError.arithmeticError);
-        vault.processRedeemQueue(type(uint256).max, type(uint256).max);
+        vault.processPendingRedeems(type(uint256).max, type(uint256).max);
         vm.prank(rebalancer);
         vm.expectRevert(stdError.arithmeticError);
-        vault.processCancelledDepositQueue(type(uint256).max, type(uint256).max);
+        vault.processPendingDepositCancellations(type(uint256).max, type(uint256).max);
 
         vm.prank(setter);
         vm.expectRevert(stdError.arithmeticError);
@@ -947,7 +947,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
 
     // `convertToAssets(availableCapacity())` (line 704) multiplies the free capacity by chi, so
     // any capacity above maxUint256 / chi + totalSupply makes every requestDeposit and
-    // processDepositQueue panic. The safe bound shrinks as chi grows.
+    // processPendingDeposits panic. The safe bound shrinks as chi grows.
     function test_BUG_setCapacity_maxUint256BricksDeposits() public {
         _setCapacity(type(uint256).max);
         _fund(alice, ONE_M);
@@ -958,7 +958,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
 
         vm.prank(rebalancer);
         vm.expectRevert(stdError.arithmeticError);
-        vault.processDepositQueue(type(uint256).max, type(uint256).max);
+        vault.processPendingDeposits(type(uint256).max, type(uint256).max);
 
         // Exact edge at supply 0: floor(maxUint256 / chi) is safe, one more is not.
         uint256 safe = type(uint256).max / vault.nowChi();
@@ -984,7 +984,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
 
         vm.prank(rebalancer);
         vm.expectRevert(stdError.arithmeticError);
-        vault.processDepositQueue(type(uint256).max, type(uint256).max);
+        vault.processPendingDeposits(type(uint256).max, type(uint256).max);
 
         // Admin recovers by lowering the capacity.
         _setCapacity(type(uint128).max);

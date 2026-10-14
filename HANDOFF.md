@@ -3,7 +3,7 @@
 Written 2026-10-14 00:05 UTC for a Claude session with zero context. Everything you need is in
 this repo; paths below are on Lucas's Mac mini unless marked (fork).
 
-> **Status 2026-10-14, round 3 (+ rename sync):** upstream now `refactor/more-simplifying` @ `072e8d0` (renames, internal queue arrays, new `getPending*Requests` views; suite synced, 603 tests). Suite on
+> **Status 2026-10-14, round 3 (+ rename sync):** upstream now `refactor/more-simplifying` @ `072e8d0` (renames, internal queue arrays, `getPending*Requests` views; then `731c1c8`: planner calls renamed `processPending*`, `UNPAUSER_ROLE` removed). The suite lives under `test/ai/` (595 tests). Branch pushed to `origin/review/poc-tests-v2`. Suite on
 > `review/poc-tests-v2`: 597 tests, 596 pass, 1 deliberate failing proof. Fixed upstream: recipient
 > updaters (owner-only), full-loss brick, cancelled-queue liquidity revert. New High: `realizeGain`
 > sandwich. Still open: F-1 guardian redirect, `realizeLoss` floor, capacity bound, C-1, C-2.

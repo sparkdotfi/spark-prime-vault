@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
-import { Test, console } from "../../lib/forge-std/src/Test.sol";
+import { Test, console } from "../../../lib/forge-std/src/Test.sol";
 
 import { SparkVault }      from "../lib/spusdc/SparkVault.sol";
-import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
+import { SparkPrimeVault } from "../../../src/SparkPrimeVault.sol";
 
 import { MockUSDC } from "../LocalTestBase.t.sol";
 
@@ -76,8 +76,8 @@ contract Init is Test {
     uint256 public takerInjectedUsdc;      // USDC minted for the taker to mint spUSDC it returns
 
     // USDC paid to users, by source (invariant I). Users never hold USDC otherwise.
-    uint256 public usersRedeemedUsdc;      // paid by processRedeemQueue fills
-    uint256 public usersRefundedUsdc;      // paid by processCancelledDepositQueue fills
+    uint256 public usersRedeemedUsdc;      // paid by processPendingRedeems fills
+    uint256 public usersRefundedUsdc;      // paid by processPendingDepositCancellations fills
 
     mapping (address user => uint256) public depositedUsdc;
 

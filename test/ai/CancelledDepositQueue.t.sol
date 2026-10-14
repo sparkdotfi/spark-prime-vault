@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
-import { stdError } from "../lib/forge-std/src/StdError.sol";
+import { stdError } from "../../lib/forge-std/src/StdError.sol";
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
 
@@ -132,7 +132,7 @@ contract CancelledDepositQueueTest is LocalTestBase {
     /*** 2. FIFO, partial settlement, limits, no-ops                                            ***/
     /**********************************************************************************************/
 
-    function test_processCancelledDepositQueue_partialThenComplete() public {
+    function test_processPendingDepositCancellations_partialThenComplete() public {
         uint256 idA = _deposit(alice, ONE_M);
         uint256 idB = _deposit(bob,   HUNDRED_K);
 
@@ -169,7 +169,7 @@ contract CancelledDepositQueueTest is LocalTestBase {
         assertEq(_vaultSpUsdc(),                               0);
     }
 
-    function test_processCancelledDepositQueue_maxRequestsHonoured() public {
+    function test_processPendingDepositCancellations_maxRequestsHonoured() public {
         _cancel(alice, _deposit(alice, HUNDRED_K), alice);
         _cancel(bob,   _deposit(bob,   HUNDRED_K), bob);
         _cancel(carol, _deposit(carol, HUNDRED_K), carol);
@@ -191,7 +191,7 @@ contract CancelledDepositQueueTest is LocalTestBase {
         assertEq(vault.firstPendingDepositCancellationId(), 3);
     }
 
-    function test_processCancelledDepositQueue_emptyQueueNoOp() public {
+    function test_processPendingDepositCancellations_emptyQueueNoOp() public {
         _processCancelledDeposits(type(uint256).max, type(uint256).max);
         assertEq(vault.firstPendingDepositCancellationId(), 0);
         assertEq(_cancelledLength(),           0);
@@ -206,7 +206,7 @@ contract CancelledDepositQueueTest is LocalTestBase {
 
     // Zero entries at or after `cancelledDepositHead` are unreachable: a cancel always pushes
     // `shares != 0` and an entry is only deleted once fully paid, after which the head passes it.
-    function test_processCancelledDepositQueue_zeroEntriesOnlyBehindHead() public {
+    function test_processPendingDepositCancellations_zeroEntriesOnlyBehindHead() public {
         _cancel(alice, _deposit(alice, HUNDRED_K), alice);
         _cancel(bob,   _deposit(bob,   HUNDRED_K), bob);
         _processCancelledDeposits(type(uint256).max, 1);
@@ -222,11 +222,11 @@ contract CancelledDepositQueueTest is LocalTestBase {
     /*** 3. Budget is spUSDC's maxRedeem (V2-6 fixed at ff828d2)                                ***/
     /**********************************************************************************************/
 
-    // `_processCancelledDepositQueue` (line 784) now budgets by `spUSDC.maxRedeem(vault)` =
+    // `_processPendingDepositCancellations` (line 784) now budgets by `spUSDC.maxRedeem(vault)` =
     // min(floor(liquidity * RAY / chi_s), vault balance). When spUSDC's USDC is deployed
     // elsewhere the head entry is paid as far as the liquidity goes, stays at the head, and is
     // completed once liquidity returns.
-    function test_processCancelledDepositQueue_paysWhatLiquidityAllows() public {
+    function test_processPendingDepositCancellations_paysWhatLiquidityAllows() public {
         _cancel(alice, _deposit(alice, ONE_M), alice);
 
         // spUSDC holds exactly alice's 1M USDC; its taker deploys half of it.
@@ -266,7 +266,7 @@ contract CancelledDepositQueueTest is LocalTestBase {
         assertEq(_vaultSpUsdc(),                               0);
     }
 
-    function test_processCancelledDepositQueue_batchPaysFirstFullyAndSecondPartially() public {
+    function test_processPendingDepositCancellations_batchPaysFirstFullyAndSecondPartially() public {
         _cancel(alice, _deposit(alice, ONE_M),     alice);
         _cancel(bob,   _deposit(bob,   HUNDRED_K), bob);
 
@@ -300,7 +300,7 @@ contract CancelledDepositQueueTest is LocalTestBase {
     }
 
     // The planner's own cap still applies on top of the liquidity clamp.
-    function test_processCancelledDepositQueue_budgetIsMinOfCapAndMaxRedeem() public {
+    function test_processPendingDepositCancellations_budgetIsMinOfCapAndMaxRedeem() public {
         _cancel(alice, _deposit(alice, ONE_M), alice);
         _drainSpUsdcLiquidity(500_000e6);
         uint256 maxRedeem = spUsdc.maxRedeem(address(vault));  // 477_266_345_571
@@ -325,7 +325,7 @@ contract CancelledDepositQueueTest is LocalTestBase {
     // comes out one share short. Each fill then pays floor(s * chi_s / RAY) and
     // sum(floor) <= floor(sum) <= liquidity, so a batch can never revert. Direction is the safe
     // one: the queue under-pays by dust and needs one more call, never a revert.
-    function testFuzz_processCancelledDepositQueue_neverRevertsOnLiquidity(
+    function testFuzz_processPendingDepositCancellations_neverRevertsOnLiquidity(
         uint64[6] calldata amounts,
         uint256   liquidityKept,
         uint8     maxRequests,
@@ -461,7 +461,7 @@ contract CancelledDepositQueueTest is LocalTestBase {
     /*** 6. Yield accrues to the canceller                                                      ***/
     /**********************************************************************************************/
 
-    function test_processCancelledDepositQueue_yieldWhileQueuedGoesToCanceller() public {
+    function test_processPendingDepositCancellations_yieldWhileQueuedGoesToCanceller() public {
         _cancel(alice, _deposit(alice, ONE_M), alice);
 
         _setSpUsdcVsr(TEN_PCT_VSR);
@@ -510,12 +510,12 @@ contract CancelledDepositQueueTest is LocalTestBase {
         vault.requestDepositCancellation(id, alice);
     }
 
-    function test_processCancelledDepositQueue_revertsWhenPaused() public {
+    function test_processPendingDepositCancellations_revertsWhenPaused() public {
         _cancel(alice, _deposit(alice, ONE_M), alice);
         _pause();
         vm.prank(rebalancer);
         vm.expectRevert("SparkPrimeVault/paused");
-        vault.processCancelledDepositQueue(type(uint256).max, type(uint256).max);
+        vault.processPendingDepositCancellations(type(uint256).max, type(uint256).max);
         _unpause();
         _processCancelledDeposits(type(uint256).max, type(uint256).max);
         assertEq(usdc.balanceOf(alice), A_1M);

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
-import { stdError, Vm } from "../lib/forge-std/src/Test.sol";
-import { console2 }     from "../lib/forge-std/src/console2.sol";
+import { stdError, Vm } from "../../lib/forge-std/src/Test.sol";
+import { console2 }     from "../../lib/forge-std/src/console2.sol";
 
-import { ERC1967Proxy } from "../lib/oz/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import { ERC1967Proxy } from "../../lib/oz/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
-import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
+import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
 import { DripTable }     from "./tables/DripTable.sol";
@@ -217,7 +217,7 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R2  _processDepositQueue:744  spUSDC.convertToShares(convertToAssets(capacity))         ***/
+    /*** R2  _processPendingDeposits:744  spUSDC.convertToShares(convertToAssets(capacity))         ***/
     /**********************************************************************************************/
 
     /// @dev The admitted spUSDC amount is floor(floor(A * c_p) / c_s): at most 1 + 1/c_s below
@@ -251,8 +251,8 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R3  _processDepositQueue:762  spUSDC.convertToAssets  floor(s * chi_s / RAY)            ***/
-    /*** R4  _processDepositQueue:763  convertToShares         floor(assets * RAY / chi_p)       ***/
+    /*** R3  _processPendingDeposits:762  spUSDC.convertToAssets  floor(s * chi_s / RAY)            ***/
+    /*** R4  _processPendingDeposits:763  convertToShares         floor(assets * RAY / chi_p)       ***/
     /**********************************************************************************************/
 
     function testFuzz_R3_R4_fillConversion_roundsInFavourOfVault(
@@ -445,7 +445,7 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R7  _processRedeemQueue:822  convertToShares(availableLiquidAssets())  floor            ***/
+    /*** R7  _processPendingRedeems:822  convertToShares(availableLiquidAssets())  floor            ***/
     /**********************************************************************************************/
 
     function testFuzz_R7_liquidityClamp_roundsInFavourOfVault(
@@ -486,8 +486,8 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R8  _processRedeemQueue:835  convertToAssets(shares)  floor                             ***/
-    /*** R9  _processRedeemQueue:845  spUSDC.withdraw(assets)  burns ceil(assets * RAY / chi_s)  ***/
+    /*** R8  _processPendingRedeems:835  convertToAssets(shares)  floor                             ***/
+    /*** R9  _processPendingRedeems:845  spUSDC.withdraw(assets)  burns ceil(assets * RAY / chi_s)  ***/
     /**********************************************************************************************/
 
     function testFuzz_R8_R9_redeemFill_floorPayoutCeilBurn(
@@ -531,7 +531,7 @@ contract RoundingTest is LocalTestBase {
     ///      Harness chis: vault holds 3548 spUSDC (maxWithdraw 3717 USDC, clamp 3681 shares),
     ///      two requests of 2396 + 1285 = 3681 shares burn 2310 + 1239 = 3549 > 3548.
     ///      This test asserts the intended behaviour (both paid) and therefore FAILS.
-    function test_BUG_processRedeemQueue_batchCeilBurnsExceedSpUsdcBalance() public {
+    function test_BUG_processPendingRedeems_batchCeilBurnsExceedSpUsdcBalance() public {
         _deposit(alice, 1_000_000e6);
 
         _take(_vaultSpUsdc() - 3548);
@@ -553,7 +553,7 @@ contract RoundingTest is LocalTestBase {
 
     /// @dev Same state: the operator can work around it with one request per call, because the
     ///      clamp is recomputed from the reduced balance each time.
-    function test_processRedeemQueue_batchCeilBurn_oneRequestPerCallSucceeds() public {
+    function test_processPendingRedeems_batchCeilBurn_oneRequestPerCallSucceeds() public {
         _deposit(alice, 1_000_000e6);
         _take(_vaultSpUsdc() - 3548);
 
@@ -564,7 +564,7 @@ contract RoundingTest is LocalTestBase {
 
         vm.prank(rebalancer);
         vm.expectRevert("SparkVault/insufficient-balance");
-        vault.processRedeemQueue(type(uint256).max, 2);
+        vault.processPendingRedeems(type(uint256).max, 2);
 
         _processRedeems(type(uint256).max, 1);
         assertEq(_redeemShares(id1), 0);
@@ -579,7 +579,7 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R10 _processCancelledDepositQueue:805  spUSDC.redeem(shares)  floor(s * chi_s / RAY)   ***/
+    /*** R10 _processPendingDepositCancellations:805  spUSDC.redeem(shares)  floor(s * chi_s / RAY)   ***/
     /***     budget :784  min(maxSavingsShares, spUSDC.maxRedeem(vault))                        ***/
     /***     maxRedeem = min(floor(L * RAY / chi_s), bal_s), L = USDC held by spUSDC            ***/
     /**********************************************************************************************/
@@ -836,7 +836,7 @@ contract RoundingTest is LocalTestBase {
     /// @dev Harness, the C-1 state transposed to the cancelled queue: liquidity 3717 USDC against
     ///      3549 queued spUSDC (2310 + 1239), budget floor(3717 / 1.0476) = 3547 shares. Fills
     ///      2310 -> 2420 and 1237 -> 1295 USDC, total 3715 <= 3717, no revert (the same two sizes
-    ///      on the redeem queue revert, `test_BUG_processRedeemQueue_*`). Stranded 2 wei; a second
+    ///      on the redeem queue revert, `test_BUG_processPendingRedeems_*`). Stranded 2 wei; a second
     ///      call settles 1 more share for 1 USDC, leaving 1 share queued and 1 wei (< c_s) in spUSDC.
     function test_R10_batchSettle_c1StateDoesNotRevert() public {
         _setCapacity(0);
@@ -1810,7 +1810,7 @@ contract RoundingTest is LocalTestBase {
         assertLe(vault.availableCapacity(), 2, "capacity: residual > 2 at harness chis");
     }
 
-    /// @dev `setCapacity` no longer bounds the value. `_processDepositQueue` computes
+    /// @dev `setCapacity` no longer bounds the value. `_processPendingDeposits` computes
     ///      `convertToAssets(availableCapacity())` = `availableCapacity() * nowChi()`, which
     ///      overflows (panic 0x11) once `maxCapacity - totalSupply > type(uint256).max / nowChi()`.
     ///      Every deposit routes through it, so the exact usable bound is
@@ -1838,7 +1838,7 @@ contract RoundingTest is LocalTestBase {
 
         vm.prank(rebalancer);
         vm.expectRevert(stdError.arithmeticError);
-        vault.processDepositQueue(type(uint256).max, type(uint256).max);
+        vault.processPendingDeposits(type(uint256).max, type(uint256).max);
     }
 
     /// @dev The same capacity that works today overflows after the index grows: harness

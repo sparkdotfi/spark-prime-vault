@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
-import { stdError } from "../lib/forge-std/src/StdError.sol";
+import { stdError } from "../../lib/forge-std/src/StdError.sol";
 
-import { ERC1967Proxy } from "../lib/oz/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import { ERC1967Proxy } from "../../lib/oz/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
-import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
+import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
 
@@ -32,7 +32,7 @@ contract AdminTest is LocalTestBase {
     event MaxRedeemFeeRateSet(uint256 fee);
     event MinDepositSet(uint256 minDeposit);
     event MinRedeemSet(uint256 minRedeem);
-    event Take(address indexed to, uint256 shares);
+    event Take(uint256 shares);
     event VSRBoundsSet(uint256 minVSR, uint256 maxVSR);
     event VSRSet(uint256 vsr);
     event RedeemFeeRateSet(uint256 fee);
@@ -840,7 +840,7 @@ contract AdminTest is LocalTestBase {
     function test_take_zero() public {
         vm.prank(taker);
         vm.expectEmit(address(vault));
-        emit Take(taker, 0);
+        emit Take(0);
         vault.take(0);
         assertEq(spUsdc.balanceOf(taker), 0);
     }
@@ -853,7 +853,7 @@ contract AdminTest is LocalTestBase {
 
         vm.prank(taker);
         vm.expectEmit(address(vault));
-        emit Take(taker, bal_ / 3);
+        emit Take(bal_ / 3);
         vault.take(bal_ / 3);
 
         assertEq(_vaultSpUsdc(),          bal_ - bal_ / 3);

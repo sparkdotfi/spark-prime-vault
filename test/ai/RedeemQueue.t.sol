@@ -3,7 +3,7 @@ pragma solidity ^0.8.34;
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
 
-/// @dev Redeem-queue campaign: `requestRedeem`, `cancelRedeemRequest`, `processRedeemQueue`.
+/// @dev Redeem-queue campaign: `requestRedeem`, `cancelRedeemRequest`, `processPendingRedeems`.
 ///
 ///      Harness state after setUp (both VSRs frozen at RAY):
 ///        chi_s (spUSDC)  = 1.047633055711877768967605062e27
@@ -13,7 +13,7 @@ import { LocalTestBase } from "./LocalTestBase.t.sol";
 ///
 ///      Notation in comments: L = USDC held by spUSDC, S = spUSDC held by the vault,
 ///      A = spUSDC.maxWithdraw(vault) = min(L, floor(S * chi_s / RAY)),
-///      rem = floor(A * RAY / chi_p) (the share budget `_processRedeemQueue` computes once).
+///      rem = floor(A * RAY / chi_p) (the share budget `_processPendingRedeems` computes once).
 ///
 ///      Round 2: ported to upstream `refactor/more-simplifying` (`minRedeem` in shares, no
 ///      `shares_ != 0` check, `cancelRedeemRequest` advances the head and requires a recipient,
@@ -92,7 +92,7 @@ contract RedeemQueueTest is LocalTestBase {
     /*** 1. Batch fills over-burn spUSDC (ceil per fill, budget computed once)                  ***/
     /**********************************************************************************************/
 
-    // BUG (C-1, re-confirmed on refactor/more-simplifying): `_processRedeemQueue` sizes the share
+    // BUG (C-1, re-confirmed on refactor/more-simplifying): `_processPendingRedeems` sizes the share
     // budget once from `spUSDC.maxWithdraw(vault)` (src/SparkPrimeVault.sol:822) but each fill calls
     // `spUSDC.withdraw(assets_)` (line 845), which burns ceil(assets * RAY / chi_s) spUSDC. Across
     // N fills the burned total can exceed the vault's spUSDC balance by up to N-1 wei, so the last
@@ -102,7 +102,7 @@ contract RedeemQueueTest is LocalTestBase {
     // A = 1_050_601 USDC; rem = 1_040_520 shares. Two queued requests of 520_260 shares each
     // are paid 525_300 USDC each (sum 1_050_600 <= A) but burn 501_417 + 501_417 = 1_002_834
     // spUSDC, one more than the vault holds.
-    function test_BUG_processRedeemQueue_batchRevertsOnCeilRounding_vaultSharesBound() public {
+    function test_BUG_processPendingRedeems_batchRevertsOnCeilRounding_vaultSharesBound() public {
         _deposit(alice, 1_000_000e6);
         _take(DEPOSIT_1M_SPUSDC - 1_002_833);
 
@@ -125,7 +125,7 @@ contract RedeemQueueTest is LocalTestBase {
         // The batch of two reverts: the second spUSDC withdraw needs 501_417 spUSDC, 501_416 left.
         vm.prank(rebalancer);
         vm.expectRevert("SparkVault/insufficient-balance");
-        vault.processRedeemQueue(type(uint256).max, 2);
+        vault.processPendingRedeems(type(uint256).max, 2);
 
         // Nothing moved.
         assertEq(usdc.balanceOf(alice),       0);
@@ -135,7 +135,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(_vaultSpUsdc(),              1_002_833);
 
         // Workaround: one request per call re-reads maxWithdraw and is always safe (single-fill
-        // bound, see testFuzz_processRedeemQueue_singleFillNeverReverts).
+        // bound, see testFuzz_processPendingRedeems_singleFillNeverReverts).
         _processRedeems(type(uint256).max, 1);
 
         assertEq(usdc.balanceOf(alice),         525_300);
@@ -158,7 +158,7 @@ contract RedeemQueueTest is LocalTestBase {
     // (2 wei drained), one wei below the vault's claim of 999_999_999_999. Three requests that
     // together equal rem = 990_405_184_108 shares are paid 999_999_999_997 USDC in total (fits the
     // liquidity) but burn 954_532_691_144 spUSDC against a balance of 954_532_691_143.
-    function test_BUG_processRedeemQueue_batchRevertsOnCeilRounding_liquidityBound() public {
+    function test_BUG_processPendingRedeems_batchRevertsOnCeilRounding_liquidityBound() public {
         _deposit(alice, 1_000_000e6);
         _drainSpUsdcLiquidity(2);
 
@@ -184,7 +184,7 @@ contract RedeemQueueTest is LocalTestBase {
 
         vm.prank(rebalancer);
         vm.expectRevert("SparkVault/insufficient-balance");
-        vault.processRedeemQueue(type(uint256).max, 3);
+        vault.processPendingRedeems(type(uint256).max, 3);
 
         assertEq(vault.firstPendingRedeemId(),          0);
         assertEq(vault.pendingRedeemShares(), 990_405_184_108);
@@ -212,7 +212,7 @@ contract RedeemQueueTest is LocalTestBase {
     // Single-fill bound: for ONE fill, assets = floor(shares * chi_p / RAY) <= A and
     // ceil(assets * RAY / chi_s) <= S whenever assets <= floor(S * chi_s / RAY). So a call with
     // maxRequests_ = 1 never reverts, under random indexes, random liquidity and random take().
-    function testFuzz_processRedeemQueue_singleFillNeverReverts(
+    function testFuzz_processPendingRedeems_singleFillNeverReverts(
         uint256 vsrS, uint256 vsrP, uint256 warp, uint256 depositAmt, uint256 drain, uint256 take_
     ) public {
         vsrS       = bound(vsrS, RAY, MAX_VSR);
@@ -254,7 +254,7 @@ contract RedeemQueueTest is LocalTestBase {
     // Quantifies the over-burn: across N fills the spUSDC burned exceeds the aggregate
     // ceil(sum(assets) * RAY / chi_s) by at most N - 1 wei. When the batch does not revert it
     // leaves the vault with up to N - 1 fewer spUSDC than one aggregate withdraw would have.
-    function testFuzz_processRedeemQueue_batchOverburnBoundedByFillsMinusOne(
+    function testFuzz_processPendingRedeems_batchOverburnBoundedByFillsMinusOne(
         uint256 vsrS, uint256 vsrP, uint256 warp, uint256 n, uint256 seed
     ) public {
         vsrS = bound(vsrS, RAY, MAX_VSR);
@@ -285,7 +285,7 @@ contract RedeemQueueTest is LocalTestBase {
         bool    budgetCoversAll = vault.convertToShares(vault.availableLiquidAssets()) >= vault.pendingRedeemShares();
 
         vm.prank(rebalancer);
-        try vault.processRedeemQueue(type(uint256).max, n) {
+        try vault.processPendingRedeems(type(uint256).max, n) {
             if (budgetCoversAll) {
                 uint256 burned = spUsdcBefore - _vaultSpUsdc();
                 assertEq(usdc.balanceOf(alice), sumAssets);
@@ -307,7 +307,7 @@ contract RedeemQueueTest is LocalTestBase {
     /**********************************************************************************************/
 
     // (a) spUSDC has 300_000e6 USDC against the vault's 999_999_999_999 claim.
-    function test_processRedeemQueue_partialFill_spUsdcLiquidityBound() public {
+    function test_processPendingRedeems_partialFill_spUsdcLiquidityBound() public {
         _deposit(alice, 1_000_000e6);
         uint256 id = _requestRedeem(alice, DEPOSIT_1M_SHARES);
         _drainSpUsdcLiquidity(700_000e6);
@@ -355,7 +355,7 @@ contract RedeemQueueTest is LocalTestBase {
     }
 
     // (b) spUSDC is fully liquid, but the vault only holds 300_000e6 spUSDC after take().
-    function test_processRedeemQueue_partialFill_vaultSharesBound() public {
+    function test_processPendingRedeems_partialFill_vaultSharesBound() public {
         _deposit(alice, 1_000_000e6);
         uint256 id = _requestRedeem(alice, DEPOSIT_1M_SHARES);
         _take(DEPOSIT_1M_SPUSDC - 300_000e6);
@@ -410,7 +410,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(_vaultSpUsdc(),              3 * DEPOSIT_100K_SPUSDC);
     }
 
-    function test_processRedeemQueue_fifo_skipsCancelled() public {
+    function test_processPendingRedeems_fifo_skipsCancelled() public {
         (uint256 idA, uint256 idB, uint256 idC) = _threeDepositorsQueued();
 
         vm.prank(bob);
@@ -450,7 +450,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(vault.totalSupply(),             DEPOSIT_100K_SHARES);  // bob's shares
     }
 
-    function test_processRedeemQueue_maxRequests() public {
+    function test_processPendingRedeems_maxRequests() public {
         (uint256 idA, uint256 idB, uint256 idC) = _threeDepositorsQueued();
 
         _processRedeems(type(uint256).max, 0);
@@ -479,7 +479,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(vault.firstPendingRedeemId(), 3);
     }
 
-    function test_processRedeemQueue_maxShares() public {
+    function test_processPendingRedeems_maxShares() public {
         (uint256 idA, uint256 idB, uint256 idC) = _threeDepositorsQueued();
 
         // One share short of alice's request: alice partial, head stays.
@@ -504,7 +504,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(_vaultSpUsdc(),              3 * DEPOSIT_100K_SPUSDC - 95_453_269_112 - 1 - 10);
     }
 
-    function test_processRedeemQueue_maxSharesZero_noop() public {
+    function test_processPendingRedeems_maxSharesZero_noop() public {
         _threeDepositorsQueued();
         uint256 spBefore = _vaultSpUsdc();
 
@@ -516,7 +516,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(usdc.balanceOf(alice),       0);
     }
 
-    function test_processRedeemQueue_emptyQueue_noop() public {
+    function test_processPendingRedeems_emptyQueue_noop() public {
         _deposit(alice, 100_000e6);
         _processRedeems(type(uint256).max, 10);
         assertEq(vault.firstPendingRedeemId(),          0);
@@ -525,7 +525,7 @@ contract RedeemQueueTest is LocalTestBase {
     }
 
     // A big head request blocks a small later one even when the small one would fit.
-    function test_processRedeemQueue_headBlocksLaterSmallerRequests() public {
+    function test_processPendingRedeems_headBlocksLaterSmallerRequests() public {
         _deposit(alice, 100_000e6);
         _deposit(bob,   100_000e6);
         uint256 idA = _requestRedeem(alice, DEPOSIT_100K_SHARES);
@@ -549,7 +549,7 @@ contract RedeemQueueTest is LocalTestBase {
     /**********************************************************************************************/
 
     // Escrowed shares keep accruing at the prime VSR; the redeemer is paid at fill-time chi.
-    function test_processRedeemQueue_primeYieldAccruesWhileQueued() public {
+    function test_processPendingRedeems_primeYieldAccruesWhileQueued() public {
         _deposit(alice, 100_000e6);
         _deposit(bob,   100_000e6);  // extra backing so alice's accrued claim is payable
         _setPrimeVsr(FIVE_PCT_VSR);
@@ -580,7 +580,7 @@ contract RedeemQueueTest is LocalTestBase {
 
     // spUSDC yields while the prime index is flat: the redeemer gets the prime value only; the
     // surplus stays in the vault as unassigned backing.
-    function test_processRedeemQueue_spUsdcYieldStaysInVault() public {
+    function test_processPendingRedeems_spUsdcYieldStaysInVault() public {
         _deposit(alice, 100_000e6);
         _setSpUsdcVsr(FIVE_PCT_VSR);
         uint256 id = _requestRedeem(alice, DEPOSIT_100K_SHARES);
@@ -683,7 +683,7 @@ contract RedeemQueueTest is LocalTestBase {
     /**********************************************************************************************/
 
     // recipient == vault: spUSDC pays the USDC to the vault contract, where nothing can move it.
-    function test_processRedeemQueue_recipientIsVault_usdcStuck() public {
+    function test_processPendingRedeems_recipientIsVault_usdcStuck() public {
         _deposit(alice, 100_000e6);
         uint256 id = _requestRedeemTo(alice, DEPOSIT_100K_SHARES, address(vault));
 
@@ -712,7 +712,7 @@ contract RedeemQueueTest is LocalTestBase {
 
     // recipient == spUSDC: spUSDC transfers the USDC to itself, so the vault's spUSDC is burned
     // and the value is donated to spUSDC holders.
-    function test_processRedeemQueue_recipientIsSpUsdc_donatesToSpUsdc() public {
+    function test_processPendingRedeems_recipientIsSpUsdc_donatesToSpUsdc() public {
         _deposit(alice, 100_000e6);
         _requestRedeemTo(alice, DEPOSIT_100K_SHARES, address(spUsdc));
 
@@ -736,7 +736,7 @@ contract RedeemQueueTest is LocalTestBase {
     /*** 7. Pause + take                                                                        ***/
     /**********************************************************************************************/
 
-    function test_processRedeemQueue_pausedBlocksRedeemsNotTake() public {
+    function test_processPendingRedeems_pausedBlocksRedeemsNotTake() public {
         _deposit(alice, 100_000e6);
         uint256 id = _requestRedeem(alice, DEPOSIT_100K_SHARES);
 
@@ -744,7 +744,7 @@ contract RedeemQueueTest is LocalTestBase {
 
         vm.prank(rebalancer);
         vm.expectRevert("SparkPrimeVault/paused");
-        vault.processRedeemQueue(type(uint256).max, 10);
+        vault.processPendingRedeems(type(uint256).max, 10);
 
         vm.prank(alice);
         vm.expectRevert("SparkPrimeVault/paused");
@@ -771,7 +771,7 @@ contract RedeemQueueTest is LocalTestBase {
     /*** 8. Rounding bounds for a single fill                                                   ***/
     /**********************************************************************************************/
 
-    function testFuzz_processRedeemQueue_singleFillRoundingBounds(
+    function testFuzz_processPendingRedeems_singleFillRoundingBounds(
         uint256 vsrS, uint256 vsrP, uint256 warp, uint256 depositAmt, uint256 sharesFrac
     ) public {
         vsrS       = bound(vsrS, RAY, MAX_VSR);
@@ -822,7 +822,7 @@ contract RedeemQueueTest is LocalTestBase {
     /*** 9. Large queue, batched processing, gas                                                ***/
     /**********************************************************************************************/
 
-    function test_processRedeemQueue_200UsersIn4BatchesOf50() public {
+    function test_processPendingRedeems_200UsersIn4BatchesOf50() public {
         uint256 n = 200;
         address[] memory users = new address[](n);
         for (uint256 i; i < n; ++i) {
@@ -864,7 +864,7 @@ contract RedeemQueueTest is LocalTestBase {
     /*** 10. Edge cases                                                                         ***/
     /**********************************************************************************************/
 
-    function test_processRedeemQueue_zeroLiquidity_noop() public {
+    function test_processPendingRedeems_zeroLiquidity_noop() public {
         _deposit(alice, 100_000e6);
         uint256 id = _requestRedeem(alice, DEPOSIT_100K_SHARES);
         _drainAllSpUsdcLiquidity();
@@ -879,7 +879,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(vault.firstPendingRedeemId(),          0);
     }
 
-    function test_processRedeemQueue_afterFullTake_noop() public {
+    function test_processPendingRedeems_afterFullTake_noop() public {
         _deposit(alice, 100_000e6);
         uint256 id = _requestRedeem(alice, DEPOSIT_100K_SHARES);
         _takeAll();
@@ -1013,7 +1013,7 @@ contract RedeemQueueTest is LocalTestBase {
     // Non-head cancelled (and F-5 ghost) entries are skipped but still consume `maxRequests_`
     // (src/SparkPrimeVault.sol:825 sizes `end_` by index, line 832 `continue`s past them). A
     // cancelled HEAD entry no longer costs a slot because the cancel advances the head (line 527).
-    function test_processRedeemQueue_cancelledEntryCountsTowardMaxRequests() public {
+    function test_processPendingRedeems_cancelledEntryCountsTowardMaxRequests() public {
         (uint256 idA, uint256 idB, uint256 idC) = _threeDepositorsQueued();
 
         vm.prank(bob);
@@ -1059,7 +1059,7 @@ contract RedeemQueueTest is LocalTestBase {
     // entries assert the revert), drains, takes and partial processing.
     // After every step: balanceOf(vault) == pendingRedeemShares == sum of open request shares,
     // and every entry before redeemHead is settled or cancelled.
-    function testFuzz_processRedeemQueue_balanceOfVaultEqualsPendingRedeemShares(uint256 seed)
+    function testFuzz_processPendingRedeems_balanceOfVaultEqualsPendingRedeemShares(uint256 seed)
         public
     {
         address[3] memory users = [alice, bob, carol];
@@ -1111,7 +1111,7 @@ contract RedeemQueueTest is LocalTestBase {
             } else if (action == 3) {
                 uint256 maxShares = (r >> 40) % 2 == 0 ? type(uint256).max : amt;
                 vm.prank(rebalancer);
-                try vault.processRedeemQueue(maxShares, (r >> 48) % 4) {}
+                try vault.processPendingRedeems(maxShares, (r >> 48) % 4) {}
                 catch Error(string memory reason) {
                     assertEq(reason, "SparkVault/insufficient-balance");  // known over-burn (C-1)
                 }
@@ -1144,7 +1144,7 @@ contract RedeemQueueTest is LocalTestBase {
     // Every fill pays exactly floor(filled * chi / RAY) to its recipient, burns exactly the
     // filled shares, and the spUSDC given up is worth at most 1 wei USDC per fill above what was
     // paid.
-    function testFuzz_processRedeemQueue_neverPaysMoreThanSharesTimesChi(uint256 seed) public {
+    function testFuzz_processPendingRedeems_neverPaysMoreThanSharesTimesChi(uint256 seed) public {
         address[3] memory users = [alice, bob, carol];
         _setSpUsdcVsr(FIVE_PCT_VSR);
         _setPrimeVsr(FOUR_PCT_VSR);
@@ -1191,7 +1191,7 @@ contract RedeemQueueTest is LocalTestBase {
         for (uint256 i; i < 3; ++i) balBefore[i] = usdc.balanceOf(users[i]);
 
         vm.prank(rebalancer);
-        try vault.processRedeemQueue(maxShares, maxReq) {}
+        try vault.processPendingRedeems(maxShares, maxReq) {}
         catch Error(string memory reason) {
             assertEq(reason, "SparkVault/insufficient-balance");  // known over-burn (C-1)
             return;
@@ -1359,7 +1359,7 @@ contract RedeemQueueTest is LocalTestBase {
 
     // A fully filled entry is `delete`d (src/SparkPrimeVault.sol:849): the getter returns zeros,
     // a partial fill keeps owner and recipient.
-    function test_processRedeemQueue_fullFillDeletesEntry() public {
+    function test_processPendingRedeems_fullFillDeletesEntry() public {
         _deposit(alice, 100_000e6);
         _deposit(bob,   100_000e6);
         uint256 idA = _requestRedeemTo(alice, DEPOSIT_100K_SHARES, carol);
@@ -1388,7 +1388,7 @@ contract RedeemQueueTest is LocalTestBase {
     }
 
     // Event argument order on refactor/more-simplifying: Redeem(owner, recipient, shares, assets).
-    function test_processRedeemQueue_emitsRedeemSharesThenAssets() public {
+    function test_processPendingRedeems_emitsRedeemSharesThenAssets() public {
         _deposit(alice, 100_000e6);
         _requestRedeemTo(alice, DEPOSIT_100K_SHARES, bob);
 
@@ -1445,7 +1445,7 @@ contract RedeemQueueTest is LocalTestBase {
 
         vm.prank(rebalancer);
         vm.expectRevert("Blacklistable: account is blacklisted");
-        vault.processRedeemQueue(type(uint256).max, 10);
+        vault.processPendingRedeems(type(uint256).max, 10);
 
         // Neither an outsider, nor the stuck redeemer behind her, nor the guardian can repoint.
         address[3] memory callers = [mallory, bob, guardian];
@@ -1463,7 +1463,7 @@ contract RedeemQueueTest is LocalTestBase {
         // Still blocked.
         vm.prank(rebalancer);
         vm.expectRevert("Blacklistable: account is blacklisted");
-        vault.processRedeemQueue(type(uint256).max, 10);
+        vault.processPendingRedeems(type(uint256).max, 10);
         assertEq(usdc.balanceOf(bob), 0);
         assertEq(vault.firstPendingRedeemId(),  0);
 
@@ -1497,7 +1497,7 @@ contract RedeemQueueTest is LocalTestBase {
 
         vm.prank(rebalancer);
         vm.expectRevert("Blacklistable: account is blacklisted");
-        vault.processRedeemQueue(type(uint256).max, 10);
+        vault.processPendingRedeems(type(uint256).max, 10);
         assertEq(usdc.balanceOf(bob), 0);
 
         vm.expectEmit(true, true, true, true, address(vault));
@@ -1562,7 +1562,7 @@ contract RedeemQueueTest is LocalTestBase {
 
     // BUG (C-2, re-confirmed): src/SparkPrimeVault.sol:845 pays inside the strict FIFO loop with
     // no skip-on-failure. Mainnet USDC reverts transfers to blacklisted addresses, so one 1-share
-    // request to such an address at the head reverts every `processRedeemQueue` call.
+    // request to such an address at the head reverts every `processPendingRedeems` call.
     function test_BUG_blacklistedRecipientBlocksRedeemQueue() public {
         address attacker    = makeAddr("attacker");
         address blacklisted = makeAddr("blacklisted");
@@ -1582,15 +1582,15 @@ contract RedeemQueueTest is LocalTestBase {
 
         vm.prank(rebalancer);
         vm.expectRevert("Blacklistable: account is blacklisted");
-        vault.processRedeemQueue(type(uint256).max, 10);
+        vault.processPendingRedeems(type(uint256).max, 10);
 
         // No way to skip: maxShares/maxRequests cannot jump over the head entry.
         vm.prank(rebalancer);
         vm.expectRevert("Blacklistable: account is blacklisted");
-        vault.processRedeemQueue(type(uint256).max, 1);
+        vault.processPendingRedeems(type(uint256).max, 1);
         vm.prank(rebalancer);
         vm.expectRevert("Blacklistable: account is blacklisted");
-        vault.processRedeemQueue(1, 1);
+        vault.processPendingRedeems(1, 1);
 
         assertEq(usdc.balanceOf(alice), 0);
         assertEq(vault.firstPendingRedeemId(),    0);
@@ -1614,7 +1614,7 @@ contract RedeemQueueTest is LocalTestBase {
         _requestRedeem(bob, vault.balanceOf(bob));
         vm.prank(rebalancer);
         vm.expectRevert("Blacklistable: account is blacklisted");
-        vault.processRedeemQueue(type(uint256).max, 10);
+        vault.processPendingRedeems(type(uint256).max, 10);
     }
 
     /**********************************************************************************************/
@@ -1624,7 +1624,7 @@ contract RedeemQueueTest is LocalTestBase {
     // `realizeLoss` (src/SparkPrimeVault.sol:369-385, paused only, 0 < loss < totalAssets since
     // ff828d2) sets chi = floor((totalAssets - loss) * RAY / totalSupply) for everyone, escrowed
     // shares included: a queued redeemer is paid at the reduced chi and takes the loss pro rata.
-    function test_processRedeemQueue_realizeLossWhileQueued_escrowTakesLossProRata() public {
+    function test_processPendingRedeems_realizeLossWhileQueued_escrowTakesLossProRata() public {
         _deposit(alice, 100_000e6);
         _deposit(bob,   100_000e6);
         uint256 id = _requestRedeem(alice, DEPOSIT_100K_SHARES);
@@ -1664,7 +1664,7 @@ contract RedeemQueueTest is LocalTestBase {
     // `realizeGain` (src/SparkPrimeVault.sol:297-309, DEFAULT_ADMIN, no pause required) sets
     // chi = floor((totalAssets + gain) * RAY / totalSupply) for everyone, escrowed shares included:
     // a queued redeemer is paid MORE after a gain, pro rata with the holders.
-    function test_processRedeemQueue_realizeGainWhileQueued_escrowSharesGainProRata() public {
+    function test_processPendingRedeems_realizeGainWhileQueued_escrowSharesGainProRata() public {
         _deposit(alice, 100_000e6);
         _deposit(bob,   100_000e6);
         uint256 id = _requestRedeem(alice, DEPOSIT_100K_SHARES);
