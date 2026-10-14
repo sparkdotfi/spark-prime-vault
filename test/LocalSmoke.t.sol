@@ -20,7 +20,7 @@ contract LocalSmokeTest is LocalTestBase {
         _warpAndDrip(365 days);
         assertGt(vault.assetsOf(alice), 1_039_000e6);
 
-        _setRedeemFee(0.001e18);
+        _setRedeemFeeRate(0.001e18);
         uint256 id = _requestRedeem(alice, vault.balanceOf(alice));
         (, , uint256 queued) = _redeemRequest(id);
         assertGt(queued, 0);

@@ -896,7 +896,7 @@ contract CancelAndFeesTest is LocalTestBase {
         shares  = bound(shares,  1, 1e30);
         feeRate = bound(feeRate, 0, 0.01e18);
 
-        _setRedeemFee(feeRate);
+        _setRedeemFeeRate(feeRate);
 
         // Mint at least `shares` to alice (rounding loses a few wei on the way in).
         _deposit(alice, vault.convertToAssets(shares) + 10);
@@ -936,7 +936,7 @@ contract CancelAndFeesTest is LocalTestBase {
     }
 
     function test_requestRedeem_feeRoundsUpToOneWei() public {
-        _setRedeemFee(1);  // 1e-18
+        _setRedeemFeeRate(1);  // 1e-18
         _deposit(alice, 100e6);
 
         uint256 id = _requestRedeem(alice, SH_100);
@@ -950,7 +950,7 @@ contract CancelAndFeesTest is LocalTestBase {
     /**********************************************************************************************/
 
     function test_requestRedeem_feeLeavesChiUnchangedAndRaisesBackingPerShare() public {
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
         _deposit(alice, 1_000_000e6);
 
         assertEq(vault.balanceOf(alice), SH_1M);
@@ -991,7 +991,7 @@ contract CancelAndFeesTest is LocalTestBase {
     }
 
     function test_requestRedeem_feeNotCreditedToRemainingHolders() public {
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
         _deposit(bob,   100e6);
         _deposit(alice, 1_000_000e6);
 
@@ -1012,7 +1012,7 @@ contract CancelAndFeesTest is LocalTestBase {
     // The fee surplus is also what settles cancelled deposits: with alice's fee still in the
     // vault, a cancelled deposit can be refunded even after Arkis took every queued share.
     function test_processCancelledDepositQueue_feeSurplusCoversRefund() public {
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
         _deposit(alice, 1_000_000e6);
         _requestRedeem(alice, SH_1M);
         _processRedeems(type(uint256).max, 1);
@@ -1035,7 +1035,7 @@ contract CancelAndFeesTest is LocalTestBase {
     // minRedeem is in shares and checked before the fee, so the net payout can land below the
     // value the minimum represents.
     function test_requestRedeem_minRedeemIsGrossOfFee() public {
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
         uint256 minShares = vault.convertToShares(100e6);
         assertEq(minShares, 99_040_518);
         _setMinRedeem(minShares);
@@ -1168,7 +1168,7 @@ contract CancelAndFeesTest is LocalTestBase {
     }
 
     function test_processRedeemQueue_gasWith500GhostEntries() public {
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
         _deposit(alice, 100e6);
         _deposit(bob,   100e6);
 
@@ -1277,7 +1277,7 @@ contract CancelAndFeesTest is LocalTestBase {
     /**********************************************************************************************/
 
     function test_cancelRedeemRequest_guardianCancelKeepsFee() public {
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
         _deposit(alice, 1_000_000e6);
 
         uint256 id = _requestRedeem(alice, SH_1M);
@@ -1298,7 +1298,7 @@ contract CancelAndFeesTest is LocalTestBase {
     /**********************************************************************************************/
 
     function test_processRedeemQueue_feeChangeAfterRequestHasNoEffect() public {
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
         _deposit(alice, 1_000_000e6);
         _deposit(bob,   1_000_000e6);
 
@@ -1306,7 +1306,7 @@ contract CancelAndFeesTest is LocalTestBase {
         (, , uint256 queuedA) = _redeemRequest(idA);
         assertEq(queuedA, 980_501_132_267);
 
-        _setRedeemFee(0);
+        _setRedeemFeeRate(0);
 
         // Bob requests at 0% after the change.
         uint256 idB = _requestRedeem(bob, SH_1M);
@@ -1326,30 +1326,30 @@ contract CancelAndFeesTest is LocalTestBase {
     function test_setRedeemFee_revertsAboveMax() public {
         vm.prank(riskManager);
         vm.expectRevert("SparkPrimeVault/fee-too-high");
-        vault.setRedeemFee(0.01e18 + 1);
+        vault.setRedeemFeeRate(0.01e18 + 1);
 
         vm.prank(riskManager);
-        vault.setRedeemFee(0.01e18);
-        assertEq(vault.redeemFee(), 0.01e18);
+        vault.setRedeemFeeRate(0.01e18);
+        assertEq(vault.redeemFeeRate(), 0.01e18);
     }
 
     function test_setMaxRedeemFee_revertsAboveOnePercent() public {
         vm.prank(admin);
         vm.expectRevert("SparkPrimeVault/fee-too-high");
-        vault.setMaxRedeemFee(0.01e18 + 1);
+        vault.setMaxRedeemFeeRate(0.01e18 + 1);
 
         vm.prank(admin);
-        vault.setMaxRedeemFee(0.01e18);
-        assertEq(vault.maxRedeemFee(), 0.01e18);
+        vault.setMaxRedeemFeeRate(0.01e18);
+        assertEq(vault.maxRedeemFeeRate(), 0.01e18);
     }
 
     function test_setMaxRedeemFee_belowCurrentFeeLeavesFeeInForce() public {
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
 
         vm.prank(admin);
-        vault.setMaxRedeemFee(0.001e18);
-        assertEq(vault.maxRedeemFee(), 0.001e18);
-        assertEq(vault.redeemFee(),    0.01e18);  // unchanged, above the new max
+        vault.setMaxRedeemFeeRate(0.001e18);
+        assertEq(vault.maxRedeemFeeRate(), 0.001e18);
+        assertEq(vault.redeemFeeRate(),    0.01e18);  // unchanged, above the new max
 
         // New requests keep paying 1%.
         _deposit(alice, 1_000_000e6);
@@ -1360,11 +1360,11 @@ contract CancelAndFeesTest is LocalTestBase {
         // Risk manager can no longer set anything above 0.1%, including the value in force.
         vm.prank(riskManager);
         vm.expectRevert("SparkPrimeVault/fee-too-high");
-        vault.setRedeemFee(0.01e18);
+        vault.setRedeemFeeRate(0.01e18);
 
         vm.prank(riskManager);
-        vault.setRedeemFee(0.001e18);
-        assertEq(vault.redeemFee(), 0.001e18);
+        vault.setRedeemFeeRate(0.001e18);
+        assertEq(vault.redeemFeeRate(), 0.001e18);
     }
 
     /**********************************************************************************************/
@@ -1475,7 +1475,7 @@ contract CancelAndFeesTest is LocalTestBase {
     // re-anchored to `(totalAssets + gain) / totalSupply`, and `totalAssets` lands within 1 wei of
     // the real backing. The gain is a pure chi move, it does not touch spUSDC.
     function test_realizeGain_distributesFeeSurplusToRemainingHolders() public {
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
         _deposit(bob,   100e6);
         _deposit(alice, 1_000_000e6);
 
@@ -1508,7 +1508,7 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(spUsdc.convertToAssets(_vaultSpUsdc()) - vault.totalAssets(), 1);  // 1 wei
 
         // Bob can actually redeem the credited amount: the backing is real.
-        _setRedeemFee(0);
+        _setRedeemFeeRate(0);
         uint256 id = _requestRedeem(bob, SH_100);
         _processRedeems(type(uint256).max, 1);
         (, , uint256 left) = _redeemRequest(id);
@@ -1521,7 +1521,7 @@ contract CancelAndFeesTest is LocalTestBase {
     // `realizeGain(10_000_000_001)` (the surplus as measured in the alice-only scenario) under-
     // credits by 3 wei; the admin should measure `backing - totalAssets()` at call time.
     function test_realizeGain_roundNumberLeavesDust() public {
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
         _deposit(bob,   100e6);
         _deposit(alice, 1_000_000e6);
         _requestRedeem(alice, SH_1M);
@@ -1539,7 +1539,7 @@ contract CancelAndFeesTest is LocalTestBase {
     // With nobody left holding shares the surplus cannot be distributed: `realizeGain` reverts
     // `no-shares` and the only way out for the 10_000_000_001 USDC of fee is `take()`.
     function test_realizeGain_revertsWithNoHolders() public {
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
         _deposit(alice, 1_000_000e6);
         _requestRedeem(alice, SH_1M);
         _processRedeems(type(uint256).max, 1);
@@ -1672,7 +1672,7 @@ contract CancelAndFeesTest is LocalTestBase {
 
     // Escrowed redeem shares keep accruing VSR; cancel returns them intact minus the fee.
     function test_cancelRedeemRequest_afterChiGrowthReturnsSharesIntact() public {
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
         _deposit(alice, 1_000_000e6);
 
         uint256 id = _requestRedeem(alice, SH_1M);
@@ -1801,7 +1801,7 @@ contract CancelAndFeesTest is LocalTestBase {
 
     // Redeem / cancel cycles cost the fee each time; nothing else moves.
     function test_cancelRedeemRequest_cycleLosesFeeEachRound() public {
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
         _deposit(alice, 1_000_000e6);
 
         uint256 shares = SH_1M;

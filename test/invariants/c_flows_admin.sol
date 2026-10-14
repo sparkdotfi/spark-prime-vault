@@ -29,11 +29,11 @@ contract FlowsAdmin is FlowsUser {
         vm.stopPrank();
     }
 
-    function setRedeemFee(uint256 fee) public counted("setRedeemFee") {
-        fee = _bound(fee, 0, vault.maxRedeemFee());
+    function setRedeemFeeRate(uint256 fee) public counted("setRedeemFee") {
+        fee = _bound(fee, 0, vault.maxRedeemFeeRate());
 
         vm.startPrank(riskManager);
-        vault.setRedeemFee(fee);
+        vault.setRedeemFeeRate(fee);
         vm.stopPrank();
     }
 

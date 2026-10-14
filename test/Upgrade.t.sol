@@ -58,7 +58,7 @@ contract UpgradeTest is LocalTestBase {
 
         newImplementation = new SparkPrimeVaultV2Mock();
 
-        _setRedeemFee(0.001e18);
+        _setRedeemFeeRate(0.001e18);
         _setMinDeposit(1e6);
         _setMinRedeem(1e6);
         _setPrimeVsr(FOUR_PCT_VSR);
@@ -225,8 +225,8 @@ contract UpgradeTest is LocalTestBase {
         s_.maxCapacity                          = vault.maxCapacity();
         s_.minDeposit                           = vault.minDeposit();
         s_.minRedeem                            = vault.minRedeem();
-        s_.redeemFee                            = vault.redeemFee();
-        s_.maxRedeemFee                         = vault.maxRedeemFee();
+        s_.redeemFee                            = vault.redeemFeeRate();
+        s_.maxRedeemFee                         = vault.maxRedeemFeeRate();
         s_.totalSupply                          = vault.totalSupply();
         s_.pendingDepositSavingsShares          = vault.pendingDepositSavingsShares();
         s_.pendingCancelledDepositSavingsShares = vault.pendingCancelledDepositSavingsShares();
@@ -445,8 +445,8 @@ contract UpgradeTest is LocalTestBase {
         assertEq(uint256(vm.load(address(vault), bytes32(uint256(9)))),  vault.maxCapacity());
         assertEq(uint256(vm.load(address(vault), bytes32(uint256(10)))), vault.minDeposit());
         assertEq(uint256(vm.load(address(vault), bytes32(uint256(11)))), vault.minRedeem());
-        assertEq(uint256(vm.load(address(vault), bytes32(uint256(12)))), vault.redeemFee());
-        assertEq(uint256(vm.load(address(vault), bytes32(uint256(13)))), vault.maxRedeemFee());
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(12)))), vault.redeemFeeRate());
+        assertEq(uint256(vm.load(address(vault), bytes32(uint256(13)))), vault.maxRedeemFeeRate());
         assertEq(uint256(vm.load(address(vault), bytes32(uint256(14)))), vault.totalSupply());
         assertEq(uint256(vm.load(address(vault), bytes32(uint256(15)))), vault.pendingDepositSavingsShares());
         assertEq(uint256(vm.load(address(vault), bytes32(uint256(16)))), vault.pendingCancelledDepositSavingsShares());

@@ -29,13 +29,13 @@ contract AdminTest is LocalTestBase {
     event GainRealized(uint192 chi, uint256 gain);
     event LossRealized(uint192 chi, uint256 loss);
     event Drip(uint192 chi, uint256 diff);
-    event MaxRedeemFeeSet(uint256 fee);
+    event MaxRedeemFeeRateSet(uint256 fee);
     event MinDepositSet(uint256 minDeposit);
     event MinRedeemSet(uint256 minRedeem);
     event Take(address indexed to, uint256 shares);
     event VSRBoundsSet(uint256 minVSR, uint256 maxVSR);
     event VSRSet(uint256 vsr);
-    event RedeemFeeSet(uint256 fee);
+    event RedeemFeeRateSet(uint256 fee);
 
     // keccak256(abi.encode(uint256(keccak256("openzeppelin.storage.Initializable")) - 1)) & ~bytes32(uint256(0xff))
     bytes32 constant INITIALIZABLE_STORAGE =
@@ -117,28 +117,28 @@ contract AdminTest is LocalTestBase {
     function test_setMaxRedeemFee_tooHighBoundary() public {
         vm.startPrank(admin);
         vm.expectRevert("SparkPrimeVault/fee-too-high");
-        vault.setMaxRedeemFee(0.01e18 + 1);
+        vault.setMaxRedeemFeeRate(0.01e18 + 1);
 
-        vault.setMaxRedeemFee(0.01e18);
-        assertEq(vault.maxRedeemFee(), 0.01e18);
+        vault.setMaxRedeemFeeRate(0.01e18);
+        assertEq(vault.maxRedeemFeeRate(), 0.01e18);
     }
 
-    function test_setMaxRedeemFee() public {
+    function test_setMaxRedeemFeeRate() public {
         vm.prank(admin);
         vm.expectEmit(address(vault));
-        emit MaxRedeemFeeSet(0.005e18);
-        vault.setMaxRedeemFee(0.005e18);
-        assertEq(vault.maxRedeemFee(), 0.005e18);
+        emit MaxRedeemFeeRateSet(0.005e18);
+        vault.setMaxRedeemFeeRate(0.005e18);
+        assertEq(vault.maxRedeemFeeRate(), 0.005e18);
     }
 
     // C-7: lowering the max below the current fee leaves the fee above the max; new redeem
     // requests keep paying the old fee until the risk manager sets a new one.
     function test_setMaxRedeemFee_belowCurrentFeeLeavesFeeAboveMax() public {
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
         vm.prank(admin);
-        vault.setMaxRedeemFee(0.001e18);
-        assertEq(vault.redeemFee(),    0.01e18);
-        assertEq(vault.maxRedeemFee(), 0.001e18);
+        vault.setMaxRedeemFeeRate(0.001e18);
+        assertEq(vault.redeemFeeRate(),    0.01e18);
+        assertEq(vault.maxRedeemFeeRate(), 0.001e18);
 
         _deposit(alice, 1_000e6);
         uint256 shares_ = vault.balanceOf(alice);
@@ -148,10 +148,10 @@ contract AdminTest is LocalTestBase {
 
         vm.prank(riskManager);
         vm.expectRevert("SparkPrimeVault/fee-too-high");
-        vault.setRedeemFee(0.01e18);
+        vault.setRedeemFeeRate(0.01e18);
 
-        _setRedeemFee(0.001e18);
-        assertEq(vault.redeemFee(), 0.001e18);
+        _setRedeemFeeRate(0.001e18);
+        assertEq(vault.redeemFeeRate(), 0.001e18);
     }
 
     /**********************************************************************************************/
@@ -253,7 +253,7 @@ contract AdminTest is LocalTestBase {
     // minRedeem is gross of the fee: the queued amount can land below the minimum.
     function test_setMinRedeem_grossOfFee() public {
         _setMinRedeem(100e6);
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
         _deposit(alice, 1_000e6);
 
         uint256 id_ = _requestRedeem(alice, 100e6);
@@ -417,32 +417,32 @@ contract AdminTest is LocalTestBase {
 
     function test_setRedeemFee_tooHighBoundary() public {
         vm.prank(admin);
-        vault.setMaxRedeemFee(0.005e18);
+        vault.setMaxRedeemFeeRate(0.005e18);
 
         vm.startPrank(riskManager);
         vm.expectRevert("SparkPrimeVault/fee-too-high");
-        vault.setRedeemFee(0.005e18 + 1);
+        vault.setRedeemFeeRate(0.005e18 + 1);
 
-        vault.setRedeemFee(0.005e18);
-        assertEq(vault.redeemFee(), 0.005e18);
+        vault.setRedeemFeeRate(0.005e18);
+        assertEq(vault.redeemFeeRate(), 0.005e18);
     }
 
     function test_setRedeemFee_zeroMaxLocksFee() public {
         vm.prank(admin);
-        vault.setMaxRedeemFee(0);
+        vault.setMaxRedeemFeeRate(0);
 
         vm.startPrank(riskManager);
         vm.expectRevert("SparkPrimeVault/fee-too-high");
-        vault.setRedeemFee(1);
-        vault.setRedeemFee(0);
+        vault.setRedeemFeeRate(1);
+        vault.setRedeemFeeRate(0);
     }
 
-    function test_setRedeemFee() public {
+    function test_setRedeemFeeRate() public {
         vm.prank(riskManager);
         vm.expectEmit(address(vault));
-        emit RedeemFeeSet(0.001e18);
-        vault.setRedeemFee(0.001e18);
-        assertEq(vault.redeemFee(), 0.001e18);
+        emit RedeemFeeRateSet(0.001e18);
+        vault.setRedeemFeeRate(0.001e18);
+        assertEq(vault.redeemFeeRate(), 0.001e18);
     }
 
     /**********************************************************************************************/
@@ -943,8 +943,8 @@ contract AdminTest is LocalTestBase {
         assertEq(fresh_.maxCapacity(),  0);
         assertEq(fresh_.minDeposit(),   0);
         assertEq(fresh_.minRedeem(),    0);
-        assertEq(fresh_.redeemFee(),    0);
-        assertEq(fresh_.maxRedeemFee(), 0);
+        assertEq(fresh_.redeemFeeRate(),    0);
+        assertEq(fresh_.maxRedeemFeeRate(), 0);
         assertEq(fresh_.totalSupply(),  0);
         assertEq(fresh_.paused(),       false);
         assertEq(fresh_.version(),      "1");
@@ -980,7 +980,7 @@ contract AdminTest is LocalTestBase {
 
         vm.prank(riskManager);
         vm.expectRevert("SparkPrimeVault/fee-too-high");
-        fresh_.setRedeemFee(1);
+        fresh_.setRedeemFeeRate(1);
 
         assertEq(fresh_.availableCapacity(), 0);
     }

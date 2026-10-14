@@ -1000,7 +1000,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
     /**********************************************************************************************/
 
     function test_requestRedeem_zeroSharesCreatesGhostEntry() public {
-        _setRedeemFee(vault.MAX_REDEEM_FEE());
+        _setRedeemFeeRate(vault.MAX_REDEEM_FEE());
         assertEq(vault.minRedeem(),        0);
         assertEq(vault.balanceOf(mallory), 0);
 

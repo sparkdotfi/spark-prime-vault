@@ -164,7 +164,7 @@ contract FlowsUser is Init {
             shares = kind == 1 ? minShares : _bound(shares, minShares, balance);
         }
 
-        uint256 fee = _divup(shares * vault.redeemFee(), WAD);
+        uint256 fee = _divup(shares * vault.redeemFeeRate(), WAD);
         if (shares - fee == 0) ghostRedeemEntries++;
 
         vm.startPrank(user);

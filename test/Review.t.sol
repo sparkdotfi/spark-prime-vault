@@ -43,7 +43,7 @@ contract ReviewTest is TestBase {
         vault.grantRole(SETTER_ROLE,       setter);
         vault.grantRole(TAKER_ROLE,        taker);
         vault.setCapacity(1_000_000e6);
-        vault.setMaxRedeemFee(0.01e18);
+        vault.setMaxRedeemFeeRate(0.01e18);
         vm.stopPrank();
 
         _fund(alice, 1_000_000e6);
@@ -253,7 +253,7 @@ contract ReviewTest is TestBase {
 
     function test_F5_tinyRedeemRequestsBecomeGhostEntries() public {
         vm.prank(riskManager);
-        vault.setRedeemFee(0.01e18);
+        vault.setRedeemFeeRate(0.01e18);
         _deposit(alice, 1_000e6);
 
         vm.startPrank(alice);
@@ -280,7 +280,7 @@ contract ReviewTest is TestBase {
 
     function test_feeRoundsUp() public {
         vm.prank(riskManager);
-        vault.setRedeemFee(0.01e18);
+        vault.setRedeemFeeRate(0.01e18);
         _deposit(alice, 1_000e6);
         vm.prank(alice);
         vault.requestRedeem(101, alice);           // 1% of 101 = 1.01 -> fee 2

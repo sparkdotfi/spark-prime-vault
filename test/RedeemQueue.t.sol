@@ -616,7 +616,7 @@ contract RedeemQueueTest is LocalTestBase {
     function test_requestRedeem_feeOnePercent_exactAmounts() public {
         _deposit(alice, 1_100_000e6);
         assertEq(vault.balanceOf(alice), 1_089_445_702_520);
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
 
         uint256 id = _requestRedeem(alice, 1_000_000e6);
 
@@ -638,7 +638,7 @@ contract RedeemQueueTest is LocalTestBase {
     // Fee rounds up: 999_999_999_999 * 1% = 9_999_999_999.99 -> 10_000_000_000.
     function test_requestRedeem_feeRoundsUp() public {
         _deposit(alice, 1_100_000e6);
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
 
         uint256 id = _requestRedeem(alice, 999_999_999_999);
 
@@ -652,7 +652,7 @@ contract RedeemQueueTest is LocalTestBase {
     // Known F-5: a 1-wei request with any fee burns the wei and leaves a 0-share ghost entry.
     function test_requestRedeem_oneWeiWithFee_ghostEntry_F5() public {
         _deposit(alice, 100_000e6);
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
 
         uint256 id = _requestRedeem(alice, 1);
 
@@ -672,7 +672,7 @@ contract RedeemQueueTest is LocalTestBase {
     // The fee is burned from escrow, so a request of the full balance with a 1% fee is accepted.
     function test_requestRedeem_fullBalanceWithFee() public {
         _deposit(alice, 100_000e6);
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
 
         uint256 id = _requestRedeem(alice, DEPOSIT_100K_SHARES);
 
@@ -924,7 +924,7 @@ contract RedeemQueueTest is LocalTestBase {
     function test_BUG_requestRedeem_zeroSharesCreatesGhostEntry() public {
         _deposit(alice, 100_000e6);
         _deposit(bob,   100_000e6);
-        _setRedeemFee(0.01e18);  // fee on 0 is 0, no deterrent
+        _setRedeemFeeRate(0.01e18);  // fee on 0 is 0, no deterrent
         assertEq(vault.minRedeem(), 0);
 
         vm.expectEmit(true, true, true, true, address(vault));
@@ -987,7 +987,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(vault.convertToAssets(1_000e6), 1_009_687_768);
 
         // With a 1% fee the queued amount is below the minimum (minimum is gross of fee).
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
         uint256 id2 = _requestRedeem(alice, 1_000e6);
         assertEq(_queued(id2), 990_000_000);
     }
@@ -1068,7 +1068,7 @@ contract RedeemQueueTest is LocalTestBase {
         address[3] memory users = [alice, bob, carol];
         _setSpUsdcVsr(FOUR_PCT_VSR);
         _setPrimeVsr(ONE_PCT_VSR);
-        _setRedeemFee(0.001e18);
+        _setRedeemFeeRate(0.001e18);
 
         for (uint256 step; step < 24; ++step) {
             uint256 r      = uint256(keccak256(abi.encode(seed, step)));

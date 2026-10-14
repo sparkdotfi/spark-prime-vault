@@ -67,14 +67,14 @@ contract AuthorizationTest is LocalTestBase {
             if (actors_[i] == admin) continue;
             vm.prank(actors_[i]);
             _expectUnauthorized(actors_[i], DEFAULT_ADMIN_ROLE);
-            vault.setMaxRedeemFee(0.005e18);
+            vault.setMaxRedeemFeeRate(0.005e18);
         }
     }
 
     function test_setMaxRedeemFee_authorized() public {
         vm.prank(admin);
-        vault.setMaxRedeemFee(0.005e18);
-        assertEq(vault.maxRedeemFee(), 0.005e18);
+        vault.setMaxRedeemFeeRate(0.005e18);
+        assertEq(vault.maxRedeemFeeRate(), 0.005e18);
     }
 
     function test_setMinDeposit_notAuthorized() public {
@@ -413,14 +413,14 @@ contract AuthorizationTest is LocalTestBase {
             if (actors_[i] == riskManager) continue;
             vm.prank(actors_[i]);
             _expectUnauthorized(actors_[i], RISK_MANAGER_ROLE);
-            vault.setRedeemFee(0.001e18);
+            vault.setRedeemFeeRate(0.001e18);
         }
     }
 
     function test_setRedeemFee_authorized() public {
         vm.prank(riskManager);
-        vault.setRedeemFee(0.001e18);
-        assertEq(vault.redeemFee(), 0.001e18);
+        vault.setRedeemFeeRate(0.001e18);
+        assertEq(vault.redeemFeeRate(), 0.001e18);
     }
 
     function test_realizeLoss_notAuthorized() public {
@@ -951,7 +951,7 @@ contract AuthorizationTest is LocalTestBase {
         _pausedFixture();
         vm.startPrank(admin);
         vault.setCapacity(5);
-        vault.setMaxRedeemFee(0.005e18);
+        vault.setMaxRedeemFeeRate(0.005e18);
         vault.setMinDeposit(1);
         vault.setMinRedeem(2);
         vault.setVSRBounds(RAY, FOUR_PCT_VSR);
@@ -959,14 +959,14 @@ contract AuthorizationTest is LocalTestBase {
         vault.revokeRole(SETTER_ROLE, alice);
         vm.stopPrank();
         vm.prank(riskManager);
-        vault.setRedeemFee(0.005e18);
+        vault.setRedeemFeeRate(0.005e18);
 
         assertEq(vault.maxCapacity(),   5);
-        assertEq(vault.maxRedeemFee(),  0.005e18);
+        assertEq(vault.maxRedeemFeeRate(),  0.005e18);
         assertEq(vault.minDeposit(),    1);
         assertEq(vault.minRedeem(),     2);
         assertEq(vault.maxVSR(),        FOUR_PCT_VSR);
-        assertEq(vault.redeemFee(),     0.005e18);
+        assertEq(vault.redeemFeeRate(),     0.005e18);
         assertTrue(vault.paused());
     }
 

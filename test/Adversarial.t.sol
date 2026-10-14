@@ -827,7 +827,7 @@ contract AdversarialTest is LocalTestBase {
         assertLe(shares, type(uint128).max);
         assertEq(vault.totalAssets(), vault.convertToAssets(shares));
 
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
         uint256 fee = (shares * 0.01e18 - 1) / WAD + 1;
         _requestRedeem(alice, shares);
         assertEq(vault.pendingRedeemShares(), shares - fee);
@@ -987,7 +987,7 @@ contract AdversarialTest is LocalTestBase {
     }
 
     function test_griefing_ghostRedeemEntriesGasPerSkip() public {
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
         _deposit(attacker, 1e6);
         _deposit(alice, 100e6);
 
@@ -1057,7 +1057,7 @@ contract AdversarialTest is LocalTestBase {
     function test_griefing_ghostsBlockedByMinimums() public {
         _setMinDeposit(1e6);
         _setMinRedeem(1e6);
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
         _deposit(attacker, 10e6);
 
         vm.startPrank(attacker);
@@ -1130,7 +1130,7 @@ contract AdversarialTest is LocalTestBase {
         _processDeposits(type(uint256).max, 100);
         assertEq(vault.depositHead(), 1);
 
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
         _requestRedeem(alice, vault.balanceOf(alice) / 2);
         vm.startPrank(alice);
         for (uint256 i; i < 10; ++i) vault.requestRedeem(1, alice);
@@ -1241,7 +1241,7 @@ contract AdversarialTest is LocalTestBase {
             vm.expectRevert(abi.encodeWithSignature(
                 "AccessControlUnauthorizedAccount(address,bytes32)", who[i], DEFAULT_ADMIN_ROLE
             ));
-            vault.setMaxRedeemFee(0);
+            vault.setMaxRedeemFeeRate(0);
             vm.expectRevert(abi.encodeWithSignature(
                 "AccessControlUnauthorizedAccount(address,bytes32)", who[i], TAKER_ROLE
             ));
@@ -1370,9 +1370,9 @@ contract AdversarialTest is LocalTestBase {
     function test_compromised_riskManager_maxFeeOnEveryExit() public {
         vm.prank(riskManager);
         vm.expectRevert("SparkPrimeVault/fee-too-high");
-        vault.setRedeemFee(0.01e18 + 1);
+        vault.setRedeemFeeRate(0.01e18 + 1);
 
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
 
         _deposit(alice, 1_000_000e6);
         uint256 shares = vault.balanceOf(alice);
@@ -1384,14 +1384,14 @@ contract AdversarialTest is LocalTestBase {
         assertLt(usdc.balanceOf(alice), 990_001e6);
         assertGt(usdc.balanceOf(alice), 989_999e6);
 
-        // Admin can cap it harder: setMaxRedeemFee(0) then the RM cannot charge anything.
+        // Admin can cap it harder: setMaxRedeemFeeRate(0) then the RM cannot charge anything.
         vm.prank(admin);
-        vault.setMaxRedeemFee(0);
+        vault.setMaxRedeemFeeRate(0);
         vm.prank(riskManager);
         vm.expectRevert("SparkPrimeVault/fee-too-high");
-        vault.setRedeemFee(1);
+        vault.setRedeemFeeRate(1);
         // Existing fee is NOT reset by lowering the max.
-        assertEq(vault.redeemFee(), 0.01e18);
+        assertEq(vault.redeemFeeRate(), 0.01e18);
     }
 
     // RISK_MANAGER while paused (guardian paused for an unrelated reason): realizeLoss still has
@@ -1593,7 +1593,7 @@ contract AdversarialTest is LocalTestBase {
     function testFuzz_queueInvariants_randomOps(bytes32 seed) public {
         address[3] memory users = [alice, bob, rando];
         _setCapacity(500_000e6);
-        _setRedeemFee(0.001e18);
+        _setRedeemFeeRate(0.001e18);
 
         for (uint256 step; step < 24; ++step) {
             uint256 r   = uint256(keccak256(abi.encode(seed, step)));
@@ -2039,7 +2039,7 @@ contract AdversarialTest is LocalTestBase {
             abi.encodeWithSelector(usdc.transfer.selector, blacklisted),
             "Blacklistable: account is blacklisted"
         );
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
 
         _deposit(alice, 1_000_000e6);
         _deposit(bob, 10_000e6);
@@ -2325,7 +2325,7 @@ contract AdversarialTest is LocalTestBase {
         internal
         returns (uint256 attackerOut, uint256 aliceAssets, uint256 aliceFair)
     {
-        _setRedeemFee(fee);
+        _setRedeemFeeRate(fee);
         _deposit(alice, tvl);
         aliceFair = vault.assetsOf(alice) + gain;              // alice alone would get the gain
 

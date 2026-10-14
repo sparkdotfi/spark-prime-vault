@@ -119,7 +119,7 @@ contract LocalTestBase is Test {
         vault.grantRole(TAKER_ROLE,        taker);
         vault.grantRole(UNPAUSER_ROLE,     unpauser);
         vault.setCapacity(type(uint128).max);
-        vault.setMaxRedeemFee(vault.MAX_REDEEM_FEE());
+        vault.setMaxRedeemFeeRate(vault.MAX_REDEEM_FEE());
         vault.setVSRBounds(RAY, MAX_VSR);
         vm.stopPrank();
 
@@ -165,9 +165,9 @@ contract LocalTestBase is Test {
         vault.setCapacity(cap);
     }
 
-    function _setRedeemFee(uint256 fee) internal {
+    function _setRedeemFeeRate(uint256 fee) internal {
         vm.prank(riskManager);
-        vault.setRedeemFee(fee);
+        vault.setRedeemFeeRate(fee);
     }
 
     function _setMinDeposit(uint256 minDep) internal {

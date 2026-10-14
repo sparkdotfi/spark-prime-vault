@@ -381,7 +381,7 @@ contract RoundingTest is LocalTestBase {
     ///      rate of 1 / s. At s == 1 the whole request is fee: 0 shares are queued, the entry is
     ///      dead (`no-request` on cancel) and the share is burned.
     function test_R6_feeCeil_oneShareRequest_isEntirelyFee() public {
-        _setRedeemFee(1);                         // 1e-18, the smallest non-zero fee
+        _setRedeemFeeRate(1);                         // 1e-18, the smallest non-zero fee
         _deposit(alice, 1_000e6);
         uint256 supplyBefore = vault.totalSupply();
 
@@ -396,7 +396,7 @@ contract RoundingTest is LocalTestBase {
         vault.cancelRedeemRequest(id, alice);
 
         // At the 1% cap: 99 shares pay 1 (1.01%), 100 shares pay 1 (1%), 101 shares pay 2 (1.98%).
-        _setRedeemFee(0.01e18);
+        _setRedeemFeeRate(0.01e18);
         assertEq(math.divUp(99  * 0.01e18, WAD), 1);
         assertEq(math.divUp(100 * 0.01e18, WAD), 1);
         assertEq(math.divUp(101 * 0.01e18, WAD), 2);
@@ -407,7 +407,7 @@ contract RoundingTest is LocalTestBase {
     ) public {
         _randomChis(vsrS, vsrP, secs);
         fee = bound(fee, 0, vault.MAX_REDEEM_FEE());
-        _setRedeemFee(fee);
+        _setRedeemFeeRate(fee);
 
         _deposit(alice, 1e15);
         uint256 balance = vault.balanceOf(alice);
