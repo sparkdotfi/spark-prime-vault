@@ -20,8 +20,8 @@ contract MockUSDC is ERC20 {
 /// @dev Local (non-fork) harness: real spUSDC `SparkVault` code deployed behind a proxy over a
 ///      6-decimal mock USDC, and the `SparkPrimeVault` under test on top of it. No RPC needed.
 ///      Both indexes start "ugly" (spUSDC chi ~1.0476e27, spPRIME chi ~1.0098e27) with VSR frozen
-///      at RAY; tests that want accrual set a rate explicitly. `src/` carries review patches F-1
-///      (cancel refunds go to request.owner unless the owner calls) and F-3 (deposit loop break).
+///      at RAY; tests that want accrual set a rate explicitly. `src/` is upstream
+///      `refactor/more-simplifying`, unpatched.
 ///
 ///      Actors
 ///        spUSDC side : spAdmin (DEFAULT_ADMIN + sets cap/bounds), spSetter (VSR), spTaker (USDC out)
@@ -170,9 +170,19 @@ contract LocalTestBase is Test {
         vault.setRedeemFee(fee);
     }
 
-    function _setMinimums(uint256 minDep, uint256 minWd) internal {
+    function _setMinDeposit(uint256 minDep) internal {
         vm.prank(admin);
-        vault.setMinimums(minDep, minWd);
+        vault.setMinDeposit(minDep);
+    }
+
+    function _setMinRedeem(uint256 minRedeemShares) internal {
+        vm.prank(admin);
+        vault.setMinRedeem(minRedeemShares);
+    }
+
+    function _realizeLoss(uint256 loss) internal {
+        vm.prank(riskManager);
+        vault.realizeLoss(loss);
     }
 
     function _setPrimeVsr(uint256 vsr_) internal {
@@ -195,8 +205,20 @@ contract LocalTestBase is Test {
         vault.processRedeemQueue(maxShares, maxRequests);
     }
 
+    function _processCancelledDeposits(uint256 maxSavingsShares, uint256 maxRequests) internal {
+        vm.prank(rebalancer);
+        vault.processCancelledDepositQueue(maxSavingsShares, maxRequests);
+    }
+
+    /// @dev Owner cancels a queued deposit and the planner settles the refund immediately.
+    function _cancelDepositAndSettle(address who, uint256 id) internal returns (uint256 cancelId) {
+        vm.prank(who);
+        cancelId = vault.cancelDepositRequest(id, who);
+        _processCancelledDeposits(type(uint256).max, type(uint256).max);
+    }
+
     function _pause() internal {
-        vm.prank(guardian);
+        vm.prank(admin);  // pause moved from GUARDIAN to DEFAULT_ADMIN on refactor/more-simplifying
         vault.pause();
     }
 
@@ -279,6 +301,12 @@ contract LocalTestBase is Test {
         internal view returns (address owner, address recipient, uint256 shares)
     {
         return vault.redeemQueue(id);
+    }
+
+    function _cancelledDepositRequest(uint256 id)
+        internal view returns (address owner, address recipient, uint256 shares)
+    {
+        return vault.cancelledDepositQueue(id);
     }
 
     function _vaultSpUsdc() internal view returns (uint256) {
