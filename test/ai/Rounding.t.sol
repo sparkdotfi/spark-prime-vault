@@ -174,7 +174,7 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R1  _requestDeposit:717  spUSDC.deposit  floor(assets * RAY / chi_s)                     ***/
+    /*** R1  _requestDeposit:771  spUSDC.deposit  floor(assets * RAY / chi_s)                     ***/
     /**********************************************************************************************/
 
     function testFuzz_R1_spUsdcDeposit_roundsInFavourOfSpUsdc(
@@ -217,7 +217,7 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R2  _processPendingDeposits:744  spUSDC.convertToShares(convertToAssets(capacity))         ***/
+    /*** R2  _processPendingDeposits:805  spUSDC.convertToShares(convertToAssets(capacity))         ***/
     /**********************************************************************************************/
 
     /// @dev The admitted spUSDC amount is floor(floor(A * c_p) / c_s): at most 1 + 1/c_s below
@@ -251,8 +251,8 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R3  _processPendingDeposits:762  spUSDC.convertToAssets  floor(s * chi_s / RAY)            ***/
-    /*** R4  _processPendingDeposits:763  convertToShares         floor(assets * RAY / chi_p)       ***/
+    /*** R3  _processPendingDeposits:823  spUSDC.convertToAssets  floor(s * chi_s / RAY)            ***/
+    /*** R4  _processPendingDeposits:824  convertToShares         floor(assets * RAY / chi_p)       ***/
     /**********************************************************************************************/
 
     function testFuzz_R3_R4_fillConversion_roundsInFavourOfVault(
@@ -289,7 +289,7 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R5  requestRedeem:487  shares_ >= minRedeem  (minRedeem in SHARES: no rounding)        ***/
+    /*** R5  requestRedeem:457  shares_ >= minRedeem  (minRedeem in SHARES: no rounding)        ***/
     /**********************************************************************************************/
 
     /// @dev The minimum is now compared in shares, so the check is exact: `minRedeem` passes,
@@ -367,13 +367,22 @@ contract RoundingTest is LocalTestBase {
         assertEq(vault.pendingRedeemShares(), 0);
         assertEq(vault.totalSupply(), 0);
 
+        // Redeem requests are final (no cancel at bf93b0d); the dead entry is skipped by the
+        // planner (`:896` continue) and cannot be repointed (`:513` no-request).
         vm.prank(bob);
         vm.expectRevert("SparkPrimeVault/no-request");
-        vault.cancelRedeemRequest(id, bob);
+        vault.updateRedeemRecipient(id, bob);
+        // No spUSDC in the vault: `remaining_ == 0` skips the loop (`:891`) and the dead head is
+        // not walked. Dead redeem entries only advance the head once there is liquidity.
+        _processRedeems(type(uint256).max, type(uint256).max);
+        assertEq(vault.firstPendingRedeemId(), 0);
+        _deposit(alice, 1_000e6);
+        _processRedeems(type(uint256).max, type(uint256).max);
+        assertEq(vault.firstPendingRedeemId(), 1);
     }
 
     /**********************************************************************************************/
-    /*** R6  requestRedeem:494  _divUp(shares * redeemFee, WAD)                                  ***/
+    /*** R6  requestRedeem:464  _divUp(shares * redeemFee, WAD)                                  ***/
     /**********************************************************************************************/
 
     /// @dev With `minRedeem` now in shares (and 0 by default) the ceil has a visible edge: for
@@ -393,7 +402,10 @@ contract RoundingTest is LocalTestBase {
 
         vm.prank(alice);
         vm.expectRevert("SparkPrimeVault/no-request");
-        vault.cancelRedeemRequest(id, alice);
+        vault.updateRedeemRecipient(id, alice);
+        _processRedeems(type(uint256).max, type(uint256).max);
+        assertEq(vault.firstPendingRedeemId(), 1);  // dead entry skipped, nothing paid
+        assertEq(usdc.balanceOf(alice), 0);
 
         // At the 1% cap: 99 shares pay 1 (1.01%), 100 shares pay 1 (1%), 101 shares pay 2 (1.98%).
         _setRedeemFeeRate(0.01e18);
@@ -445,7 +457,7 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R7  _processPendingRedeems:822  convertToShares(availableLiquidAssets())  floor            ***/
+    /*** R7  _processPendingRedeems:886  convertToShares(availableLiquidAssets())  floor            ***/
     /**********************************************************************************************/
 
     function testFuzz_R7_liquidityClamp_roundsInFavourOfVault(
@@ -486,8 +498,8 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R8  _processPendingRedeems:835  convertToAssets(shares)  floor                             ***/
-    /*** R9  _processPendingRedeems:845  spUSDC.withdraw(assets)  burns ceil(assets * RAY / chi_s)  ***/
+    /*** R8  _processPendingRedeems:899  convertToAssets(shares)  floor                             ***/
+    /*** R9  _processPendingRedeems:909  spUSDC.withdraw(assets)  burns ceil(assets * RAY / chi_s)  ***/
     /**********************************************************************************************/
 
     function testFuzz_R8_R9_redeemFill_floorPayoutCeilBurn(
@@ -579,7 +591,7 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R10 _processPendingDepositCancellations:805  spUSDC.redeem(shares)  floor(s * chi_s / RAY)   ***/
+    /*** R10 _processPendingDepositCancellations:869  spUSDC.redeem(shares)  floor(s * chi_s / RAY)   ***/
     /***     budget :784  min(maxSavingsShares, spUSDC.maxRedeem(vault))                        ***/
     /***     maxRedeem = min(floor(L * RAY / chi_s), bal_s), L = USDC held by spUSDC            ***/
     /**********************************************************************************************/
@@ -875,7 +887,7 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R11 drip:649 / nowChi:698  _rpow(vsr, dt) * chi / RAY, _rpow half-up                    ***/
+    /*** R11 drip:620 / nowChi:748  _rpow(vsr, dt) * chi / RAY, _rpow half-up                    ***/
     /**********************************************************************************************/
 
     /// @dev The harness indexes equal the python mirror of `_rpow` (test/tables/drip_reference.py).
@@ -974,7 +986,7 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R12 convertToAssets:668 / convertToShares:672  floor / floor                            ***/
+    /*** R12 convertToAssets:730 / convertToShares:734  floor / floor                            ***/
     /**********************************************************************************************/
 
     function testFuzz_R12_convertToAssets_roundsInFavourOfVault(
@@ -1028,7 +1040,7 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R13 realizeLoss:382  chi = uint192(((totalAssets() - loss) * RAY) / totalSupply)       ***/
+    /*** R13 realizeLoss:378  chi = uint192(((totalAssets() - loss) * RAY) / totalSupply)       ***/
     /***     requires :376  0 < loss < totalAssets()  and  :380  totalSupply != 0               ***/
     /**********************************************************************************************/
 
@@ -1288,7 +1300,7 @@ contract RoundingTest is LocalTestBase {
 
 
     /**********************************************************************************************/
-    /*** R14 realizeGain:306  chi = uint192(((totalAssets() + gain) * RAY) / totalSupply)       ***/
+    /*** R14 realizeGain:302  chi = uint192(((totalAssets() + gain) * RAY) / totalSupply)       ***/
     /***     requires :298  gain > 0  and  :304  totalSupply != 0; drip() first; no pause check   ***/
     /**********************************************************************************************/
 
@@ -1888,6 +1900,137 @@ contract RoundingTest is LocalTestBase {
         assertEq(vault.totalSupply(), 0);
         assertEq(_depositShares(id), queued - 1);  // another spUSDC share burnt, nothing minted
         assertEq(vault.availableCapacity(), 2);
+    }
+
+    /// @dev Round 4 (new idea): after a loss `chi_p < RAY`, so `convertToShares` mints more
+    ///      shares than USDC wei. The capacity chain `:805` still cannot over-mint: with
+    ///      `A = floor(cap chi_p / RAY)`, `s = floor(A RAY / chi_s)`, a fill of `s` pays
+    ///      `a = floor(s chi_s / RAY) <= A` and mints `floor(a RAY / chi_p) <= floor(A RAY / chi_p)
+    ///      <= cap`. Fuzzed over losses down to `chi = floor(RAY / S)`: the instant fill and a
+    ///      follow-up planner call keep `totalSupply <= maxCapacity`, and the minted amount is
+    ///      exactly the two-floor composition of `min(request, remaining)`.
+    function testFuzz_capacity_afterLoss_chiBelowRay_neverOverMints(
+        uint256 loss, uint256 cap, uint256 assets, uint256 vsrS, uint256 vsrP, uint256 secs
+    ) public {
+        _randomChis(vsrS, vsrP, secs);
+        _deposit(alice, 1_000_000e6);
+
+        uint256 ta = vault.totalAssets();
+        loss = bound(loss, 1, ta - 1);
+        _pause();
+        _realizeLoss(loss);
+        _unpause();
+        uint256 chiP = vault.chi();
+        assertEq(vault.nowChi(), chiP);
+
+        cap    = bound(cap, 0, 1e12);
+        assets = bound(assets, 1, 4e15);
+        uint256 supply = vault.totalSupply();
+        _setCapacity(supply + cap);
+
+        uint256 remaining = spUsdc.convertToShares(vault.convertToAssets(cap));
+        uint256 queued    = spUsdc.convertToShares(assets);
+        uint256 s         = queued < remaining ? queued : remaining;
+        uint256 a         = s * spUsdc.chi() / RAY;
+        uint256 expected  = a * RAY / chiP;
+
+        uint256 id = _deposit(bob, assets);
+
+        assertEq(vault.balanceOf(bob), expected, "fill is the two-floor composition");
+        assertLe(vault.totalSupply(), supply + cap, "instant fill over capacity");
+        if (chiP < RAY && a != 0) assertGe(expected, a, "chi < RAY: shares >= assets");
+
+        _processDeposits(type(uint256).max, 1);
+        assertLe(vault.totalSupply(), supply + cap, "planner fill over capacity");
+        assertLe(_depositShares(id), queued - s, "planner undid the instant fill");
+    }
+
+    /// @dev Round 4: a severe loss shrinks what one share of capacity is worth. At the largest
+    ///      admissible loss (`TA - 1`, chi = floor(RAY / S) ~ 1.0097e15) a headroom below
+    ///      `RAY / chi` ~ 9.9e11 shares (about the whole supply) converts to 0 USDC (`:805`), so
+    ///      no deposit can be filled until the admin raises capacity by more than that; the
+    ///      deposit is queued and the planner loop is skipped.
+    ///      At a 50% loss 1 share of headroom is worth 0 USDC and 2 shares worth 1 wei, which
+    ///      spUSDC turns into 0 shares: the smallest fillable headroom is 3 shares (1 spUSDC share
+    ///      -> 1 USDC wei -> 2 spPRIME shares). No over-mint in either case.
+    function test_capacity_afterLoss_headroomBelowOneUsdcWeiIsUnfillable() public {
+        _deposit(alice, 1_000_000e6);
+        uint256 supply = vault.totalSupply();
+        uint256 ta     = vault.totalAssets();
+
+        // Loss leaving 45% of the supply in assets: chi ~ 0.45e27 (one floor below)
+        _pause();
+        _realizeLoss(ta - supply * 45 / 100);
+        _unpause();
+        uint256 chiHalf = vault.chi();
+        assertLt(chiHalf, 0.45e27 + 1);
+        assertGt(chiHalf, 0.45e27 - RAY / supply - 1);
+
+        assertEq(vault.convertToAssets(1), 0);
+        assertEq(vault.convertToAssets(2), 0);
+        assertEq(vault.convertToAssets(3), 1);
+        assertEq(spUsdc.convertToShares(1), 0);
+
+        _setCapacity(supply + 2);
+        uint256 id = _deposit(bob, 1_000e6);
+        assertEq(vault.balanceOf(bob), 0);
+        assertEq(vault.totalSupply(),  supply);
+        assertEq(vault.firstPendingDepositId(), 1);  // head on bob's entry, nothing fillable
+
+        // 3 shares of headroom: A = 1, s = 0 still (1 USDC wei < c_s). Need A >= ceil(c_s) = 2:
+        // cap with floor(cap * chi / RAY) = 2 -> cap = 5 (5 * 0.45 = 2.25).
+        _setCapacity(supply + 3);
+        _processDeposits(type(uint256).max, 1);
+        assertEq(vault.balanceOf(bob), 0);
+        _setCapacity(supply + 5);
+        assertEq(vault.convertToAssets(5), 2);
+        assertEq(spUsdc.convertToShares(2), 1);
+        _processDeposits(type(uint256).max, 1);
+        assertEq(_depositShares(id), spUsdc.convertToShares(1_000e6) - 1);
+        // 1 spUSDC share -> 1 USDC wei -> floor(RAY / chi) = 2 spPRIME shares
+        assertEq(vault.balanceOf(bob), RAY / chiHalf);
+        assertEq(vault.balanceOf(bob), 2);
+        assertLe(vault.totalSupply(), supply + 5);
+
+        // Largest loss: chi = floor(RAY / S) ~ 1.0097e15. 9e11 shares of headroom (about the
+        // whole supply) are worth 0 USDC wei; RAY / chi + 1 shares are worth 1 wei.
+        _pause();
+        _realizeLoss(vault.totalAssets() - 1);
+        _unpause();
+        uint256 chiMin = vault.chi();
+        assertEq(chiMin, RAY / vault.totalSupply());
+        assertEq(chiMin, 1_009_687_768_241_653);  // S = SH_1M + 2 = 990_405_184_111
+        assertEq(vault.convertToAssets(9e11), 0);
+        _setCapacity(vault.totalSupply() + 9e11);
+        _processDeposits(type(uint256).max, 1);
+        assertEq(vault.balanceOf(bob), 2);  // nothing moved
+        assertEq(vault.convertToAssets(RAY / chiMin), 0);
+        assertEq(vault.convertToAssets(RAY / chiMin + 1), 1);
+        assertGe(RAY / chiMin, vault.totalSupply());  // one share of capacity per share of supply
+    }
+
+    /// @dev Round 4: F-4's zero-mint region is empty once `chi_p <= RAY`: `K = (chi_p - 1) / RAY
+    ///      = 0`, `sMax = ceil(RAY / chi_s) - 1 = 0` for `chi_s > RAY`. A 1-share fill then mints
+    ///      `floor(RAY / chi_p) >= 1`, so the DQ-1 dust head (1 spUSDC share) becomes fillable
+    ///      and no spUSDC is burnt for nothing after a loss.
+    function testFuzz_F4_afterLoss_zeroMintRegionIsEmpty(uint256 loss, uint256 vsrS, uint256 secs)
+        public
+    {
+        _randomChis(vsrS, RAY, secs);
+        _deposit(alice, 1_000_000e6);
+        uint256 ta = vault.totalAssets();
+        loss = bound(loss, ta - vault.totalSupply(), ta - 1);  // chi lands at or below RAY
+        _pause();
+        _realizeLoss(loss);
+        _unpause();
+        uint256 chiP = vault.chi();
+        assertLe(chiP, RAY);
+
+        assertEq(_zeroMintMax(spUsdc.chi(), chiP), 0);
+        assertGe(spUsdc.convertToAssets(1), 1);
+        assertGe(vault.convertToShares(spUsdc.convertToAssets(1)), 1, "1 spUSDC share mints 0");
+        assertEq(vault.convertToShares(1), RAY / chiP);
+        assertGe(vault.convertToShares(1), 1);
     }
 
     /**********************************************************************************************/

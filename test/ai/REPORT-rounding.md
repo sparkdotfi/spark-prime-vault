@@ -1,5 +1,118 @@
 # Rounding campaign report: `src/SparkPrimeVault.sol`
 
+## Round 4 (bf93b0d)
+
+Branch `campaign-v4/queues-rounding`, source = `fix/update-guardian-transfer` @ `bf93b0d`. File
+`test/ai/Rounding.t.sol`: 71 tests, 70 pass, 1 deliberate failing proof (C-1), 41 fuzz tests.
+`test/ai/tables/*` unchanged (`drip`/`nowChi`/`_rpow` are identical, the 112-row table still
+matches). Final run: `FOUNDRY_FUZZ_RUNS=10000 forge test --match-path test/ai/Rounding.t.sol`:
+70 passed, 1 failed (`test_BUG_processPendingRedeems_batchCeilBurnsExceedSpUsdcBalance`, still
+`SparkVault/insufficient-balance`, same 3548 / 2396 + 1285 numbers; the clamp `:886` is in assets
+per call, the burn `:909` a ceil per fill), 0 skipped.
+
+### What changed in the file
+
+- `cancelRedeemRequest` is gone. The two R5/R6 tests that used it to prove a 0-share redeem entry
+  is dead now prove it through `updateRedeemRecipient` (`no-request`, `:513`) and the planner:
+  the dead entry is skipped (`:896`) and the head moves past it, but only when the vault holds
+  spUSDC, because `remaining_ == 0` skips the loop (`:891`) before the `continue`. With no
+  liquidity a dead head stays at 0 (`test_R5_zeroShareRequest_isAcceptedWhenMinRedeemIsZero`).
+- Every row re-pinned (table below). No formula changed; all proofs carry over.
+
+### Changed rows
+
+| Row | Round 3 | Round 4 | Status |
+|---|---|---|---|
+| R1 | `:717` | `:771` | re-pinned |
+| R2 | `:744` | `:805` | re-pinned; after-loss case added (no over-mint) |
+| R3, R4 | `:762`, `:763` | `:823`, `:824` | re-pinned; F-4 region after a loss characterised |
+| R5 | `:487` | `:457` | re-pinned; dead-entry proof rewritten without cancel |
+| R6 | `:494` | `:464` | re-pinned; same |
+| R7 | `:822` | `:886` | re-pinned |
+| R8, R9 | `:835`, `:845` | `:899`, `:909` | re-pinned; C-1 persists |
+| R10 | refund `:805`, budget `:784` | refund `:869`, budget `:847-848` | re-pinned; batch-safety proof and chunk bounds unchanged |
+| R11 | `:649`, `:698` | `:620`, `:748` | re-pinned, table unchanged |
+| R12 | `:668`, `:672` | `:730`, `:734` | re-pinned |
+| R13 | `:382`, `:376`, `:380` | `:378`, `invalid-loss` `:372`, `no-shares` `:376` | re-pinned; the round-3 harness value "chi = 1_009_687" after `loss = TA - 1` was a unit slip: `floor(RAY / S) = 1_009_687_768_241_653` (1.0097e15) |
+| R14 | `:306`, `:298`, `:304` | `:302`, `invalid-gain` `:294`, `no-shares` `:300` | re-pinned |
+| cap | `:744` | `:805` | re-pinned |
+
+### New: the capacity chain after a loss (`chi_p < RAY`)
+
+Question from the brief: once a loss puts `chi_p` below RAY, `convertToShares` mints more shares
+than USDC wei. Does a capacity remainder then over-mint? No. Both conversions stay floors
+(`:730`, `:734`) in either regime and they compose: with `A = floor(cap chi_p / RAY)`,
+`s = floor(A RAY / chi_s)`, a fill of `s` pays `a = floor(s chi_s / RAY) <= A` (`:823`) and mints
+`floor(a RAY / chi_p) <= floor(A RAY / chi_p) <= cap` (`:824`). Fuzzed over losses down to
+`chi = floor(RAY / S)` with random spUSDC/spPRIME chis, random headroom `<= 1e12` and random
+deposit size: the instant fill and a follow-up planner call keep `totalSupply <= maxCapacity`, and
+the minted amount equals the two-floor composition of `min(request, remaining)` exactly
+(`testFuzz_capacity_afterLoss_chiBelowRay_neverOverMints`).
+
+What does change is the other direction: a share of headroom is worth less than one USDC wei.
+`test_capacity_afterLoss_headroomBelowOneUsdcWeiIsUnfillable` (1 000 000e6 deposited, loss leaving
+45% of the supply in assets, `chi = 0.45e27 - 1` floor):
+
+| headroom (shares) | `convertToAssets` | spUSDC shares (`:805`) | fill |
+|---|---|---|---|
+| 2 | 0 | 0 | none, deposit queued, planner loop skipped |
+| 3 | 1 | 0 (1 wei `< c_s`) | none |
+| 5 | 2 | 1 | 1 spUSDC share -> 1 USDC wei -> `floor(RAY / chi) = 2` shares, within capacity |
+
+After the largest admissible loss (`TA - 1`, `chi = floor(RAY / S)`, here
+`1_009_687_768_241_653`) a headroom of `9e11` shares, about the whole supply, converts to 0 USDC
+and nothing can be filled until the admin raises capacity by at least `RAY / chi + 1` shares (one
+share of headroom per share of supply, worth 1 USDC wei). Admin-visible, not a bug: the capacity
+is in shares and the share is now worth `~1e-12` USDC.
+
+**F-4 after a loss.** The zero-mint region is empty once `chi_p <= RAY`: `K = (chi_p - 1) / RAY =
+0`, `sMax = ceil(RAY / chi_s) - 1 = 0` for any `chi_s > RAY`, so a 1-share fill mints
+`floor(RAY / chi_p) >= 1`. The DQ-1 dust head becomes fillable and no spUSDC share is burnt for
+nothing after a loss (`testFuzz_F4_afterLoss_zeroMintRegionIsEmpty`, losses from `TA - S` so chi
+lands at or below RAY, random spUSDC chi).
+
+### Full re-pinned table
+
+| # | Site (`src/SparkPrimeVault.sol`) | Direction | Favours | Proven bound | Test |
+|---|---|---|---|---|---|
+| R1 | `:771` spUSDC `deposit`: `floor(X * RAY / chi_s)` | down | spUSDC | `< 1` spUSDC share below exact; `X < c_s` gives 0 (N-2) | `testFuzz_R1_*`, `test_R1_*` |
+| R2 | `:805` `spUSDC.convertToShares(convertToAssets(A))` | down, down | vault | admitted `<= A c_p / c_s`, gap `< 1 + 1/c_s <= 2` spUSDC shares; `totalSupply <= cap` for any `chi_p`, above or below RAY | `testFuzz_R2_*`, `testFuzz_capacity_*` (3) |
+| R3 | `:823` `spUSDC.convertToAssets(s)` | down | vault | `< 1` USDC wei below `s c_s` | `testFuzz_R3_R4_*` |
+| R4 | `:824` `convertToShares(assets)` | down | vault | `< 1` share below; zero-mint region exactly `s <= sMax`, empty for `chi_p <= RAY` | same, `testFuzz_F4_*` (2) |
+| R5 | `:457` `shares_ >= minRedeem` (shares) | none | n/a | exact in shares; asset value `floor(minRedeem c_p)` grows with chi; `shares_ == 0` accepted, dead entry skipped only once liquidity exists | `testFuzz_R5_*`, `test_R5_*` |
+| R6 | `:464` `_divUp(shares * fee, WAD)` | up | vault | `>= exact`, `< 1` share above; `s < WAD / fee` pays exactly 1 share | `testFuzz_R6_*`, `test_R6_*` |
+| R7 | `:886` `convertToShares(maxWithdraw)` | down | vault | clamp `<= L / c_p`, `< 1` share below; paid `<= L` | `testFuzz_R7_*` |
+| R8 | `:899` `convertToAssets(shares)` | down | vault | paid `< 1` wei below `shares c_p`; `>= 1` while `chi >= RAY` (not after a loss, R13-c) | `testFuzz_R8_R9_*` |
+| R9 | `:909` spUSDC `withdraw`: `ceil(paid * RAY / chi_s)` | up | spUSDC, against vault | `< 1` spUSDC share above per fill; batch of `n` can exceed `bal_s` by `n - 1` (C-1) | same, `test_BUG_processPendingRedeems_*` |
+| R10 | `:869` spUSDC `redeem(shares)`: `floor(s * chi_s / RAY)`; budget `:847-848` `min(floor(L RAY / chi_s), bal_s)` | down; down | spUSDC, against canceller | one shot refund `<= X`, loss `< 1 + c_s`; k chunks `<= k - 1` wei below one shot; batch of n fills pays `<= L` (no batch revert); stranded `< c_s + n` per call, `< c_s` after repeats; unsettled `bal_s - floor(L / c_s)` | `testFuzz_R10_*` (4), `test_R10_*` (3) |
+| R11 | `:620`, `:748` `_rpow(vsr, dt) * chi / RAY` | half-up per step | neutral | equals the python mirror on 112 rows; daily vs yearly drip differ by 172 RAY units at 5% | `test_R11_*` (4) |
+| R12 | `:730`, `:734` `convertToAssets` / `convertToShares` | down / down | vault | `a - A(S(a)) < 1 + c_p`; `s - S(A(s)) <= 1` | `testFuzz_R12_*` (4) |
+| R13 | `:378` `chi = uint192(((TA - L) * RAY) / S)`, `0 < L < TA` (`:372`) | down, down | against holders | drop in `{L, L + 1}` for `S < RAY`, exactly `L` iff `S \| (TA - L) RAY`; over-reduction `< RAY / S + 1` chi units; cast cannot truncate; largest loss `TA - 1` leaves `chi = floor(RAY / S) >= 1`; `S == 0` and `L >= TA` revert `invalid-loss`, `no-shares` (`:376`) unreachable; `S == 1` cannot lose; k losses vs one `0 <= TA_single - TA_k <= k` | `testFuzz_R13_*` (5), `test_R13_*` (4) |
+| R14 | `:302` `chi = uint192(((TA + G) * RAY) / S)`, `G > 0` (`:294`), `S != 0` (`:300`) | down, down | against holders | rise in `{G - 1, G}` for `S < RAY`, exactly `G` iff `S \| (TA + G) RAY`; under-credit `< RAY / S + 1` chi units; `chi' >= chi`; `G_drip < G_trunc < G_ovf` as in round 3; k gains vs one `0 <= TA_single - TA_k <= k` | `testFuzz_R14_*` (5), `test_R14_*` (3), `testFuzz_BUG_realizeGain_*` (1), `test_BUG_realizeGain_*` (2) |
+
+`_divUp`, round trips, rate mismatch, drip table: unchanged from rounds 2 and 3 (round-trip
+tests use fills only; none used the removed cancel).
+
+### Findings status
+
+- C-1 (`:886` vs `:909`) persists, same failing proof, same numbers. Fix shape unchanged: clamp in
+  spUSDC shares via `maxRedeem` and `redeem`, as the cancelled queue already does (`:847-848`,
+  `:869`).
+- R13-a / R13-c / R14-a / R14-b / R14-c / CAP-1 / N-2 persist unchanged at the re-pinned lines.
+- Info: `CancelRedeemRequest` event (`:101`) is declared and never emitted.
+- No new rounding finding. The after-loss regime adds no new direction: every site stays a floor
+  (or the R6/R9 ceils) and the capacity chain cannot over-mint.
+
+### Unsettled
+
+- C-1 fix choice still open.
+- R13/R14 bounds assume `S < RAY`; not reachable at 6 decimals.
+- The after-loss capacity table is pinned at one loss ratio (45%) plus the extreme; the fuzz
+  covers the inequality for all ratios but the exact per-headroom values only at those two.
+- Chunk and sequence bounds fuzzed for k, n <= 6, proven analytically for any k.
+
+---
+
 ## Round 3 (ff828d2)
 
 Branch `campaign-v3/rounding`, source = `refactor/more-simplifying` @ `ff828d2`. File
