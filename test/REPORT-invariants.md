@@ -1,51 +1,86 @@
-# spPRIME invariant campaign report
+# spPRIME invariant campaign report (round 2)
 
-Branch `campaign/invariants`, files `test/invariants/{a_init,b_flows_user,c_flows_admin}.sol`,
-`test/invariants/d_invariants.t.sol`. Harness: `test/LocalTestBase.t.sol` (real spUSDC code,
-6-decimal mock USDC, ugly starting indexes chi_s = 1.0476e27, chi_p = 1.0097e27, `src/` with the
-F-1 and F-3 review patches).
+Branch `campaign-v2/invariants`, files `test/invariants/{a_init,b_flows_user,c_flows_admin}.sol`,
+`test/invariants/d_invariants.t.sol`. Target: upstream `src/SparkPrimeVault.sol` from
+`refactor/more-simplifying` (cancelled-deposit queue, unauthenticated recipient updates,
+`realizeLoss`, `minRedeem` in shares, `requestRedeem(0)` allowed). Harness: `test/LocalTestBase.t.sol`
+(real spUSDC code, 6-decimal mock USDC, ugly starting indexes chi_s = 1.0476e27, chi_p = 1.0097e27).
 
 Final run: `FOUNDRY_INVARIANT_RUNS=100 FOUNDRY_INVARIANT_DEPTH=500 forge test --match-path
-'test/invariants/*.t.sol' -vv` -> **16 passed, 0 failed** (15 invariants x 100 runs x 500 calls =
-50,000 handler calls per invariant, 0 handler reverts, plus 1 unit PoC).
+'test/invariants/*.t.sol' -vv` -> **20 passed, 0 failed** (18 invariants x 100 runs x 500 calls =
+50,000 handler calls per invariant, 0 handler reverts, plus 2 unit proofs).
+
+The same run was repeated on a scratch copy of the repo with `review/poc-tests-v2` applied
+(`pause()` back on GUARDIAN_ROLE, `realizeLoss` sets `chi = floor((totalAssets - loss) * RAY /
+totalSupply)`, `totalAssets()` public): **20 passed, 0 failed**, 0 reverts. The handlers are written
+for both revisions (pause pranks the guardian and falls back to the admin; the loss handler keeps
+`loss <= totalAssets / 10`, requires the resulting chi > 0, and asserts the floor
+`totalAssets_after + loss <= totalAssets_before`, which is what H consumes). The `git merge
+review/poc-tests-v2` in this worktree was blocked by the sandbox's permission classifier (as was
+`git apply` of the same diff), so the committed worktree still carries the pre-merge `src/`; the
+merge is a 3-file, conflict-free change to `src/`, `README.md` and `test/LocalTestBase.t.sol`
+and is left to the coordinator.
 
 ## (a) Violations and findings
 
-### N-1 Low: `processRedeemQueue` reverts when the vault's spUSDC balance is the binding limit
+### N-1 Low (round 1, still present): `processRedeemQueue` reverts when the vault's spUSDC balance is the binding limit
 
-- Location: `src/SparkPrimeVault.sol:675` (`remaining_ = _min(maxShares_, convertToShares(availableLiquidAssets()))`)
-  and `src/SparkPrimeVault.sol:698` (`IERC4626Like(savings).withdraw(assets_, request.recipient, address(this))`).
-- Mechanism: `remaining_` is sized from `spUSDC.maxWithdraw(vault)` in USDC (a single floor), but
-  every entry is paid with spUSDC `withdraw(assets_)`, which burns `ceil(assets_ * RAY / chi_s)`
-  spUSDC shares (review rounding site R9). Across k entries the ceilings can add up to k-1 shares
-  more than the balance; when the limit is the vault's spUSDC balance rather than spUSDC's USDC
-  liquidity, the last fill reverts with `SparkVault/insufficient-balance` and the whole call
-  (including the entries already paid in that call) is rolled back.
-- Exact sequence (harness numbers): alice `requestDeposit(100e6)`; alice `requestRedeem(1)` x110
-  (fee 0); taker `take(vaultSpUsdc - 100)` so the vault holds exactly 100 spUSDC shares;
-  `spUsdc.maxWithdraw(vault) == 104`, `convertToShares(104) == 103`; rebalancer
-  `processRedeemQueue(type(uint256).max, 110)` reverts `SparkVault/insufficient-balance` on the
-  101st entry (each entry pays 1 USDC-wei and burns 1 spUSDC share). Workaround
-  `processRedeemQueue(max, 1)` x110 succeeds 99 times, pays alice 99 wei, leaves `redeemHead = 99`,
-  1 spUSDC share stranded (`convertToShares(maxWithdraw = 1) == 0`) and 11 open entries.
-- Impact: operational. The rebalancer's batch call reverts instead of paying what it can; no
-  funds at risk; the safe `maxShares_`/`maxRequests_` must be computed off-chain. With many
-  large entries the same over-burn happens with probability driven by rounding fractions, not
-  only with 1-wei entries. Zero-fee 1-share entries (F-5) make it deterministic and cheap to set
-  up for a user.
+- Location: `src/SparkPrimeVault.sol:780` (`remaining_ = _min(maxShares_, convertToShares(availableLiquidAssets()))`)
+  and `src/SparkPrimeVault.sol:803` (`IERC4626Like(savings).withdraw(assets_, request.recipient, address(this))`).
+- Mechanism unchanged from round 1: the budget is a single floor in USDC while every entry burns
+  `ceil(assets_ * RAY / chi_s)` spUSDC shares, so k entries can over-burn by up to k-1 shares and
+  the whole batch reverts `SparkVault/insufficient-balance` when the balance, not spUSDC's
+  liquidity, binds.
+- Sequence: alice `requestDeposit(100e6)`; alice `requestRedeem(1)` x110; taker
+  `take(vaultSpUsdc - 100)`; rebalancer `processRedeemQueue(max, 110)` reverts; `(max, 1)` x110
+  pays 99 wei, strands 1 share, leaves 11 entries open.
 - Test: `test_BUG_processRedeemQueueRevertsOnCeilBurnWhenBalanceBinds` (passes by asserting the
-  revert). The handler also wraps `processRedeemQueue` in try/catch and counts this reason
-  (`redeemProcessReverts`); any other reason fails `invariant_O`.
-- Fix options: pay with `redeem(convertToShares_s(assets_))` (user takes the <=1 wei rounding
-  instead of the vault), or clamp `remaining_` by
-  `convertToShares(spUSDC.convertToAssets(balance - k))`, or break out of the loop when the next
-  ceil-burn exceeds the remaining balance.
-- Severity: Low.
+  revert). Handler counter `redeemProcessReverts`; any other reason fails `invariant_O`.
 
-No invariant A..O was violated in any run. Known findings observed live by the handler counters
-(not re-reported): F-4 zero-share dust fills (`zeroShareFills`, 4 occurrences in the 15 sampled
-last-runs), F-5 ghost entries (65 zero-amount deposit entries, 38 fee-eaten redeem entries),
-F-2 cancels blocked after the backing was taken/spent (`cancelDepositBlockedF2`, 18 skips).
+### N-2 Low (round 2, known to the coordinator): `processCancelledDepositQueue` reverts when spUSDC is illiquid instead of paying what it can
+
+- Location: `src/SparkPrimeVault.sol:742` (`remaining_ = _min(maxSavingsShares_, IERC20Like(savings).balanceOf(address(this)))`)
+  and `src/SparkPrimeVault.sol:763` (`IERC4626Like(savings).redeem(savingsShares_, request_.recipient, address(this))`).
+- Mechanism: the budget is the vault's spUSDC balance only. spUSDC `redeem` then needs
+  `floor(shares * chi_s / RAY)` USDC of liquidity for every entry; when spUSDC's USDC has been
+  taken, the batch reverts inside spUSDC with `SparkVault/insufficient-liquidity` and nothing is
+  paid. `processRedeemQueue` does not have this failure because its budget goes through
+  `maxWithdraw`, which caps at spUSDC liquidity. The `insufficient-balance` revert cannot happen
+  here: `redeem` burns exactly `savingsShares_ <= remaining_ <= balance`, so after `take()` the
+  function pays what is left and stops (verified by code read and by the campaign: 0 such reverts
+  in 50,000 calls with the taker draining the vault in 1 of 4 `take` calls).
+- Sequence (harness numbers): capacity 0; alice `requestDeposit(100e6)`, bob `requestDeposit(100e6)`
+  (both queue); each cancels to self; spUSDC taker drains all but 150 USDC;
+  rebalancer `processCancelledDepositQueue(max, 2)` reverts `SparkVault/insufficient-liquidity`;
+  `(max, 1)` pays alice 99,999,999 (1-wei deposit/redeem floor round trip), then `(max, 1)` reverts
+  again for bob until 100 USDC is returned to spUSDC.
+- Impact: operational. The rebalancer must size `maxSavingsShares_` off-chain against
+  `spUSDC.convertToShares(usdc.balanceOf(spUSDC))`; no funds at risk. Refunds queue behind
+  spUSDC liquidity exactly as redeems do, but without the partial-payment behaviour redeems get.
+- Test: `test_BUG_processCancelledDepositQueueRevertsWhenSpUsdcIlliquid` (passes by asserting the
+  revert). Handler counter `cancelProcessReverts` (18 in the 18 sampled last-runs); any other
+  reason fails `invariant_P`.
+- Fix options: bound `remaining_` by `_min(balance, spUSDC.convertToShares(usdc.balanceOf(spUSDC)))`,
+  or break out of the loop when the next payout exceeds spUSDC's liquidity.
+
+### Observed, not asserted (reported by NEWSURFACE, exercised here)
+
+- `updateDepositRecipient` / `updateCancelledDepositRecipient` / `updateRedeemRecipient`
+  (`src/SparkPrimeVault.sol:421`, `:465`, `:532`) have no caller check. The handler lets a random
+  user repoint a random entry; 264 of 292 sampled updates were by a non-owner. Every fill paid the
+  recipient the entry carried at fill time. `invariant_R` confirms the update itself moves nothing.
+- `cancelRedeemRequest` pays the `recipient_` argument whoever the caller is (guardian included);
+  J's bookkeeping credits that recipient.
+- `setCapacity` (`src/SparkPrimeVault.sol:268`) accepts any `uint256`; the handler keeps it
+  `<= type(uint128).max` because `convertToAssets(availableCapacity())` overflows above that and
+  bricks `processDepositQueue`.
+- `realizeLoss` (`src/SparkPrimeVault.sol:356`) with `loss == totalAssets` zeroes chi and bricks
+  every conversion; the handler skips that case (never reachable with `loss <= totalAssets / 10`).
+
+No invariant A..R was violated in any run on either source revision. Known findings observed live
+by the handler counters (not re-reported): F-4 zero-share dust fills (`zeroShareFills`, 4 in the 18
+sampled last-runs), F-5 ghost entries (80 zero-amount deposit entries, 51 zero-share or fee-eaten
+redeem entries, `requestRedeem(0)` now being legal).
 
 ## (b) Invariants that held (100 runs x depth 500, 50,000 calls each, 0 reverts)
 
@@ -53,48 +88,62 @@ F-2 cancels blocked after the backing was taken/spent (`cancelDepositBlockedF2`,
 |---|---|
 | `invariant_A_sumOfBalancesEqualsTotalSupply` | sum of balances over 6 users + vault escrow == totalSupply |
 | `invariant_B_vaultBalanceEqualsPendingRedeemShares` | balanceOf(vault) == pendingRedeemShares (no donations in the campaign) |
-| `invariant_C_pendingDepositEqualsSumOfOpenDepositEntries` | pendingDepositSavingsShares == sum of depositQueue[i].shares, i in [0, length) |
+| `invariant_C_pendingDepositEqualsSumOfOpenDepositEntries` | pendingDepositSavingsShares == sum of depositQueue[i].shares |
 | `invariant_D_pendingRedeemEqualsSumOfOpenRedeemEntries` | pendingRedeemShares == sum of redeemQueue[i].shares |
-| `invariant_E_headBookkeeping` | every entry strictly before depositHead / redeemHead has shares == 0; heads <= length |
-| `invariant_F_totalSupplyNeverExceedsCapacityViaMint` | no mint ever pushed totalSupply above maxCapacity as set at mint time (capacity was set at or below supply in 20% of setCapacity calls) |
-| `invariant_G_chiMonotonicAndDripConsistent` | nowChi() >= last observed chi; drip() == nowChi(); chi/rho updated |
-| `invariant_H_solvencyWhenSpUsdcRateGePrimeRate` | spUSDC value held minus value owed to open deposit entries + epsilon >= totalAssets(), while spUSDC VSR >= spPRIME VSR always held and taker holds nothing; epsilon = redeemFills * ceil(chi_s/RAY) + 2 wei (one over-burned spUSDC share per redeem fill, R9; deposit side contributes <= 1 wei total) |
-| `invariant_I_usersNeverExtractMoreThanDepositsPlusYield` | sum of users' USDC <= USDC deposited + USDC minted into spUSDC + USDC minted for the taker's top-ups |
-| `invariant_J_balanceProvenance` | balanceOf(user) == minted + transfers in + cancel refunds - transfers out - escrowed (handler ghosts) |
-| `invariant_K_backingExistsSomewhere` | USDC in spUSDC + spUSDC taker + users + vault + spPRIME taker == USDC ever minted; vault holds 0 USDC |
+| `invariant_E_headBookkeeping` | every entry strictly before depositHead / cancelledDepositHead / redeemHead has shares == 0; heads <= lengths |
+| `invariant_F_totalSupplyNeverExceedsCapacityViaMint` | no mint ever pushed totalSupply above maxCapacity as set at mint time |
+| `invariant_G_chiMonotonicAndDripConsistent` | chi never decreases outside `realizeLoss` (handler flag), nowChi() >= last observed chi, chi > 0, drip() == nowChi(), chi/rho updated |
+| `invariant_H_solvencyWhenSpUsdcRateGePrimeRate` | spUSDC value held minus value owed to open deposit entries minus value owed to open cancelled entries + epsilon >= totalAssets() + sum of realised losses, while spUSDC VSR >= spPRIME VSR always held and the taker holds nothing; epsilon = redeemFills * ceil(chi_s/RAY) + 2 wei (cancel refunds use `redeem`, exact burn, add nothing) |
+| `invariant_I_usersNeverExtractMoreThanDepositsPlusYield` | sum of users' USDC <= USDC deposited + USDC minted into spUSDC + taker top-ups, and == USDC paid by redeem fills + USDC paid by cancelled-deposit refunds |
+| `invariant_J_balanceProvenance` | balanceOf(user) == minted (attributed to the entry recipient at fill time) + transfers in + redeem-cancel refunds (to the `recipient_` argument) - transfers out - escrowed |
+| `invariant_K_backingExistsSomewhere` | USDC in spUSDC + spUSDC taker + users (redeem payouts and cancel refunds) + vault + spPRIME taker == USDC ever minted; vault holds 0 USDC |
 | `invariant_L_availableCapacityFormula` | availableCapacity() == max(0, maxCapacity - totalSupply) |
 | `invariant_M_noMintOfZeroSharesExceptDust` | zero-share fills counted (F-4), reported in afterInvariant() |
 | `invariant_N_spUsdcSharesHeldByVaultAndTaker` | spUSDC totalSupply == vault + taker balances; taker balance == handler ledger |
 | `invariant_O_processRedeemQueueRevertsOnlyOnCeilBurn` | the only revert reason ever seen from processRedeemQueue is `SparkVault/insufficient-balance` |
+| `invariant_P_processCancelledDepositQueueRevertsOnlyOnKnownReasons` | the only revert reason ever seen from processCancelledDepositQueue is `SparkVault/insufficient-liquidity` |
+| `invariant_Q_pendingCancelledEqualsSumOfOpenCancelledEntries` | pendingCancelledDepositSavingsShares == sum of cancelledDepositQueue[i].shares |
+| `invariant_R_recipientUpdatesNeverChangeTotals` | a recipient update leaves totals, pendings, heads, chi/rho, every share and USDC balance, the vault's spUSDC and every entry's owner/shares byte-identical (keccak digest before == after) |
 
-Handler coverage over the final run (calls per selector, summed over 100 runs, 0 reverts):
-cancelDepositRequest 2399, cancelRedeemRequest 2395, drainSpUsdcLiquidity 2366, pause 2430,
-processDepositQueue 2484, processRedeemQueue 2346, requestDeposit 2290,
-requestDepositWithReferral 2348, requestRedeem 2398, returnSpUsdcLiquidity 2334,
-returnToVault 2379, setCapacity 2425, setMinimums 2303, setPrimeVsr 2406, setRedeemFee 2402,
-setSpUsdcVsr 2327, take 2386, transfer 2399, transferFrom 2360, unpause 2436, warp 2387.
+Handler coverage (foundry selector metrics, `invariant_A`, 100 runs x 500 calls, 0 reverts,
+0 discards; the last six rows come from a second run with the same parameters):
+cancelDepositRequest 2059, cancelRedeemRequest 1998, drainSpUsdcLiquidity 2052, pause 2072,
+processCancelledDepositQueue 1905, processDepositQueue 1942, processRedeemQueue 2021,
+realizeLoss 1941, requestDeposit 2005, requestDepositWithReferral 1974, requestRedeem 2046,
+returnSpUsdcLiquidity 2044, returnToVault 2071, setCapacity 2053, setMinDeposit 2022,
+setMinRedeem 1995, setPrimeVsr 2002, setRedeemFee 2004, setSpUsdcVsr 1918, take 2018,
+transfer 2058, transferFrom 1903, unpause 2085, updateRecipient 2009, warp 2016.
 
-Sample last-run ghost counters (one 500-call run): depositQueueLength 29, redeemQueueLength 19,
-depositFills 28, redeemFills 10, ghostRedeemEntries 6, takerOutstandingSpUsdc 6.78e15,
-totalSupply 8.19e15, chi 1.0407e27. Across the 15 sampled last-runs: depositFills 449,
-redeemFills 136, zeroShareFills 4, ghostDepositEntries 65, ghostRedeemEntries 38,
-cancelDepositBlockedF2 18, redeemProcessReverts 0 (the random walk never hit N-1; the unit test does).
+Ghost counters summed over the 18 sampled last-runs (one 500-call run per invariant test):
+depositQueueLength 591, cancelledQueueLength 94, redeemQueueLength 225, depositFills 410,
+cancelledFills 99, redeemFills 116, zeroShareFills 4, ghostDepositEntries 80, ghostRedeemEntries 51,
+recipientUpdates 292 (264 by a non-owner), lossRealizations 85 (realizedLossUsdc 9.45e15),
+redeemProcessReverts 0 (N-1 not hit by the random walk; the unit test proves it),
+cancelProcessReverts 18 (N-2 hit live), usersRedeemedUsdc 1.50e16, usersRefundedUsdc 2.01e16.
+Merged-source copy: lossRealizations 80, cancelProcessReverts 13, otherwise the same shape.
 
 Handler design: 6 users; inputs bounded; actions that would revert are skipped (paused, empty
-balance, no open entry, backing spent per F-2); 10% zero-amount deposits and 10% one-wei redeems
-when minimums allow; capacity 50% wide open / 30% small headroom / 20% at or below supply; VSRs
-keep spUSDC >= spPRIME except in 1 of 8 calls (sticky `rateOrderBroken` flag disables H);
-pause in 1 of 4 pause calls; warps 1 s..30 days with drips on both vaults; spUSDC liquidity
-drained and returned (minted); taker takes and returns spUSDC (minting the shortfall).
+balance, no open entry); 10% zero-amount deposits and 10% zero-share / minimum-size redeems when
+minimums allow; capacity 50% wide open / 30% small headroom / 20% at or below supply; VSRs keep
+spUSDC >= spPRIME except in 1 of 8 calls (sticky `rateOrderBroken` flag disables H); pause in 1 of
+4 pause calls; losses only while paused, `1 <= loss <= totalAssets/10`, chi kept > 0; warps
+1 s..30 days with drips on both vaults; spUSDC liquidity drained and returned (minted); taker takes
+and returns spUSDC (minting the shortfall); random users repoint random entries in all three queues;
+the two settlement calls that spUSDC can make revert are wrapped and their reasons classified.
 
 ## (c) Unsettled
 
+- The committed worktree does not contain the `review/poc-tests-v2` merge (blocked by the sandbox);
+  the invariant files pass on both revisions, but the coordinator should run the merge and re-run
+  the one-line command above to get the final line on the merged tree.
 - `afterInvariant()` logs are printed once per invariant test (last run only), so ghost counters
-  are sampled, not totals; the selector table from foundry is the exact coverage.
+  are sampled, not totals; the selector table is the exact coverage.
 - H is only checked while the taker holds nothing and the rate order never broke; the random walk
-  breaks the order early in most runs (`rateOrderBroken` true in the sampled runs), so H's
+  breaks the order in most runs (`rateOrderBroken` true in all 18 sampled last-runs), so H's
   effective coverage is the prefix of each run before the first order break. A dedicated run with
   the 1-in-8 branches removed would strengthen it.
-- N-1 with large, non-uniform entries was not reproduced in the random walk; its probability per
-  balance-bound multi-entry call depends on rounding fractions and is not quantified here.
-- Donations of spPRIME to the vault (I-6) and `setChi` loss realisation were excluded by design.
+- H treats realised losses as fictitious (the backing never leaves the harness), so it proves
+  `realizeLoss` only ever widens the gap; a harness that burns the taker's spUSDC to model a real
+  loss would be needed to test "loss realised == loss suffered".
+- N-1 with large, non-uniform entries was not reproduced in the random walk; N-2 was.
+- Donations of spPRIME to the vault (I-6) are excluded by design.

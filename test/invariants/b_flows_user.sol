@@ -4,7 +4,8 @@ pragma solidity ^0.8.34;
 import "./a_init.sol";
 
 // User flows: deposit requests (with and without referral, including zero-amount ghosts), deposit
-// cancels, redeem requests (including 1-wei ghosts), redeem cancels, transfers and transferFrom.
+// cancels (into the cancelled-deposit queue), redeem requests (including zero-share and one-wei
+// ghosts), redeem cancels, recipient updates by arbitrary callers, transfers and transferFrom.
 contract FlowsUser is Init {
 
     constructor(address vault_) Init(vault_) {}
@@ -92,6 +93,8 @@ contract FlowsUser is Init {
         _capacityCheck(supplyBefore);
     }
 
+    // Cancels move the entry into the cancelled-deposit queue; nothing is paid here, so the
+    // backing being taken or spent no longer blocks the cancel (the round-1 F-2 skip is gone).
     function cancelDepositRequest(uint256 idSeed, uint256 recipientIndex, uint256 seed)
         public counted("cancelDepositRequest")
     {
@@ -105,23 +108,34 @@ contract FlowsUser is Init {
         (address owner, , uint256 shares) = vault.depositQueue(id);
         if (shares == 0) return;
 
-        // F-2: the spUSDC backing the entry may have been taken or spent on redeems.
-        if (spUsdc.balanceOf(address(vault)) < shares) { cancelDepositBlockedF2++; return; }
-        if (usdc.balanceOf(address(spUsdc)) < spUsdc.convertToAssets(shares)) {
-            cancelDepositBlockedF2++;
-            return;
-        }
-
         bool    byGuardian = seed % 3 == 0;
         address caller     = byGuardian ? guardian : owner;
         address recipient  = getRandomUser(recipientIndex);
 
+        uint256 pendingBefore          = vault.pendingDepositSavingsShares();
+        uint256 pendingCancelledBefore = vault.pendingCancelledDepositSavingsShares();
+        uint256 spUsdcBefore           = spUsdc.balanceOf(address(vault));
+        uint256 usersUsdcBefore        = _usersUsdc();
+
         vm.startPrank(caller);
-        vault.cancelDepositRequest(id, recipient);
+        uint256 cancelId = vault.cancelDepositRequest(id, recipient);
         vm.stopPrank();
+
+        assertEq(cancelId, cancelledQueueLength, "handler: unexpected cancel request id");
+        cancelledQueueLength++;
 
         (, , uint256 sharesAfter) = vault.depositQueue(id);
         assertEq(sharesAfter, 0, "handler: cancel left deposit entry open");
+
+        (address cOwner, address cRecipient, uint256 cShares) = vault.cancelledDepositQueue(cancelId);
+        assertEq(cOwner,     owner,     "handler: cancelled entry owner");
+        assertEq(cRecipient, recipient, "handler: cancelled entry recipient");
+        assertEq(cShares,    shares,    "handler: cancelled entry shares");
+
+        assertEq(vault.pendingDepositSavingsShares(),          pendingBefore - shares,          "handler: cancel pending deposit");
+        assertEq(vault.pendingCancelledDepositSavingsShares(), pendingCancelledBefore + shares, "handler: cancel pending cancelled");
+        assertEq(spUsdc.balanceOf(address(vault)),             spUsdcBefore,                    "handler: cancel moved spUSDC");
+        assertEq(_usersUsdc(),                                 usersUsdcBefore,                 "handler: cancel paid USDC");
     }
 
     /**********************************************************************************************/
@@ -136,18 +150,18 @@ contract FlowsUser is Init {
         address user      = getRandomUser(userIndex);
         address recipient = getRandomUser(recipientIndex);
 
-        uint256 balance = vault.balanceOf(user);
-        if (balance == 0) return;
+        uint256 balance   = vault.balanceOf(user);
+        uint256 minShares = vault.minRedeem();  // [shares]
 
-        // shares * chi / RAY >= minWithdraw
-        uint256 chi_      = vault.nowChi();
-        uint256 minShares = _divup(vault.minWithdraw() * RAY, chi_);
-        if (minShares == 0) minShares = 1;
-        if (balance < minShares) return;
-
-        // ~10% one-wei requests (ghost entries when the fee eats the single wei).
-        if (seed % 10 == 0 && minShares == 1) shares = 1;
-        else                                  shares = _bound(shares, minShares, balance);
+        uint256 kind = seed % 10;
+        if (kind == 0 && minShares == 0) {
+            shares = 0;  // zero-share ghost entry, allowed by the contract
+        } else {
+            if (minShares == 0) minShares = 1;
+            if (balance < minShares) return;
+            // ~10% minimum-size requests (ghost entries when the fee eats everything).
+            shares = kind == 1 ? minShares : _bound(shares, minShares, balance);
+        }
 
         uint256 fee = _divup(shares * vault.redeemFee(), WAD);
         if (shares - fee == 0) ghostRedeemEntries++;
@@ -183,8 +197,62 @@ contract FlowsUser is Init {
         vault.cancelRedeemRequest(id, recipient);
         vm.stopPrank();
 
-        // The F-1 patch: a guardian cancel always refunds the owner.
-        ghostRefunded[byGuardian ? owner : recipient] += shares;
+        // Upstream pays the `recipient_` argument whoever the caller is.
+        ghostRefunded[recipient] += shares;
+    }
+
+    /**********************************************************************************************/
+    /*** Recipient updates (unauthenticated upstream: any caller, any entry)                    ***/
+    /**********************************************************************************************/
+
+    // A random user repoints a random entry (open when there is one, closed otherwise) of one of
+    // the three queues to a random user. The handler asserts that only the recipient field moved
+    // (invariant R) and attributes later fills by balance diff (invariant J).
+    function updateRecipient(
+        uint256 queueSeed,
+        uint256 idSeed,
+        uint256 callerIndex,
+        uint256 recipientIndex
+    )
+        public counted("updateRecipient")
+    {
+        uint256 q = queueSeed % 3;
+
+        uint256 length = q == 0 ? depositQueueLength
+                       : q == 1 ? cancelledQueueLength
+                       :          redeemQueueLength;
+        if (length == 0) return;
+
+        uint256 head = q == 0 ? vault.depositHead()
+                     : q == 1 ? vault.cancelledDepositHead()
+                     :          vault.redeemHead();
+
+        uint256 id = head < length ? _bound(idSeed, head, length - 1) : _bound(idSeed, 0, length - 1);
+
+        address caller    = getRandomUser(callerIndex);
+        address recipient = getRandomUser(recipientIndex);
+
+        (address owner, , ) = q == 0 ? vault.depositQueue(id)
+                            : q == 1 ? vault.cancelledDepositQueue(id)
+                            :          vault.redeemQueue(id);
+
+        bytes32 before = _stateDigest();
+
+        vm.startPrank(caller);
+        if      (q == 0) vault.updateDepositRecipient(id, recipient);
+        else if (q == 1) vault.updateCancelledDepositRecipient(id, recipient);
+        else             vault.updateRedeemRecipient(id, recipient);
+        vm.stopPrank();
+
+        if (_stateDigest() != before) recipientUpdateChangedState = true;
+
+        (, address recipientAfter, ) = q == 0 ? vault.depositQueue(id)
+                                     : q == 1 ? vault.cancelledDepositQueue(id)
+                                     :          vault.redeemQueue(id);
+        assertEq(recipientAfter, recipient, "handler: recipient not updated");
+
+        recipientUpdates++;
+        if (caller != owner) recipientUpdatesByStranger++;
     }
 
     /**********************************************************************************************/
