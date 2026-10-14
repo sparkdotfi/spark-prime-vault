@@ -22,6 +22,8 @@ contract CancelAndFeesTest is LocalTestBase {
         address indexed owner, address indexed recipient, uint256 savingsShares, uint256 assets
     );
     event CancelRedeemRequest(uint256 indexed requestId, uint256 shares);
+    event CancelledDepositRecipientUpdated(uint256 indexed requestId, address indexed recipient);
+    event GainRealized(uint192 chi, uint256 gain);
 
     uint256 constant CHI_S = 1.047633055711877768967605062e27;
     uint256 constant CHI_P = 1.009687768242461209408770821e27;
@@ -173,26 +175,72 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(_vaultSpUsdc(),           0);
     }
 
-    // The owner can only repair a guardian redirect before settlement, through the unauthenticated
-    // `updateCancelledDepositRecipient` (anyone, including the guardian, can call it again).
+    // `updateCancelledDepositRecipient` is owner-only at ff828d2: the owner can repair a guardian
+    // redirect in the window before the planner settles, and nobody else can flip it back. The
+    // repair only exists for the deposit side; see the redeem-side BUG test.
     function test_cancelDepositRequest_guardianRedirectRepairedByOwnerBeforeSettlement() public {
         uint256 id  = _queueDeposit(alice, 100e6);
         uint256 cid = _cancelDeposit(guardian, id, guardian);
 
+        (address owner, address recipient, uint256 shares) = _cancelledDepositRequest(cid);
+        assertEq(owner,     alice);
+        assertEq(recipient, guardian);
+        assertEq(shares,    SS_100);
+
+        // Only the entry owner may repair it.
+        vm.prank(guardian);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vault.updateCancelledDepositRecipient(cid, guardian);
+
+        vm.prank(stranger);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vault.updateCancelledDepositRecipient(cid, stranger);
+
+        vm.prank(alice);
+        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vault.updateCancelledDepositRecipient(cid, address(0));
+
+        vm.expectEmit(address(vault));
+        emit CancelledDepositRecipientUpdated(cid, alice);
         vm.prank(alice);
         vault.updateCancelledDepositRecipient(cid, alice);
 
-        (, address recipient, ) = _cancelledDepositRequest(cid);
+        (, recipient, ) = _cancelledDepositRequest(cid);
         assertEq(recipient, alice);
 
-        // The guardian (or anyone) can flip it back; last writer before settlement wins.
-        vm.prank(stranger);
-        vault.updateCancelledDepositRecipient(cid, stranger);
-        vm.prank(alice);
-        vault.updateCancelledDepositRecipient(cid, alice);
+        // The guardian cannot redirect it again: cancel is spent (`no-request`) and the updater
+        // is owner-only.
+        vm.prank(guardian);
+        vm.expectRevert("SparkPrimeVault/no-request");
+        vault.cancelDepositRequest(id, guardian);
+
+        vm.prank(guardian);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vault.updateCancelledDepositRecipient(cid, guardian);
 
         _settleCancelled();
-        assertEq(usdc.balanceOf(alice), 99_999_999);
+        assertEq(usdc.balanceOf(alice),    99_999_999);
+        assertEq(usdc.balanceOf(guardian), 0);
+
+        // Settled entries are deleted: no further update possible.
+        vm.prank(alice);
+        vm.expectRevert("SparkPrimeVault/no-request");
+        vault.updateCancelledDepositRecipient(cid, alice);
+    }
+
+    // The window closes at settlement: if the planner settles before the owner notices, the
+    // guardian-chosen recipient is paid and there is nothing left to repair.
+    function test_cancelDepositRequest_guardianRedirectNotRepairableAfterSettlement() public {
+        uint256 id  = _queueDeposit(alice, 100e6);
+        uint256 cid = _cancelDeposit(guardian, id, guardian);
+        _settleCancelled();
+
+        assertEq(usdc.balanceOf(guardian), 99_999_999);
+        assertEq(usdc.balanceOf(alice),    0);
+
+        vm.prank(alice);
+        vm.expectRevert("SparkPrimeVault/no-request");
+        vault.updateCancelledDepositRecipient(cid, alice);
     }
 
     function test_cancelDepositRequest_revertsNoRequest_alreadyCancelled() public {
@@ -752,38 +800,73 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
     }
 
-    // The budget is the spUSDC share balance, not spUSDC's liquidity: when spUSDC itself has no
-    // USDC the settlement reverts instead of paying what is liquid, and the whole queue stalls
-    // behind the head entry until liquidity returns or the planner shrinks `maxSavingsShares_`.
-    function test_processCancelledDepositQueue_revertsWhenSpUsdcIlliquid() public {
+    // B-3 (round 2) is fixed: the budget is `spUSDC.maxRedeem(vault)`, so when spUSDC itself is
+    // short of USDC the settlement pays what is liquid, FIFO, leaves the head on the partially
+    // paid entry, is a no-op while nothing is liquid, and completes once liquidity returns.
+    function test_processCancelledDepositQueue_clampsToSpUsdcLiquidity() public {
+        _setCapacity(0);
+        uint256 idA = _deposit(alice, 100e6);
+        uint256 idB = _deposit(bob,   100e6);
+        uint256 cidA = _cancelDeposit(alice, idA, alice);
+        uint256 cidB = _cancelDeposit(bob,   idB, bob);
+
+        // Leave 40e6 USDC inside spUSDC; the vault still holds 2 * SS_100 spUSDC shares.
+        _drainSpUsdcLiquidity(usdc.balanceOf(address(spUsdc)) - 40e6);
+        assertEq(spUsdc.maxRedeem(address(vault)),   38_181_307);  // 40e6 * RAY / chi_s, floor
+        assertEq(spUsdc.maxWithdraw(address(vault)), 40e6);
+
+        vm.expectEmit(address(vault));
+        emit DepositCancellation(alice, alice, 38_181_307, 39_999_999);
+        _processCancelledDeposits(type(uint256).max, 10);
+
+        // Alice is paid the liquid 39_999_999, stays at the head with the remainder; bob untouched.
+        assertEq(usdc.balanceOf(alice), 39_999_999);
+        assertEq(usdc.balanceOf(bob),   0);
+        assertEq(vault.cancelledDepositHead(), cidA);
+        (, , uint256 leftA) = _cancelledDepositRequest(cidA);
+        assertEq(leftA, SS_100 - 38_181_307);
+        assertEq(leftA, 57_271_962);
+        (, , uint256 leftB) = _cancelledDepositRequest(cidB);
+        assertEq(leftB, SS_100);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 57_271_962 + SS_100);
+        assertEq(usdc.balanceOf(address(spUsdc)),              1);  // 1 wei of dust left in spUSDC
+        assertEq(spUsdc.maxRedeem(address(vault)),             0);
+
+        // Nothing liquid: the call is a no-op, no revert.
+        _processCancelledDeposits(type(uint256).max, 10);
+        assertEq(usdc.balanceOf(alice), 39_999_999);
+        assertEq(vault.cancelledDepositHead(), cidA);
+
+        // Liquidity returns: one call completes alice and bob in order.
+        _returnSpUsdcLiquidity(200e6);
+        _settleCancelled();
+        assertEq(usdc.balanceOf(alice), 99_999_999);  // 39_999_999 + 60_000_000: chunking cost nothing
+        assertEq(usdc.balanceOf(bob),   99_999_999);
+        assertEq(vault.cancelledDepositHead(), 2);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
+        assertEq(_vaultSpUsdc(), 0);
+    }
+
+    // `maxRequests_` still binds under the liquidity clamp: with 1 request bob is never reached
+    // even when liquidity would cover both.
+    function test_processCancelledDepositQueue_liquidityClampRespectsMaxRequests() public {
         _setCapacity(0);
         uint256 idA = _deposit(alice, 100e6);
         uint256 idB = _deposit(bob,   100e6);
         _cancelDeposit(alice, idA, alice);
         _cancelDeposit(bob,   idB, bob);
+        _drainSpUsdcLiquidity(usdc.balanceOf(address(spUsdc)) - 150e6);
 
-        // Leave 40e6 USDC inside spUSDC; the vault still holds 2 * SS_100 spUSDC shares.
-        _drainSpUsdcLiquidity(usdc.balanceOf(address(spUsdc)) - 40e6);
-
-        vm.prank(rebalancer);
-        vm.expectRevert("SparkVault/insufficient-liquidity");
-        vault.processCancelledDepositQueue(type(uint256).max, 10);
-
-        // Nothing partial: bob is not reachable either.
-        vm.prank(rebalancer);
-        vm.expectRevert("SparkVault/insufficient-liquidity");
-        vault.processCancelledDepositQueue(type(uint256).max, 1);
-
-        // The planner can size the budget by hand to the liquid amount (38_181_307 shares).
-        assertEq(spUsdc.convertToShares(40e6), 38_181_307);
-        _processCancelledDeposits(38_181_307, 10);
-        assertEq(usdc.balanceOf(alice), 39_999_999);
-        assertEq(vault.cancelledDepositHead(), 0);
-
-        _returnSpUsdcLiquidity(200e6);
-        _settleCancelled();
+        _processCancelledDeposits(type(uint256).max, 1);
         assertEq(usdc.balanceOf(alice), 99_999_999);
-        assertEq(usdc.balanceOf(bob),   99_999_999);
+        assertEq(usdc.balanceOf(bob),   0);
+        assertEq(vault.cancelledDepositHead(), 1);
+
+        // 50e6 + 1 wei left in spUSDC: bob gets a partial fill.
+        assertEq(usdc.balanceOf(address(spUsdc)), 50_000_001);
+        _processCancelledDeposits(type(uint256).max, 1);
+        assertEq(usdc.balanceOf(bob), 50_000_000);
+        assertEq(vault.cancelledDepositHead(), 1);
     }
 
     function test_processDepositQueue_stillMintsAfterTakeSpentBacking() public {
@@ -1352,8 +1435,8 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(vault.balanceOf(alice), SH_100);
     }
 
-    // realizeLoss (paused only) hits escrowed redeem shares; cancelled deposits waiting for
-    // settlement are spUSDC and take no loss.
+    // realizeLoss (paused only, 0 < loss < totalAssets) hits escrowed redeem shares; cancelled
+    // deposits waiting for settlement are spUSDC and take no loss.
     function test_realizeLoss_escrowedRedeemTakesLoss_cancelledDepositDoesNot() public {
         _deposit(alice, 100e6);
         uint256 rid = _requestRedeem(alice, SH_100);
@@ -1362,6 +1445,16 @@ contract CancelAndFeesTest is LocalTestBase {
         _cancelDeposit(bob, did, bob);
 
         _pause();
+        assertEq(vault.totalAssets(), 99_999_998);
+
+        vm.prank(riskManager);
+        vm.expectRevert("SparkPrimeVault/invalid-loss");
+        vault.realizeLoss(0);
+
+        vm.prank(riskManager);
+        vm.expectRevert("SparkPrimeVault/invalid-loss");
+        vault.realizeLoss(99_999_998);  // loss == totalAssets: rejected; 99_999_997 is the max
+
         _realizeLoss(50e6);  // chi halves: 50e6 of 99_999_998 notional
         _unpause();
 
@@ -1374,7 +1467,140 @@ contract CancelAndFeesTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** 14. Yield while queued, cancel / re-request cycles                                     ***/
+    /*** 14. realizeGain: distributing the fee surplus (new at ff828d2)                        ***/
+    /**********************************************************************************************/
+
+    // The burned redeem fee leaves spUSDC in the vault that chi does not count (I-2). With
+    // `realizeGain(surplus)` the admin can credit that surplus to the remaining holders: chi is
+    // re-anchored to `(totalAssets + gain) / totalSupply`, and `totalAssets` lands within 1 wei of
+    // the real backing. The gain is a pure chi move, it does not touch spUSDC.
+    function test_realizeGain_distributesFeeSurplusToRemainingHolders() public {
+        _setRedeemFee(0.01e18);
+        _deposit(bob,   100e6);
+        _deposit(alice, 1_000_000e6);
+
+        _requestRedeem(alice, SH_1M);
+        _processRedeems(type(uint256).max, 1);
+
+        // Bob is the only holder; the 1% fee on alice's redeem sits in the vault uncounted.
+        assertEq(vault.totalSupply(),  SH_100);
+        assertEq(vault.assetsOf(bob),  99_999_998);
+        assertEq(vault.totalAssets(),  99_999_998);
+        uint256 backing = spUsdc.convertToAssets(_vaultSpUsdc());
+        assertEq(backing, 10_100_000_001);
+        uint256 surplus = backing - vault.totalAssets();
+        assertEq(surplus, 10_000_000_003);
+
+        uint256 spUsdcBefore = _vaultSpUsdc();
+        uint192 expectedChi  = uint192((99_999_998 + surplus) * RAY / SH_100);
+        assertEq(expectedChi, 101.978466055462937456192802386e27);
+
+        vm.expectEmit(address(vault));
+        emit GainRealized(expectedChi, surplus);
+        vm.prank(admin);
+        vault.realizeGain(surplus);
+
+        assertEq(vault.nowChi(),      expectedChi);
+        assertEq(vault.totalSupply(), SH_100);               // shares unchanged
+        assertEq(vault.assetsOf(bob), 10_100_000_000);       // bob credited ~10_000 USDC
+        assertEq(vault.totalAssets(), 10_100_000_000);
+        assertEq(_vaultSpUsdc(),      spUsdcBefore);         // backing untouched
+        assertEq(spUsdc.convertToAssets(_vaultSpUsdc()) - vault.totalAssets(), 1);  // 1 wei
+
+        // Bob can actually redeem the credited amount: the backing is real.
+        _setRedeemFee(0);
+        uint256 id = _requestRedeem(bob, SH_100);
+        _processRedeems(type(uint256).max, 1);
+        (, , uint256 left) = _redeemRequest(id);
+        assertEq(left,                 0);
+        assertEq(usdc.balanceOf(bob),  10_100_000_000);
+        assertEq(vault.totalSupply(),  0);
+        assertEq(_vaultSpUsdc(),       1);  // 1 spUSDC wei of dust
+    }
+
+    // `realizeGain(10_000_000_001)` (the surplus as measured in the alice-only scenario) under-
+    // credits by 3 wei; the admin should measure `backing - totalAssets()` at call time.
+    function test_realizeGain_roundNumberLeavesDust() public {
+        _setRedeemFee(0.01e18);
+        _deposit(bob,   100e6);
+        _deposit(alice, 1_000_000e6);
+        _requestRedeem(alice, SH_1M);
+        _processRedeems(type(uint256).max, 1);
+
+        vm.prank(admin);
+        vault.realizeGain(10_000_000_001);
+
+        assertEq(vault.nowChi(),      101.978466035269181803645067805e27);
+        assertEq(vault.assetsOf(bob), 10_099_999_998);
+        assertEq(vault.totalAssets(), 10_099_999_998);
+        assertEq(spUsdc.convertToAssets(_vaultSpUsdc()) - vault.totalAssets(), 3);
+    }
+
+    // With nobody left holding shares the surplus cannot be distributed: `realizeGain` reverts
+    // `no-shares` and the only way out for the 10_000_000_001 USDC of fee is `take()`.
+    function test_realizeGain_revertsWithNoHolders() public {
+        _setRedeemFee(0.01e18);
+        _deposit(alice, 1_000_000e6);
+        _requestRedeem(alice, SH_1M);
+        _processRedeems(type(uint256).max, 1);
+
+        assertEq(vault.totalSupply(), 0);
+        assertEq(spUsdc.convertToAssets(_vaultSpUsdc()), 10_000_000_001);
+
+        vm.prank(admin);
+        vm.expectRevert("SparkPrimeVault/no-shares");
+        vault.realizeGain(10_000_000_001);
+
+        vm.prank(admin);
+        vm.expectRevert("SparkPrimeVault/invalid-gain");
+        vault.realizeGain(0);
+
+        vm.prank(riskManager);
+        vm.expectRevert();  // AccessControlUnauthorizedAccount: DEFAULT_ADMIN only
+        vault.realizeGain(1);
+    }
+
+    // The mirror: `realizeGain` is not checked against backing. A gain with nothing behind it is
+    // purely notional; the redeem queue then clamps to real liquidity and the excess claim waits
+    // forever. Not pause-gated, unlike `realizeLoss`.
+    function test_realizeGain_withoutBackingIsNotional() public {
+        _deposit(alice, 100e6);
+        assertEq(vault.totalAssets(), 99_999_998);
+        assertEq(spUsdc.convertToAssets(_vaultSpUsdc()), 99_999_999);
+
+        vm.prank(admin);
+        vault.realizeGain(100e6);  // unpaused: accepted
+
+        assertEq(vault.nowChi(),       2.019375545061017805470462154e27);
+        assertEq(vault.totalAssets(),  199_999_997);
+        assertEq(vault.assetsOf(alice), 199_999_997);
+        assertEq(spUsdc.convertToAssets(_vaultSpUsdc()), 99_999_999);  // unchanged
+        assertEq(vault.availableLiquidAssets(),          99_999_999);
+
+        // Alice redeems everything: half her shares are paid from the real 99_999_999, the other
+        // half (worth exactly 100_000_000 on paper) sits at the head with 2 spUSDC wei behind it.
+        uint256 id = _requestRedeem(alice, SH_100);
+        _processRedeems(type(uint256).max, 1);
+
+        assertEq(usdc.balanceOf(alice), 99_999_997);
+        (, , uint256 left) = _redeemRequest(id);
+        assertEq(left,                       49_520_259);
+        assertEq(vault.convertToAssets(left), 100_000_000);
+        assertEq(_vaultSpUsdc(),              2);
+        assertEq(vault.redeemHead(),          id);
+
+        _processRedeems(type(uint256).max, 1);
+        assertEq(usdc.balanceOf(alice), 99_999_997);  // no progress without new backing
+
+        // Also accepted while paused.
+        _pause();
+        vm.prank(admin);
+        vault.realizeGain(1);
+        assertGt(vault.nowChi(), 2.019375545061017805470462154e27);
+    }
+
+    /**********************************************************************************************/
+    /*** 15. Yield while queued, cancel / re-request cycles                                     ***/
     /**********************************************************************************************/
 
     // A queued depositor earns spUSDC yield on the full amount with no fee, exactly as if they held

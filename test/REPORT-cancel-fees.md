@@ -1,4 +1,108 @@
-# CANCEL-FEES worker report, round 2: `test/CancelAndFees.t.sol`
+# CANCEL-FEES worker report, round 3: `test/CancelAndFees.t.sol` @ `ff828d2`
+
+68 tests, all passing (67 unit + 1 fuzz at 5000 runs) against `src/SparkPrimeVault.sol` on
+`refactor/more-simplifying` at `ff828d2`. Line numbers in this section refer to that file.
+Harness indexes and the 100e6 / 1_000_000e6 constants are unchanged from round 2.
+
+## Fixed at ff828d2
+
+- B-3 (cancelled-queue budget ignored spUSDC liquidity): `_processCancelledDepositQueue` now
+  budgets `min(maxSavingsShares_, spUSDC.maxRedeem(vault))` (`src/SparkPrimeVault.sol:784`).
+  With alice and bob cancelled at 100e6 each and 40e6 USDC left in spUSDC: `maxRedeem` is
+  38_181_307, alice is paid 39_999_999 and stays at the head with 57_271_962 shares, bob is
+  untouched, spUSDC keeps 1 wei; a second call is a no-op (no revert); after 200e6 returns one
+  call completes alice (99_999_999 total, chunking cost 0) and bob (99_999_999), head 2.
+  `maxRequests_` still binds under the clamp (150e6 liquid, 1 request: alice only; next call pays
+  bob 50_000_000 of the 50_000_001 left). The settlement costs 1_584 more gas per call for the
+  extra `maxRedeem` (99_408 for one entry, was 97_824), marginal per entry unchanged at 22_931.
+  Regression tests: `test_processCancelledDepositQueue_clampsToSpUsdcLiquidity`,
+  `test_processCancelledDepositQueue_liquidityClampRespectsMaxRequests`
+  (replace `test_processCancelledDepositQueue_revertsWhenSpUsdcIlliquid`).
+- Unauthenticated `updateCancelledDepositRecipient` (NEWSURFACE's finding, which made B-1's repair
+  path a race): the three recipient updaters are now owner-only
+  (`SparkPrimeVault/not-authorized`, lines 416-425, 465-477, 537-546), need an open entry
+  (`no-request`) and a non-zero recipient. Test:
+  `test_cancelDepositRequest_guardianRedirectRepairedByOwnerBeforeSettlement` (owner repairs, the
+  guardian and a stranger revert `not-authorized`, zero address reverts `invalid-recipient`, a
+  second guardian cancel reverts `no-request`, settlement pays alice 99_999_999 and the guardian 0,
+  the settled entry rejects further updates with `no-request`).
+
+## Persisting: F-1, both sides (both `test_BUG_` proofs still pass by asserting the theft)
+
+- B-1, deposit side, severity High -> Medium. `cancelDepositRequest` (lines 441-450) still
+  accepts `owner || GUARDIAN` and pushes the caller's `recipient_` into the cancelled entry. The
+  guardian can still queue a 999_999_999_999 USDC refund to itself
+  (`test_BUG_cancelDepositRequest_guardianCanRedirectRefund`). What changed: the owner now has a
+  real repair path. Because the refund is settled by REBALANCER in a later transaction, the owner
+  can call `updateCancelledDepositRecipient(cid, owner)` in the window between the guardian's
+  cancel and the planner's settlement, and nobody can flip it back. Downgraded to Medium because
+  the theft needs the guardian key AND a planner settlement before the depositor reacts (the
+  settlement is observable in the mempool / on chain, the cancel emits `CancelDepositRequest`),
+  so it degrades from "unconditional loss" to "loss if two roles act, or one role and an
+  inattentive depositor". It stays above Low because the depositor has no notification other
+  than watching events, the planner settles the queue routinely, and after settlement there is
+  nothing to repair (`test_cancelDepositRequest_guardianRedirectNotRepairableAfterSettlement`:
+  guardian paid 99_999_999, owner's update reverts `no-request`). Fix unchanged: push
+  `msg.sender == request_.owner ? recipient_ : request_.owner` as the recipient.
+- B-2, redeem side, stays High. `cancelRedeemRequest` (lines 516-523) pays
+  `_transfer(address(this), recipient_, shares)` in the same transaction. The guardian takes
+  990_405_184_109 shares (999_999_999_998 USDC of claim) and there is no window and no updater
+  that can touch a paid-out entry (`test_BUG_cancelRedeemRequest_guardianCanRedirectShares`).
+  Fix unchanged: `address to_ = msg.sender == request_.owner ? recipient_ : request_.owner;`.
+
+## New: fee economics with `realizeGain` (lines 297-309, DEFAULT_ADMIN, not pause-gated)
+
+- The burned redeem fee's surplus spUSDC (I-2) can now be credited to the remaining holders.
+  Scenario: bob 100e6, alice 1_000_000e6, 1% fee, alice's redeem fills. Backing 10_100_000_001
+  USDC against `totalAssets` 99_999_998, surplus 10_000_000_003. `realizeGain(10_000_000_003)`
+  sets chi to 101.978466055462937456192802386e27 (from 1.0097e27: a 101x jump for a single
+  holder), bob's claim becomes 10_100_000_000, `totalAssets` 10_100_000_000, 1 wei under the
+  backing, spUSDC balance unchanged. Bob redeems the full 10_100_000_000 and 1 spUSDC wei of dust
+  remains. Test: `test_realizeGain_distributesFeeSurplusToRemainingHolders`.
+- The gain amount must be measured at call time: `realizeGain(10_000_000_001)` (the surplus as
+  measured in the alice-only scenario) leaves 3 wei uncredited (`test_realizeGain_roundNumberLeavesDust`).
+- With no holders left (`totalSupply == 0`, the alice-only scenario) the 10_000_000_001 USDC of
+  fee cannot be distributed: `realizeGain` reverts `no-shares`; `take()` remains the only exit.
+  `realizeGain(0)` reverts `invalid-gain`; RISK_MANAGER cannot call it.
+  Test: `test_realizeGain_revertsWithNoHolders`.
+- Mirror, Info: `realizeGain` is not checked against backing and is not pause-gated. Alice holds
+  99_040_517 shares (backing 99_999_999); `realizeGain(100e6)` unpaused doubles chi to
+  2.019375545061017805470462154e27 and her claim to 199_999_997 with nothing behind the second
+  half. A full redeem pays 99_999_997 from the real liquidity, leaves 49_520_259 shares (worth
+  exactly 100_000_000 on paper) at the redeem head with 2 spUSDC wei behind them, and further
+  settlement calls make no progress. Also accepted while paused. The loss side is symmetric in
+  the other direction (`realizeLoss` requires paused and `0 < loss < totalAssets`), so the
+  asymmetry is: admin can inflate claims live and unbounded, risk manager can only cut them
+  while paused and never to zero. Test: `test_realizeGain_withoutBackingIsNotional`.
+- `realizeLoss` bounds pinned (lines 369-385): with `totalAssets` 99_999_998, `realizeLoss(0)` and
+  `realizeLoss(99_999_998)` revert `invalid-loss`; 99_999_997 is the maximum. The round-2
+  `realizeLoss(50e6)` assertion is unaffected
+  (`test_realizeLoss_escrowedRedeemTakesLoss_cancelledDepositDoesNot`).
+
+## Properties re-checked and held at ff828d2
+
+Everything in round 2 section (c) re-ran unchanged on the new code (same exact values, same gas
+for the deposit and redeem queues: 2_328 / 2_408 gas per ghost entry, 22_931 marginal per
+settled cancellation). B-4 (settlement spends other queued depositors' backing), N-1 (dead
+entries consume `maxRequests_`), F-2, F-5, F-7, F-8, I-2, I-4, I-6, C-6, N-3 all reproduce with
+the round-2 numbers; their line references moved: `_processCancelledDepositQueue` budget `:784`,
+loop `continue` `:796`; `_processDepositQueue` `continue` `:757`; `_processRedeemQueue` clamp
+`:822`; `take` `:329-338`; cancel delete/push `:446` / `:450`.
+
+## Unsettled
+
+- B-1 severity: Medium assumes a depositor who watches `CancelDepositRequest` events or a planner
+  that does not settle blindly. If the planner settles on a timer with no review, the practical
+  window is the timer period and the finding is closer to High. Decide with the ops design.
+- Whether `realizeGain` should be bounded by `backing - totalAssets()` (it has the data: the
+  vault can read `spUSDC.convertToAssets(balanceOf(this))`) or at least require `paused` like
+  `realizeLoss`, is a design question for NEWSURFACE / the admin-surface owner.
+- The 1 wei of spUSDC that `maxRedeem` leaves behind (floor rounding) accumulates one wei per
+  liquidity-constrained settlement; harmless, noted for completeness.
+
+---
+
+# Round 2 (history, `0bc9288`): `test/CancelAndFees.t.sol`
 
 62 tests, all passing (61 unit + 1 fuzz at 5000 runs) against `src/SparkPrimeVault.sol` on
 `refactor/more-simplifying` (worktree HEAD `dbb633b`). The two `test_BUG_` tests pass by asserting
@@ -43,16 +147,15 @@ Scenario: alice queues 1_000_000e6 (954_532_691_143 spUSDC). Guardian calls
 `cancelDepositRequest(id, guardian)`. Entry `cancelledDepositQueue[0] = (alice, guardian, SS_1M)`.
 `processCancelledDepositQueue` pays 999_999_999_999 USDC to the guardian; alice gets 0.
 Impact: full loss of any queued deposit by a hot-wallet role. The owner can repair it only in the
-window before settlement, through `updateCancelledDepositRecipient` (line 465), which is
-unauthenticated: anyone, including the guardian, can flip it back, so the last writer before the
-rebalancer's call wins (NEWSURFACE owns the unauthenticated setter).
+window before settlement, through `updateCancelledDepositRecipient` (line 465), which at 0bc9288 was
+unauthenticated: anyone, including the guardian, could flip it back (owner-only since ff828d2, see round 3).
 Tests: `test_BUG_cancelDepositRequest_guardianCanRedirectRefund`,
 `test_cancelDepositRequest_guardianRedirectRepairedByOwnerBeforeSettlement`.
 Fix: push `Request(request_.owner, msg.sender == request_.owner ? recipient_ : request_.owner, ...)`
 and authenticate `updateCancelledDepositRecipient` to the entry owner.
 
 ### B-2 High: guardian can redirect escrowed redeem shares to any address (F-1, redeem side)
-`src/SparkPrimeVault.sol:511-518`. Same check; `_transfer(address(this), recipient_, shares)` pays
+`src/SparkPrimeVault.sol:516-523` at ff828d2. Same check; `_transfer(address(this), recipient_, shares)` pays
 whoever the guardian names, immediately, with no repair path.
 Scenario: alice escrows 990_405_184_109 shares (fee 0). Guardian calls
 `cancelRedeemRequest(id, guardian)`: guardian balance 990_405_184_109 (worth 999_999_999_998),
@@ -62,7 +165,7 @@ Test: `test_BUG_cancelRedeemRequest_guardianCanRedirectShares`.
 Fix: `address to_ = msg.sender == request_.owner ? recipient_ : request_.owner;`.
 
 ### B-3 Low: `processCancelledDepositQueue` budgets by spUSDC share balance, not spUSDC liquidity
-`src/SparkPrimeVault.sol:742` (`balanceOf`) versus `:780` (`maxWithdraw` in the redeem loop).
+`src/SparkPrimeVault.sol:784` (`balanceOf` at 0bc9288; now `maxRedeem`, FIXED in round 3) versus `:822` (`maxWithdraw` in the redeem loop).
 When spUSDC itself is short of USDC the per-entry `redeem` reverts `SparkVault/insufficient-liquidity`
 and the whole call rolls back; nothing is paid, including entries that would fit.
 Scenario: alice and bob each cancel 100e6; spUSDC holds 40e6 USDC against the vault's 190_906_538
@@ -75,7 +178,7 @@ Test: `test_processCancelledDepositQueue_revertsWhenSpUsdcIlliquid`.
 Fix: `remaining_ = _min(maxSavingsShares_, _min(balanceOf, convertToShares(maxWithdraw)))`.
 
 ### B-4 Low: a cancelled-deposit settlement spends other queued depositors' backing
-`src/SparkPrimeVault.sol:742`. The budget is the vault's whole spUSDC balance, which is also the
+`src/SparkPrimeVault.sol:784`. The budget is the vault's whole spUSDC balance (now clamped to spUSDC liquidity, same shape), which is also the
 backing of deposits still queued (`pendingDepositSavingsShares`) and of minted shares.
 Scenario: alice and bob queue 100e6 each; `take(95_453_269)` removes one depositor's worth. Alice
 cancels and settles: 99_999_999 USDC paid, vault spUSDC 0, bob's entry still says 95_453_269
@@ -85,7 +188,7 @@ backing now happens in a REBALANCER call rather than a user cancel, so it is pla
 Test: `test_processCancelledDepositQueue_spendsOtherQueuedDepositorsBacking`.
 
 ### N-1 re-measured (Low -> Info): cancel/re-request griefing
-`src/SparkPrimeVault.sol:446` (`delete`), `:715` (`continue`), `:450` (push to the cancelled queue).
+`src/SparkPrimeVault.sol:446` (`delete`), `:757` (`continue`), `:450` (push to the cancelled queue).
 Dead entries behind a live head still consume `maxRequests_` and 2_328 gas each (cold). Bob at id 0,
 50 griefer cycles at ids 1..50, alice at 51: `processDepositQueue(max, 50)` fills bob only and
 stops at head 50, two more calls reach alice. Dead entries at the head cost nothing now: both the
