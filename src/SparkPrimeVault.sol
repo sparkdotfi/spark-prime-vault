@@ -47,6 +47,7 @@ interface IERC4626Like {
 
 }
 
+// TODO: Prevent recipient of deposit request and redeem cancellation from being the contract itself.
 // TODO: requestDepositWithPermit?
 // TODO: Get pendingOfReceiver()/getPendingOfOwner() even needed?
 

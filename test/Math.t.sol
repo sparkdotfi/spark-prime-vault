@@ -7,8 +7,8 @@ import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
 
 contract SparkPrimeVaultHarness is SparkPrimeVault {
 
-    function divup(uint256 x, uint256 y) public pure returns (uint256) {
-        return super._divup(x, y);
+    function divUp(uint256 x, uint256 y) public pure returns (uint256) {
+        return super._divUp(x, y);
     }
 
     function rpow(uint256 x, uint256 n) public pure returns (uint256) {
@@ -32,7 +32,7 @@ contract DivupFailureTests is MathTestBase {
 
     function test_divup_divideByZero() public {
         vm.expectRevert(stdError.divisionError);
-        harness.divup(1, 0);
+        harness.divUp(1, 0);
     }
 
 }
@@ -62,7 +62,7 @@ contract DivupSuccessTests is MathTestBase {
     }
 
     function table_divup_roundUp(TestCase memory division) public view {
-        assertEq(harness.divup(division.x, division.y), division.expected);
+        assertEq(harness.divUp(division.x, division.y), division.expected);
     }
 
 }
