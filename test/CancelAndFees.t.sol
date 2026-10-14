@@ -3,11 +3,10 @@ pragma solidity ^0.8.34;
 
 import { stdError } from "../lib/forge-std/src/StdError.sol";
 
-import { IERC20Errors } from "../lib/oz/contracts/interfaces/IERC6093.sol";
-
 import { LocalTestBase } from "./LocalTestBase.t.sol";
 
-// Cancel permissions, cancel ordering, fee math and fee economics for spPRIME.
+// Cancel permissions, cancel ordering, the cancelled-deposit queue, fee math and fee economics
+// for spPRIME on `refactor/more-simplifying`.
 //
 // Harness indexes at setUp (see LocalTestBase): chi_s = 1.047633055711877768967605062e27,
 // chi_p = 1.009687768242461209408770821e27. All hard-coded numbers below derive from them.
@@ -17,6 +16,12 @@ import { LocalTestBase } from "./LocalTestBase.t.sol";
 //   1_000_000e6 USDC deposit  -> 954_532_691_143 spUSDC shares (worth 999_999_999_999 USDC)
 //                             -> 990_405_184_109 spPRIME shares when filled
 contract CancelAndFeesTest is LocalTestBase {
+
+    event CancelDepositRequest(uint256 indexed depositRequestId, uint256 cancelRequestId);
+    event DepositCancellation(
+        address indexed owner, address indexed recipient, uint256 savingsShares, uint256 assets
+    );
+    event CancelRedeemRequest(uint256 indexed requestId, uint256 shares);
 
     uint256 constant CHI_S = 1.047633055711877768967605062e27;
     uint256 constant CHI_P = 1.009687768242461209408770821e27;
@@ -48,9 +53,14 @@ contract CancelAndFeesTest is LocalTestBase {
         _setCapacity(type(uint128).max);
     }
 
-    function _cancelDeposit(address who, uint256 id, address to) internal {
+    // Cancel only: the entry moves to the cancelled queue, nothing is paid yet.
+    function _cancelDeposit(address who, uint256 id, address to) internal returns (uint256 cid) {
         vm.prank(who);
-        vault.cancelDepositRequest(id, to);
+        cid = vault.cancelDepositRequest(id, to);
+    }
+
+    function _settleCancelled() internal {
+        _processCancelledDeposits(type(uint256).max, type(uint256).max);
     }
 
     function _cancelRedeem(address who, uint256 id, address to) internal {
@@ -87,17 +97,43 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(_vaultSpUsdc(),                      SS_100);
         assertEq(vault.pendingDepositSavingsShares(), SS_100);
 
-        _cancelDeposit(alice, id, bob);
+        vm.expectEmit(address(vault));
+        emit CancelDepositRequest(id, 0);
+        uint256 cid = _cancelDeposit(alice, id, bob);
+        assertEq(cid, 0);
 
+        // Deposit entry cleared, cancelled entry created with the caller-chosen recipient.
         (owner, recipient, shares) = _depositRequest(id);
         assertEq(owner,     address(0));
         assertEq(recipient, address(0));
         assertEq(shares,    0);
 
-        assertEq(usdc.balanceOf(alice),               0);
-        assertEq(usdc.balanceOf(bob),                 99_999_999);  // 1 wei lost to spUSDC rounding
-        assertEq(_vaultSpUsdc(),                      0);
-        assertEq(vault.pendingDepositSavingsShares(), 0);
+        (owner, recipient, shares) = _cancelledDepositRequest(cid);
+        assertEq(owner,     alice);
+        assertEq(recipient, bob);
+        assertEq(shares,    SS_100);
+
+        assertEq(vault.pendingDepositSavingsShares(),          0);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), SS_100);
+        assertEq(vault.cancelledDepositHead(),                 0);
+        assertEq(_vaultSpUsdc(),                               SS_100);  // nothing paid yet
+        assertEq(usdc.balanceOf(bob),                          0);
+
+        // Settlement by the rebalancer pays the chosen recipient.
+        vm.expectEmit(address(vault));
+        emit DepositCancellation(alice, bob, SS_100, 99_999_999);
+        _settleCancelled();
+
+        (owner, recipient, shares) = _cancelledDepositRequest(cid);
+        assertEq(owner,     address(0));
+        assertEq(recipient, address(0));
+        assertEq(shares,    0);
+
+        assertEq(usdc.balanceOf(alice),                        0);
+        assertEq(usdc.balanceOf(bob),                          99_999_999);  // 1 wei to spUSDC rounding
+        assertEq(_vaultSpUsdc(),                               0);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
+        assertEq(vault.cancelledDepositHead(),                 1);
     }
 
     function test_cancelDepositRequest_revertsNotAuthorized() public {
@@ -118,17 +154,45 @@ contract CancelAndFeesTest is LocalTestBase {
         vault.cancelDepositRequest(id2, bob);
     }
 
-    function test_cancelDepositRequest_guardianRefundsOwnerIgnoringRecipient() public {
-        uint256 id = _queueDeposit(alice, 100e6);
+    // F-1 is NOT patched upstream: a guardian cancel records `recipient_` as the refund recipient
+    // of the cancelled entry, so the settlement pays the guardian, not the depositor.
+    function test_BUG_cancelDepositRequest_guardianCanRedirectRefund() public {
+        uint256 id = _queueDeposit(alice, 1_000_000e6);
 
+        uint256 cid = _cancelDeposit(guardian, id, guardian);
+
+        (address owner, address recipient, uint256 shares) = _cancelledDepositRequest(cid);
+        assertEq(owner,     alice);
+        assertEq(recipient, guardian);
+        assertEq(shares,    SS_1M);
+
+        _settleCancelled();
+
+        assertEq(usdc.balanceOf(guardian), 999_999_999_999);  // theft of the whole deposit
         assertEq(usdc.balanceOf(alice),    0);
-        assertEq(usdc.balanceOf(guardian), 0);
-
-        _cancelDeposit(guardian, id, guardian);  // REVIEW PATCH F-1: recipient_ ignored
-
-        assertEq(usdc.balanceOf(alice),    99_999_999);
-        assertEq(usdc.balanceOf(guardian), 0);
         assertEq(_vaultSpUsdc(),           0);
+    }
+
+    // The owner can only repair a guardian redirect before settlement, through the unauthenticated
+    // `updateCancelledDepositRecipient` (anyone, including the guardian, can call it again).
+    function test_cancelDepositRequest_guardianRedirectRepairedByOwnerBeforeSettlement() public {
+        uint256 id  = _queueDeposit(alice, 100e6);
+        uint256 cid = _cancelDeposit(guardian, id, guardian);
+
+        vm.prank(alice);
+        vault.updateCancelledDepositRecipient(cid, alice);
+
+        (, address recipient, ) = _cancelledDepositRequest(cid);
+        assertEq(recipient, alice);
+
+        // The guardian (or anyone) can flip it back; last writer before settlement wins.
+        vm.prank(stranger);
+        vault.updateCancelledDepositRecipient(cid, stranger);
+        vm.prank(alice);
+        vault.updateCancelledDepositRecipient(cid, alice);
+
+        _settleCancelled();
+        assertEq(usdc.balanceOf(alice), 99_999_999);
     }
 
     function test_cancelDepositRequest_revertsNoRequest_alreadyCancelled() public {
@@ -148,8 +212,10 @@ contract CancelAndFeesTest is LocalTestBase {
         uint256 id = _deposit(alice, 100e6);  // instant fill
         assertEq(vault.balanceOf(alice), SH_100);
 
-        (, , uint256 shares) = _depositRequest(id);
-        assertEq(shares, 0);
+        (address owner, address recipient, uint256 shares) = _depositRequest(id);
+        assertEq(owner,     address(0));  // filled entries are deleted
+        assertEq(recipient, address(0));
+        assertEq(shares,    0);
 
         vm.prank(alice);
         vm.expectRevert("SparkPrimeVault/no-request");
@@ -162,6 +228,30 @@ contract CancelAndFeesTest is LocalTestBase {
         vm.prank(alice);
         vm.expectRevert(stdError.indexOOBError);
         vault.cancelDepositRequest(id + 1, alice);
+    }
+
+    function test_cancelDepositRequest_revertsZeroRecipient() public {
+        uint256 id = _queueDeposit(alice, 100e6);
+
+        vm.prank(alice);
+        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vault.cancelDepositRequest(id, address(0));
+
+        vm.prank(guardian);
+        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vault.cancelDepositRequest(id, address(0));
+    }
+
+    // recipient_ == vault is not rejected: the refund lands as USDC inside the prime vault, where
+    // nothing counts or moves it (F-6 / C-6).
+    function test_cancelDepositRequest_recipientVaultStrandsUsdc() public {
+        uint256 id = _queueDeposit(alice, 100e6);
+        _cancelDeposit(alice, id, address(vault));
+        _settleCancelled();
+
+        assertEq(usdc.balanceOf(address(vault)), 99_999_999);
+        assertEq(usdc.balanceOf(alice),          0);
+        assertEq(_vaultSpUsdc(),                 0);
     }
 
     /**********************************************************************************************/
@@ -182,6 +272,8 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(vault.balanceOf(address(vault)), SH_100);
         assertEq(vault.pendingRedeemShares(),     SH_100);
 
+        vm.expectEmit(address(vault));
+        emit CancelRedeemRequest(id, SH_100);
         _cancelRedeem(alice, id, bob);
 
         (owner, recipient, shares) = _redeemRequest(id);
@@ -194,6 +286,7 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(vault.balanceOf(address(vault)), 0);
         assertEq(vault.pendingRedeemShares(),     0);
         assertEq(vault.totalSupply(),             SH_100);
+        assertEq(vault.redeemHead(),              1);  // head entry: advanced past it
     }
 
     function test_cancelRedeemRequest_revertsNotAuthorized() public {
@@ -210,14 +303,17 @@ contract CancelAndFeesTest is LocalTestBase {
         vault.cancelRedeemRequest(id, bob);
     }
 
-    function test_cancelRedeemRequest_guardianRefundsOwnerIgnoringRecipient() public {
-        _deposit(alice, 100e6);
-        uint256 id = _requestRedeem(alice, SH_100);
+    // F-1 is NOT patched upstream: a guardian cancel transfers the escrowed shares to `recipient_`
+    // immediately. There is no repair path for the owner.
+    function test_BUG_cancelRedeemRequest_guardianCanRedirectShares() public {
+        _deposit(alice, 1_000_000e6);
+        uint256 id = _requestRedeem(alice, SH_1M);
 
-        _cancelRedeem(guardian, id, guardian);  // REVIEW PATCH F-1
+        _cancelRedeem(guardian, id, guardian);
 
-        assertEq(vault.balanceOf(alice),          SH_100);
-        assertEq(vault.balanceOf(guardian),       0);
+        assertEq(vault.balanceOf(guardian),       SH_1M);  // theft of the whole position
+        assertEq(vault.assetsOf(guardian),        999_999_999_998);
+        assertEq(vault.balanceOf(alice),          0);
         assertEq(vault.balanceOf(address(vault)), 0);
         assertEq(vault.pendingRedeemShares(),     0);
     }
@@ -259,31 +355,21 @@ contract CancelAndFeesTest is LocalTestBase {
         vault.cancelRedeemRequest(id + 1, alice);
     }
 
-    // Unlike requestRedeem (line 423) and transfer (line 485), cancelRedeemRequest does not reject
-    // recipient_ == address(0): the escrowed shares land on address(0) with totalSupply unchanged.
-    function test_cancelRedeemRequest_zeroRecipientNotRejected() public {
+    // N-2 (round 1) is fixed for address(0): both cancels now reject it.
+    function test_cancelRedeemRequest_revertsZeroRecipient() public {
         _deposit(alice, 100e6);
         uint256 id = _requestRedeem(alice, SH_100);
 
-        _cancelRedeem(alice, id, address(0));
-
-        assertEq(vault.balanceOf(address(0)),     SH_100);
-        assertEq(vault.balanceOf(alice),          0);
-        assertEq(vault.balanceOf(address(vault)), 0);
-        assertEq(vault.totalSupply(),             SH_100);  // still counts against capacity
-        assertEq(vault.pendingRedeemShares(),     0);
-    }
-
-    // cancelDepositRequest with recipient_ == address(0) is caught by the asset token, not spPRIME.
-    function test_cancelDepositRequest_zeroRecipientRevertsInAsset() public {
-        uint256 id = _queueDeposit(alice, 100e6);
-
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InvalidReceiver.selector, address(0)));
-        vault.cancelDepositRequest(id, address(0));
+        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vault.cancelRedeemRequest(id, address(0));
+
+        vm.prank(guardian);
+        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vault.cancelRedeemRequest(id, address(0));
     }
 
-    // Owner-chosen recipient == vault strands the shares (see section 8).
+    // Owner-chosen recipient == vault still strands the shares (see section 8).
     function test_cancelRedeemRequest_recipientVaultStrandsShares() public {
         _deposit(alice, 100e6);
         uint256 id = _requestRedeem(alice, SH_100);
@@ -318,7 +404,12 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(vault.pendingDepositSavingsShares(), 57_271_963);
         assertEq(_vaultSpUsdc(),                      SS_100);  // fills do not move spUSDC
 
-        _cancelDeposit(alice, id, alice);
+        uint256 cid = _cancelDeposit(alice, id, alice);
+        (, , uint256 cshares) = _cancelledDepositRequest(cid);
+        assertEq(cshares, 57_271_963);  // only the unfilled remainder is refundable
+        assertEq(vault.depositHead(), 1);
+
+        _settleCancelled();
 
         assertEq(usdc.balanceOf(alice),               60_000_001);  // 57_271_963 * chi_s / RAY
         assertEq(vault.balanceOf(alice),              39_616_205);
@@ -355,64 +446,115 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(vault.balanceOf(address(vault)), 0);
         assertEq(vault.pendingRedeemShares(),     0);
         assertEq(vault.totalSupply(),             59_424_310);
+        assertEq(vault.redeemHead(),              1);
     }
 
-    function test_cancelDepositRequest_headEntryThenProcessSkipsIt() public {
+    // Cancelling the head entry now advances the head past every dead entry that follows it.
+    function test_cancelDepositRequest_headEntryAdvancesHead() public {
         _setCapacity(0);
         uint256 idA = _deposit(alice, 100e6);
         uint256 idB = _deposit(bob,   100e6);
+        uint256 idC = _deposit(carol, 100e6);
         assertEq(idA, 0);
         assertEq(idB, 1);
+        assertEq(idC, 2);
         assertEq(vault.depositHead(), 0);
-        assertEq(vault.pendingDepositSavingsShares(), 2 * SS_100);
+        assertEq(vault.pendingDepositSavingsShares(), 3 * SS_100);
 
+        // Cancelling a non-head entry leaves the head alone.
+        _cancelDeposit(bob, idB, bob);
+        assertEq(vault.depositHead(), 0);
+
+        // Cancelling the head walks over bob's dead slot to carol.
         _cancelDeposit(alice, idA, alice);
-        assertEq(vault.depositHead(), 0);  // cancel does not touch the head
-        assertEq(vault.pendingDepositSavingsShares(), SS_100);
+        assertEq(vault.depositHead(), 2);
+        assertEq(vault.pendingDepositSavingsShares(),          SS_100);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 2 * SS_100);
+
+        // Cancelling the last live entry parks the head at the queue length.
+        _cancelDeposit(carol, idC, carol);
+        assertEq(vault.depositHead(), 3);
+        assertEq(vault.pendingDepositSavingsShares(), 0);
 
         _setCapacity(type(uint128).max);
         _processDeposits(type(uint256).max, 10);
-
-        assertEq(vault.depositHead(),    2);
+        assertEq(vault.depositHead(),    3);
         assertEq(vault.balanceOf(alice), 0);
-        assertEq(vault.balanceOf(bob),   SH_100);
-        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(vault.balanceOf(bob),   0);
+        assertEq(vault.balanceOf(carol), 0);
+
+        // The cancelled queue pays in cancel order: bob, alice, carol.
+        _processCancelledDeposits(type(uint256).max, 1);
+        assertEq(usdc.balanceOf(bob),   99_999_999);
+        assertEq(usdc.balanceOf(alice), 0);
+        _processCancelledDeposits(type(uint256).max, 2);
+        assertEq(usdc.balanceOf(alice), 99_999_999);
+        assertEq(usdc.balanceOf(carol), 99_999_999);
+        assertEq(vault.cancelledDepositHead(), 3);
+        assertEq(_vaultSpUsdc(), 0);
     }
 
-    function test_cancelRedeemRequest_headEntryThenProcessSkipsIt() public {
+    function test_cancelRedeemRequest_headEntryAdvancesHead() public {
         _deposit(alice, 100e6);
         _deposit(bob,   100e6);
+        _deposit(carol, 100e6);
         uint256 idA = _requestRedeem(alice, SH_100);
         uint256 idB = _requestRedeem(bob,   SH_100);
+        uint256 idC = _requestRedeem(carol, SH_100);
         assertEq(idA, 0);
         assertEq(idB, 1);
+        assertEq(idC, 2);
+
+        _cancelRedeem(bob, idB, bob);
+        assertEq(vault.redeemHead(), 0);
 
         _cancelRedeem(alice, idA, alice);
-        assertEq(vault.redeemHead(), 0);
+        assertEq(vault.redeemHead(), 2);
         assertEq(vault.pendingRedeemShares(), SH_100);
 
-        _processRedeems(type(uint256).max, 10);
+        _processRedeems(type(uint256).max, 1);
 
-        assertEq(vault.redeemHead(),      2);
+        assertEq(vault.redeemHead(),      3);
         assertEq(usdc.balanceOf(alice),   0);
-        assertEq(usdc.balanceOf(bob),     99_999_998);
+        assertEq(usdc.balanceOf(bob),     0);
+        assertEq(usdc.balanceOf(carol),   99_999_998);
         assertEq(vault.balanceOf(alice),  SH_100);
+        assertEq(vault.balanceOf(bob),    SH_100);
         assertEq(vault.pendingRedeemShares(), 0);
     }
 
     function test_cancelDepositRequest_thenReRequestFillsInstantlyWhenQueueEmpty() public {
         uint256 id = _queueDeposit(alice, 100e6);
         _cancelDeposit(alice, id, alice);
+        assertEq(vault.depositHead(), 1);  // walked past its own dead slot
+        _settleCancelled();
         assertEq(usdc.balanceOf(alice), 99_999_999);
         assertEq(vault.pendingDepositSavingsShares(), 0);
 
-        // Queue empty again: the re-request fills instantly and resets the head to its own index.
+        // Queue empty again: the re-request fills instantly.
         vm.prank(alice);
         uint256 id2 = vault.requestDeposit(99_999_999, alice);
         assertEq(id2, 1);
-        assertEq(vault.depositHead(), 2);  // reset to 1, then advanced past the full fill
+        assertEq(vault.depositHead(), 2);
         assertEq(vault.balanceOf(alice), 99_040_516);  // 99_999_999 -> 95_453_268 spUSDC -> 99_999_998 -> shares
         assertEq(vault.pendingDepositSavingsShares(), 0);
+    }
+
+    // An unsettled cancel does not block the instant path: the re-request fills even while the
+    // refund is still waiting in the cancelled queue (the vault still holds that spUSDC).
+    function test_cancelDepositRequest_reRequestFillsInstantlyBeforeSettlement() public {
+        uint256 id = _queueDeposit(alice, 100e6);
+        _cancelDeposit(alice, id, alice);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), SS_100);
+
+        uint256 id2 = _deposit(alice, 100e6);
+        assertEq(id2, 1);
+        assertEq(vault.balanceOf(alice), SH_100);
+        assertEq(_vaultSpUsdc(), 2 * SS_100);
+
+        _settleCancelled();
+        assertEq(usdc.balanceOf(alice), 99_999_999);
+        assertEq(_vaultSpUsdc(), SS_100);
     }
 
     function test_cancelDepositRequest_thenReRequestQueuesBehindOthers() public {
@@ -420,21 +562,18 @@ contract CancelAndFeesTest is LocalTestBase {
         uint256 idA = _deposit(alice, 100e6);
         _deposit(bob, 100e6);
         _cancelDeposit(alice, idA, alice);
+        assertEq(vault.depositHead(), 1);  // walked to bob
+        _settleCancelled();
 
         vm.prank(alice);
         uint256 id2 = vault.requestDeposit(99_999_999, alice);
         assertEq(id2, 2);
-        assertEq(vault.depositHead(), 0);
+        assertEq(vault.depositHead(), 1);
         assertEq(vault.pendingDepositSavingsShares(), SS_100 + 95_453_268);
 
         _setCapacity(type(uint128).max);
 
-        // A cancelled entry consumes one unit of maxRequests_: this call fills nothing.
-        _processDeposits(type(uint256).max, 1);
-        assertEq(vault.balanceOf(bob),   0);
-        assertEq(vault.balanceOf(alice), 0);
-        assertEq(vault.depositHead(),    1);
-
+        // The dead head slot was skipped at cancel time, so a 1-request batch fills bob directly.
         _processDeposits(type(uint256).max, 1);
         assertEq(vault.balanceOf(bob),   SH_100);
         assertEq(vault.balanceOf(alice), 0);
@@ -446,44 +585,137 @@ contract CancelAndFeesTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** 3. F-2: cancel after take() spent the queue backing                                   ***/
+    /*** 3. Cancelled-deposit queue mechanics                                                   ***/
     /**********************************************************************************************/
 
-    function test_cancelDepositRequest_revertsAfterTakeSpentBacking() public {
+    function test_processCancelledDepositQueue_maxRequestsHonoured() public {
+        _setCapacity(0);
+        uint256 idA = _deposit(alice, 100e6);
+        uint256 idB = _deposit(bob,   100e6);
+        uint256 idC = _deposit(carol, 100e6);
+        _cancelDeposit(alice, idA, alice);
+        _cancelDeposit(bob,   idB, bob);
+        _cancelDeposit(carol, idC, carol);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 3 * SS_100);
+
+        _processCancelledDeposits(type(uint256).max, 0);
+        assertEq(vault.cancelledDepositHead(), 0);
+        assertEq(usdc.balanceOf(alice), 0);
+
+        _processCancelledDeposits(type(uint256).max, 2);
+        assertEq(vault.cancelledDepositHead(), 2);
+        assertEq(usdc.balanceOf(alice), 99_999_999);
+        assertEq(usdc.balanceOf(bob),   99_999_999);
+        assertEq(usdc.balanceOf(carol), 0);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), SS_100);
+
+        _processCancelledDeposits(type(uint256).max, 10);
+        assertEq(vault.cancelledDepositHead(), 3);
+        assertEq(usdc.balanceOf(carol), 99_999_999);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
+
+        // Idle call on an empty queue is a no-op.
+        _processCancelledDeposits(type(uint256).max, 10);
+        assertEq(vault.cancelledDepositHead(), 3);
+    }
+
+    function test_processCancelledDepositQueue_maxSavingsSharesPartialFill() public {
+        uint256 id  = _queueDeposit(alice, 100e6);
+        uint256 cid = _cancelDeposit(alice, id, alice);
+
+        // 40e6 worth = 38_181_306 spUSDC shares.
+        vm.expectEmit(address(vault));
+        emit DepositCancellation(alice, alice, 38_181_306, 39_999_998);
+        _processCancelledDeposits(38_181_306, 10);
+
+        assertEq(usdc.balanceOf(alice), 39_999_998);
+        assertEq(vault.cancelledDepositHead(), 0);  // partial: head stays
+        (address owner, address recipient, uint256 shares) = _cancelledDepositRequest(cid);
+        assertEq(owner,     alice);
+        assertEq(recipient, alice);
+        assertEq(shares,    57_271_963);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 57_271_963);
+        assertEq(_vaultSpUsdc(), 57_271_963);
+
+        _settleCancelled();
+        assertEq(usdc.balanceOf(alice), 39_999_998 + 60_000_001);
+        assertEq(usdc.balanceOf(alice), 99_999_999);  // chunking costs nothing extra here
+        assertEq(vault.cancelledDepositHead(), 1);
+        assertEq(_vaultSpUsdc(), 0);
+    }
+
+    function test_processCancelledDepositQueue_revertsNotRebalancer() public {
+        uint256 id = _queueDeposit(alice, 100e6);
+        _cancelDeposit(alice, id, alice);
+
+        vm.prank(alice);
+        vm.expectRevert();  // AccessControlUnauthorizedAccount
+        vault.processCancelledDepositQueue(type(uint256).max, 1);
+
+        vm.prank(guardian);
+        vm.expectRevert();
+        vault.processCancelledDepositQueue(type(uint256).max, 1);
+    }
+
+    // The cancelled queue is settled from the vault's whole spUSDC balance, which includes the
+    // backing of deposits still queued: a settlement can spend other depositors' spUSDC.
+    function test_processCancelledDepositQueue_spendsOtherQueuedDepositorsBacking() public {
+        _setCapacity(0);
+        uint256 idA = _deposit(alice, 100e6);
+        _deposit(bob, 100e6);
+        _take(SS_100);  // Arkis took 100e6 worth; 2 * 100e6 is still owed to the two queued depositors
+
+        _cancelDeposit(alice, idA, alice);
+        _settleCancelled();
+
+        assertEq(usdc.balanceOf(alice), 99_999_999);
+        assertEq(_vaultSpUsdc(),        0);
+        assertEq(vault.pendingDepositSavingsShares(), SS_100);  // bob: owed, unbacked until return
+    }
+
+    /**********************************************************************************************/
+    /*** 4. F-2: cancel after take() spent the queue backing                                   ***/
+    /**********************************************************************************************/
+
+    function test_cancelDepositRequest_afterTakeSettlesWhatIsThere_restWaits() public {
         _setCapacity(0);
         uint256 idA = _deposit(alice, 100e6);
         uint256 idB = _deposit(bob,   100e6);
         assertEq(_vaultSpUsdc(), 2 * SS_100);
 
-        // Taker pulls 100e6 worth: exactly alice's backing by amount, but spUSDC is fungible.
+        // Taker pulls 100e6 worth: exactly one depositor's backing by amount, but spUSDC is fungible.
         _take(SS_100);
         assertEq(_vaultSpUsdc(),                      SS_100);
         assertEq(vault.pendingDepositSavingsShares(), 2 * SS_100);  // not reduced by take
 
-        // Alice cancels first and consumes what was bob's backing.
+        // Both cancel; neither cancel reverts now.
         _cancelDeposit(alice, idA, alice);
+        _cancelDeposit(bob,   idB, bob);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 2 * SS_100);
+        assertEq(vault.depositHead(), 2);
+
+        // Settlement pays alice in full and stops; bob's entry is untouched and no revert.
+        _settleCancelled();
         assertEq(usdc.balanceOf(alice), 99_999_999);
+        assertEq(usdc.balanceOf(bob),   0);
         assertEq(_vaultSpUsdc(),        0);
+        assertEq(vault.cancelledDepositHead(), 1);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), SS_100);
 
-        // Bob is stuck: spUSDC has no shares to redeem from the vault.
-        vm.prank(bob);
-        vm.expectRevert("SparkVault/insufficient-balance");
-        vault.cancelDepositRequest(idB, bob);
+        // With nothing in the vault the call is a no-op (budget 0), not a revert.
+        _settleCancelled();
+        assertEq(vault.cancelledDepositHead(), 1);
 
-        // Guardian cannot help either.
-        vm.prank(guardian);
-        vm.expectRevert("SparkVault/insufficient-balance");
-        vault.cancelDepositRequest(idB, bob);
-
-        // Returning exactly the shortfall unblocks bob.
+        // Returning exactly the shortfall completes bob.
         _returnToVault(SS_100);
-        _cancelDeposit(bob, idB, bob);
+        _settleCancelled();
         assertEq(usdc.balanceOf(bob), 99_999_999);
         assertEq(_vaultSpUsdc(),      0);
-        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(vault.cancelledDepositHead(), 2);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
     }
 
-    function test_cancelDepositRequest_bothStuckWhenTakeExceedsOneRequest() public {
+    function test_cancelDepositRequest_takeExceedsOneRequest_partialThenWait() public {
         _setCapacity(0);
         uint256 idA = _deposit(alice, 100e6);
         uint256 idB = _deposit(bob,   100e6);
@@ -492,23 +724,66 @@ contract CancelAndFeesTest is LocalTestBase {
         _take(143_179_903);
         assertEq(_vaultSpUsdc(), 47_726_635);
 
-        vm.prank(alice);
-        vm.expectRevert("SparkVault/insufficient-balance");
-        vault.cancelDepositRequest(idA, alice);
+        uint256 cidA = _cancelDeposit(alice, idA, alice);
+        uint256 cidB = _cancelDeposit(bob,   idB, bob);
 
-        vm.prank(bob);
-        vm.expectRevert("SparkVault/insufficient-balance");
-        vault.cancelDepositRequest(idB, bob);
-
-        // Shortfall for one cancel is 95_453_269 - 47_726_635 = 47_726_634 spUSDC shares.
-        _returnToVault(47_726_634);
-        _cancelDeposit(alice, idA, alice);
-        assertEq(usdc.balanceOf(alice), 99_999_999);
+        // Alice is paid the 47_726_635 that is there (50_000_000 USDC) and stays at the head.
+        _settleCancelled();
+        assertEq(usdc.balanceOf(alice), 50_000_000);
+        assertEq(usdc.balanceOf(bob),   0);
         assertEq(_vaultSpUsdc(),        0);
+        assertEq(vault.cancelledDepositHead(), cidA);
+        (, , uint256 leftA) = _cancelledDepositRequest(cidA);
+        assertEq(leftA, 47_726_634);
+        (, , uint256 leftB) = _cancelledDepositRequest(cidB);
+        assertEq(leftB, SS_100);
 
-        vm.prank(bob);
-        vm.expectRevert("SparkVault/insufficient-balance");
-        vault.cancelDepositRequest(idB, bob);
+        // Return alice's remainder: alice completes (49_999_999), bob still waits.
+        _returnToVault(47_726_634);
+        _settleCancelled();
+        assertEq(usdc.balanceOf(alice), 99_999_999);
+        assertEq(usdc.balanceOf(bob),   0);
+        assertEq(vault.cancelledDepositHead(), cidB);
+
+        _returnToVault(SS_100);
+        _settleCancelled();
+        assertEq(usdc.balanceOf(bob), 99_999_999);
+        assertEq(vault.cancelledDepositHead(), 2);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
+    }
+
+    // The budget is the spUSDC share balance, not spUSDC's liquidity: when spUSDC itself has no
+    // USDC the settlement reverts instead of paying what is liquid, and the whole queue stalls
+    // behind the head entry until liquidity returns or the planner shrinks `maxSavingsShares_`.
+    function test_processCancelledDepositQueue_revertsWhenSpUsdcIlliquid() public {
+        _setCapacity(0);
+        uint256 idA = _deposit(alice, 100e6);
+        uint256 idB = _deposit(bob,   100e6);
+        _cancelDeposit(alice, idA, alice);
+        _cancelDeposit(bob,   idB, bob);
+
+        // Leave 40e6 USDC inside spUSDC; the vault still holds 2 * SS_100 spUSDC shares.
+        _drainSpUsdcLiquidity(usdc.balanceOf(address(spUsdc)) - 40e6);
+
+        vm.prank(rebalancer);
+        vm.expectRevert("SparkVault/insufficient-liquidity");
+        vault.processCancelledDepositQueue(type(uint256).max, 10);
+
+        // Nothing partial: bob is not reachable either.
+        vm.prank(rebalancer);
+        vm.expectRevert("SparkVault/insufficient-liquidity");
+        vault.processCancelledDepositQueue(type(uint256).max, 1);
+
+        // The planner can size the budget by hand to the liquid amount (38_181_307 shares).
+        assertEq(spUsdc.convertToShares(40e6), 38_181_307);
+        _processCancelledDeposits(38_181_307, 10);
+        assertEq(usdc.balanceOf(alice), 39_999_999);
+        assertEq(vault.cancelledDepositHead(), 0);
+
+        _returnSpUsdcLiquidity(200e6);
+        _settleCancelled();
+        assertEq(usdc.balanceOf(alice), 99_999_999);
+        assertEq(usdc.balanceOf(bob),   99_999_999);
     }
 
     function test_processDepositQueue_stillMintsAfterTakeSpentBacking() public {
@@ -531,7 +806,7 @@ contract CancelAndFeesTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** 4. Fee math                                                                            ***/
+    /*** 5. Fee math                                                                            ***/
     /**********************************************************************************************/
 
     function testFuzz_requestRedeem_feeIsCeil(uint256 shares, uint256 feeRate) public {
@@ -564,11 +839,17 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(vault.pendingRedeemShares(),     queued);
     }
 
-    function test_requestRedeem_revertsZeroShares() public {
-        _deposit(alice, 100e6);
+    function test_requestRedeem_revertsBelowMinRedeem() public {
+        _setMinRedeem(SH_100);
+        _deposit(alice, 200e6);
+
         vm.prank(alice);
         vm.expectRevert("SparkPrimeVault/below-minimum");
-        vault.requestRedeem(0, alice);
+        vault.requestRedeem(SH_100 - 1, alice);
+
+        uint256 id = _requestRedeem(alice, SH_100);
+        (, , uint256 queued) = _redeemRequest(id);
+        assertEq(queued, SH_100);
     }
 
     function test_requestRedeem_feeRoundsUpToOneWei() public {
@@ -582,7 +863,7 @@ contract CancelAndFeesTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** 5. Fee economics                                                                       ***/
+    /*** 6. Fee economics                                                                       ***/
     /**********************************************************************************************/
 
     function test_requestRedeem_feeLeavesChiUnchangedAndRaisesBackingPerShare() public {
@@ -645,38 +926,76 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(spUsdc.convertToAssets(_vaultSpUsdc()) - vault.totalAssets(), 10_000_000_003);
     }
 
+    // The fee surplus is also what settles cancelled deposits: with alice's fee still in the
+    // vault, a cancelled deposit can be refunded even after Arkis took every queued share.
+    function test_processCancelledDepositQueue_feeSurplusCoversRefund() public {
+        _setRedeemFee(0.01e18);
+        _deposit(alice, 1_000_000e6);
+        _requestRedeem(alice, SH_1M);
+        _processRedeems(type(uint256).max, 1);
+        assertEq(_vaultSpUsdc(), 9_545_326_913);  // 10_000_000_001 USDC of fee surplus
+        assertEq(vault.totalSupply(), 0);
+
+        uint256 id = _queueDeposit(bob, 100e6);
+        _take(SS_100);  // takes bob's worth; the fee surplus remains
+        _cancelDeposit(bob, id, bob);
+        _settleCancelled();
+
+        assertEq(usdc.balanceOf(bob), 99_999_999);
+        assertEq(_vaultSpUsdc(), 9_545_326_913 - SS_100);
+    }
+
     /**********************************************************************************************/
-    /*** 6. Minimums: gross vs net                                                              ***/
+    /*** 7. Minimums: gross vs net                                                              ***/
     /**********************************************************************************************/
 
-    function test_requestRedeem_minWithdrawIsGrossOfFee() public {
+    // minRedeem is in shares and checked before the fee, so the net payout can land below the
+    // value the minimum represents.
+    function test_requestRedeem_minRedeemIsGrossOfFee() public {
         _setRedeemFee(0.01e18);
-        _setMinimums(0, 100e6);
+        uint256 minShares = vault.convertToShares(100e6);
+        assertEq(minShares, 99_040_518);
+        _setMinRedeem(minShares);
         _deposit(alice, 1_000_000e6);
 
-        // convertToShares(100e6) = 99_040_518 -> 99_999_999 USDC: below minimum.
-        assertEq(vault.convertToAssets(99_040_518), 99_999_999);
         vm.prank(alice);
         vm.expectRevert("SparkPrimeVault/below-minimum");
-        vault.requestRedeem(99_040_518, alice);
+        vault.requestRedeem(minShares - 1, alice);
 
-        // 99_040_519 shares -> exactly 100_000_000 USDC gross: passes.
-        assertEq(vault.convertToAssets(99_040_519), 100e6);
-        uint256 id = _requestRedeem(alice, 99_040_519);
+        uint256 id = _requestRedeem(alice, minShares);
 
         (, , uint256 queued) = _redeemRequest(id);
-        assertEq(queued, 99_040_519 - 990_406);
-        assertEq(queued, 98_050_113);
+        assertEq(queued, minShares - 990_406);
+        assertEq(queued, 98_050_112);
 
         _processRedeems(type(uint256).max, 1);
 
-        // Net payout is 98_999_999 USDC: 1_000_001 wei below the configured minimum.
-        assertEq(usdc.balanceOf(alice), 98_999_999);
-        assertEq(100e6 - usdc.balanceOf(alice), 1_000_001);
+        // Minimum is worth 99_999_999 USDC; the net payout is 98_999_998: 1_000_001 wei below.
+        assertEq(vault.convertToAssets(minShares), 99_999_999);
+        assertEq(usdc.balanceOf(alice),            98_999_998);
+        assertEq(vault.convertToAssets(minShares) - usdc.balanceOf(alice), 1_000_001);
+    }
+
+    // minRedeem is a share count, so the USDC value it enforces drifts up with chi.
+    function test_requestRedeem_minRedeemValueDriftsWithChi() public {
+        _setMinRedeem(SH_100);
+        assertEq(vault.convertToAssets(SH_100), 99_999_998);
+
+        _setPrimeVsr(FIVE_PCT_VSR);
+        _warpAndDrip(365 days);
+
+        assertEq(vault.convertToAssets(SH_100), 104_999_998);
+
+        _deposit(alice, 200e6);
+        uint256 shares = vault.convertToShares(100e6);  // 100 USDC worth is now below the minimum
+        assertLt(shares, SH_100);
+        vm.prank(alice);
+        vm.expectRevert("SparkPrimeVault/below-minimum");
+        vault.requestRedeem(shares, alice);
     }
 
     function test_requestDeposit_minDepositBoundary() public {
-        _setMinimums(100e6, 0);
+        _setMinDeposit(100e6);
         _fund(alice, 200e6);
 
         vm.prank(alice);
@@ -689,7 +1008,7 @@ contract CancelAndFeesTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** 7. Ghost entries and gas                                                               ***/
+    /*** 8. Ghost entries and gas                                                               ***/
     /**********************************************************************************************/
 
     function test_processDepositQueue_gasWith500GhostEntries() public {
@@ -709,7 +1028,7 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(vault.balanceOf(alice), SH_100);
         assertEq(vault.depositHead(),    2);
 
-        // Ghosts: carol queued first (so the head cannot be reset), then 500 zero-asset requests.
+        // Ghosts: carol queued first (so the head cannot walk past them), then 500 zero-asset requests.
         _setCapacity(0);
         uint256 idC = _deposit(carol, 10e6);
         assertEq(idC, 2);
@@ -746,6 +1065,23 @@ contract CancelAndFeesTest is LocalTestBase {
         vm.prank(stranger);
         vm.expectRevert("SparkPrimeVault/no-request");
         vault.cancelDepositRequest(3, stranger);
+    }
+
+    // Ghosts at the head are walked by the next request, so they only cost when a live entry
+    // sits in front of them.
+    function test_requestDeposit_walksGhostsAtHead() public {
+        _setCapacity(0);
+        for (uint256 i; i < 10; ++i) {
+            vm.prank(stranger);
+            vault.requestDeposit(0, stranger);
+        }
+        assertEq(vault.depositHead(), 9);  // each ghost request walked the head up to itself
+        _setCapacity(type(uint128).max);
+
+        uint256 id = _deposit(alice, 100e6);
+        assertEq(id, 10);
+        assertEq(vault.balanceOf(alice), SH_100);  // instant: head walked 9 -> 10 before the fill
+        assertEq(vault.depositHead(), 11);
     }
 
     function test_processRedeemQueue_gasWith500GhostEntries() public {
@@ -795,7 +1131,7 @@ contract CancelAndFeesTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** 8. Donated shares                                                                      ***/
+    /*** 9. Donated shares                                                                      ***/
     /**********************************************************************************************/
 
     function test_transfer_toVaultStrandsSharesWithoutBreakingQueues() public {
@@ -854,7 +1190,7 @@ contract CancelAndFeesTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** 9. Fee kept on guardian cancel (F-8)                                                   ***/
+    /*** 10. Fee kept on guardian cancel (F-8)                                                  ***/
     /**********************************************************************************************/
 
     function test_cancelRedeemRequest_guardianCancelKeepsFee() public {
@@ -864,7 +1200,7 @@ contract CancelAndFeesTest is LocalTestBase {
         uint256 id = _requestRedeem(alice, SH_1M);
         assertEq(vault.totalSupply(), SH_1M - 9_904_051_842);
 
-        _cancelRedeem(guardian, id, guardian);
+        _cancelRedeem(guardian, id, alice);  // guardian must name the owner, see F-1 tests
 
         assertEq(vault.balanceOf(alice), SH_1M - 9_904_051_842);
         assertEq(vault.balanceOf(alice), 980_501_132_267);
@@ -875,7 +1211,7 @@ contract CancelAndFeesTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** 10. Fee locked at request                                                              ***/
+    /*** 11. Fee locked at request                                                              ***/
     /**********************************************************************************************/
 
     function test_processRedeemQueue_feeChangeAfterRequestHasNoEffect() public {
@@ -901,7 +1237,7 @@ contract CancelAndFeesTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** 11. Fee setters                                                                        ***/
+    /*** 12. Fee setters                                                                        ***/
     /**********************************************************************************************/
 
     function test_setRedeemFee_revertsAboveMax() public {
@@ -949,7 +1285,7 @@ contract CancelAndFeesTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** 12. Pause                                                                              ***/
+    /*** 13. Pause                                                                              ***/
     /**********************************************************************************************/
 
     function test_cancelDepositRequest_revertsWhilePaused() public {
@@ -971,6 +1307,30 @@ contract CancelAndFeesTest is LocalTestBase {
 
         _unpause();
         _cancelDeposit(alice, id, alice);
+        _settleCancelled();
+        assertEq(usdc.balanceOf(alice), 99_999_999);
+    }
+
+    // A refund already in the cancelled queue is also frozen by pause; take() is not.
+    function test_processCancelledDepositQueue_revertsWhilePaused() public {
+        uint256 id = _queueDeposit(alice, 100e6);
+        _cancelDeposit(alice, id, alice);
+        _pause();
+
+        vm.prank(rebalancer);
+        vm.expectRevert("SparkPrimeVault/paused");
+        vault.processCancelledDepositQueue(type(uint256).max, 1);
+
+        _take(SS_100);
+        assertEq(_vaultSpUsdc(), 0);
+
+        _unpause();
+        _settleCancelled();  // no-op: budget 0
+        assertEq(usdc.balanceOf(alice), 0);
+        assertEq(vault.cancelledDepositHead(), 0);
+
+        _returnToVault(SS_100);
+        _settleCancelled();
         assertEq(usdc.balanceOf(alice), 99_999_999);
     }
 
@@ -992,12 +1352,34 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(vault.balanceOf(alice), SH_100);
     }
 
+    // realizeLoss (paused only) hits escrowed redeem shares; cancelled deposits waiting for
+    // settlement are spUSDC and take no loss.
+    function test_realizeLoss_escrowedRedeemTakesLoss_cancelledDepositDoesNot() public {
+        _deposit(alice, 100e6);
+        uint256 rid = _requestRedeem(alice, SH_100);
+
+        uint256 did = _queueDeposit(bob, 100e6);
+        _cancelDeposit(bob, did, bob);
+
+        _pause();
+        _realizeLoss(50e6);  // chi halves: 50e6 of 99_999_998 notional
+        _unpause();
+
+        _cancelRedeem(alice, rid, alice);
+        assertEq(vault.balanceOf(alice), SH_100);
+        assertApproxEqAbs(vault.assetsOf(alice), 49_999_998, 1);  // 1 wei depends on the chi formula
+
+        _settleCancelled();
+        assertEq(usdc.balanceOf(bob), 99_999_999);
+    }
+
     /**********************************************************************************************/
-    /*** 13. Yield while queued, cancel / re-request cycles                                     ***/
+    /*** 14. Yield while queued, cancel / re-request cycles                                     ***/
     /**********************************************************************************************/
 
     // A queued depositor earns spUSDC yield on the full amount with no fee, exactly as if they held
-    // spUSDC directly, while spPRIME holders earn the (lower) VSR.
+    // spUSDC directly, while spPRIME holders earn the (lower) VSR. The same holds while the refund
+    // sits unsettled in the cancelled queue.
     function test_cancelDepositRequest_queuedDepositEarnsSpUsdcYield() public {
         _deposit(carol, 1_000_000e6);  // holder, VSR stays at RAY
 
@@ -1014,12 +1396,16 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(ss, SS_1M);
 
         _setSpUsdcVsr(FIVE_PCT_VSR);
-        _warpAndDrip(365 days);
+        _warpAndDrip(182 days);
+
+        // Cancel half-way, settle at the end of the year: the cancelled queue earns the same rate.
+        _cancelDeposit(alice, id, alice);
+        _warpAndDrip(183 days);
 
         uint256 chiS = spUsdc.nowChi();
         uint256 expected = SS_1M * chiS / RAY;
 
-        _cancelDeposit(alice, id, alice);
+        _settleCancelled();
         vm.prank(bob);
         spUsdc.redeem(SS_1M, bob, bob);
 
@@ -1028,9 +1414,9 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(usdc.balanceOf(alice), 1_049_999_999_998);  // 5% on 1_000_000e6, 2 wei of rounding
         assertEq(vault.assetsOf(carol), 999_999_999_998);    // holder earned nothing (VSR = RAY)
 
-        emit log_named_uint("queued depositor USDC after 1y at 5% spUSDC VSR", usdc.balanceOf(alice));
-        emit log_named_uint("direct spUSDC holder USDC after 1y",              usdc.balanceOf(bob));
-        emit log_named_uint("spPRIME holder claim after 1y (VSR 0)",           vault.assetsOf(carol));
+        emit log_named_uint("queued+cancelled depositor USDC after 1y at 5% spUSDC VSR", usdc.balanceOf(alice));
+        emit log_named_uint("direct spUSDC holder USDC after 1y",                       usdc.balanceOf(bob));
+        emit log_named_uint("spPRIME holder claim after 1y (VSR 0)",                    vault.assetsOf(carol));
     }
 
     // The same yield is credited at fill: a late fill mints more shares than an early one.
@@ -1077,7 +1463,7 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(vault.totalSupply(),    980_501_132_267);
     }
 
-    // Deposit / cancel cycles only lose spUSDC rounding dust: 1 wei per cycle.
+    // Deposit / cancel / settle cycles only lose spUSDC rounding dust: 1 wei per cycle.
     function test_cancelDepositRequest_cycleLosesOneWeiPerRound() public {
         _setCapacity(0);
         _fund(alice, 100e6);
@@ -1086,11 +1472,17 @@ contract CancelAndFeesTest is LocalTestBase {
         for (uint256 i; i < 10; ++i) {
             vm.prank(alice);
             uint256 id = vault.requestDeposit(amount, alice);
+            assertEq(id, i);
+            assertEq(vault.depositHead(), i);
 
             (, , uint256 ss) = _depositRequest(id);
             assertEq(ss, amount * RAY / CHI_S);
 
-            _cancelDeposit(alice, id, alice);
+            uint256 cid = _cancelDeposit(alice, id, alice);
+            assertEq(cid, i);
+            assertEq(vault.depositHead(), i + 1);
+            _settleCancelled();
+            assertEq(vault.cancelledDepositHead(), i + 1);
 
             uint256 refunded = usdc.balanceOf(alice);
             assertEq(refunded, ss * CHI_S / RAY);
@@ -1099,28 +1491,31 @@ contract CancelAndFeesTest is LocalTestBase {
         }
         assertEq(usdc.balanceOf(alice), 100e6 - 10);
         assertEq(_vaultSpUsdc(),        0);
-        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(vault.pendingDepositSavingsShares(),          0);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
     }
 
-    // Request / cancel cycles leave dead entries that consume maxRequests_ budget and gas, even with
-    // a non-zero minDeposit (which blocks F-5 zero-asset ghosts): the same 100e6 is recycled.
+    // N-1 re-measured. Request / cancel cycles behind a live head entry still leave dead deposit
+    // entries that consume maxRequests_ budget and gas. Each cycle now also appends an entry to
+    // the cancelled queue that the rebalancer must settle (one spUSDC redeem each), and the
+    // griefer can only recycle the same 100e6 if the rebalancer settles between cycles.
     function test_cancelDepositRequest_cancelledEntriesConsumeRequestBudget() public {
-        _setMinimums(100e6, 0);
+        _setMinDeposit(100e6);
         _setCapacity(0);
-        uint256 idB = _deposit(bob, 100e6);  // real request at the head keeps the head from resetting
+        uint256 idB = _deposit(bob, 100e6);  // live head entry keeps the head from walking
         assertEq(idB, 0);
 
         _fund(stranger, 100e6);
-        uint256 amount = 100e6;
         for (uint256 i; i < 50; ++i) {
             vm.prank(stranger);
-            uint256 id = vault.requestDeposit(amount, stranger);
+            uint256 id = vault.requestDeposit(100e6, stranger);
             assertEq(id, 1 + i);
-            _cancelDeposit(stranger, id, stranger);
-            amount = usdc.balanceOf(stranger);
+            uint256 cid = _cancelDeposit(stranger, id, stranger);
+            assertEq(cid, i);
+            assertEq(vault.depositHead(), 0);
+            _settleCancelled();  // rebalancer co-operates; otherwise 50 x 100e6 of capital is needed
             // Top up the single wei lost per cycle so the request stays above minDeposit.
-            usdc.mint(stranger, 100e6 - amount);
-            amount = 100e6;
+            usdc.mint(stranger, 100e6 - usdc.balanceOf(stranger));
         }
         _deposit(alice, 100e6);  // id 51
         _setCapacity(type(uint128).max);
@@ -1139,8 +1534,43 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(vault.balanceOf(alice), SH_100);
         assertEq(vault.depositHead(),    52);
 
-        // Griefer paid 50 wei of USDC plus gas for 50 dead entries.
+        // Griefer paid 50 wei of USDC plus gas for 50 dead entries and 50 settlements.
         assertEq(usdc.balanceOf(stranger), 100e6);
+        assertEq(vault.cancelledDepositHead(), 50);
+    }
+
+    // Gas the rebalancer pays per cancelled entry it settles, cold.
+    function test_processCancelledDepositQueue_gasPerEntry() public {
+        _setCapacity(0);
+        uint256 id0 = _deposit(stranger, 100e6);
+        _cancelDeposit(stranger, id0, stranger);
+
+        _cool();
+        vm.prank(rebalancer);
+        uint256 gas = gasleft();
+        vault.processCancelledDepositQueue(type(uint256).max, 1);
+        uint256 one = gas - gasleft();
+
+        for (uint256 i; i < 50; ++i) {
+            uint256 id = _deposit(stranger, 100e6);
+            _cancelDeposit(stranger, id, stranger);
+        }
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 50 * SS_100);
+
+        _cool();
+        vm.prank(rebalancer);
+        gas = gasleft();
+        vault.processCancelledDepositQueue(type(uint256).max, 50);
+        uint256 fifty = gas - gasleft();
+
+        assertEq(vault.cancelledDepositHead(), 51);
+        assertEq(usdc.balanceOf(stranger), 51 * 99_999_999);
+
+        emit log_named_uint("processCancelledDepositQueue gas, 1 entry",   one);
+        emit log_named_uint("processCancelledDepositQueue gas, 50 entries", fifty);
+        emit log_named_uint("marginal gas per settled entry",              (fifty - one) / 49);
+
+        assertGt((fifty - one) / 49, 10_000);  // each settlement is a full spUSDC redeem
     }
 
     // Redeem / cancel cycles cost the fee each time; nothing else moves.
