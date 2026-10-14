@@ -47,7 +47,6 @@ interface IERC4626Like {
 
 }
 
-// TODO: _processPendingDeposits and _processPendingRedeems should take in a variable that allows netting withdrawals against deposits (there should be a third function)
 // TODO: requestDepositWithPermit?
 // TODO: Get pendingOfReceiver()/getPendingOfOwner() even needed?
 
@@ -128,8 +127,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     event Paused();
 
-    // TODO: Should not have `to` as it can only ever be the caller.
-    event Take(address indexed to, uint256 shares);
+    event Take(uint256 shares);
 
     event Unpaused();
 
@@ -330,7 +328,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         SafeERC20.safeTransfer(IERC20OZ(savings), msg.sender, savingsShares_);
 
-        emit Take(msg.sender, savingsShares_);
+        emit Take(savingsShares_);
     }
 
     function processPendingDeposits(uint256 maxSavingsShares_, uint256 maxRequests_)
