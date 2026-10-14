@@ -160,7 +160,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     bytes32 public constant RISK_MANAGER_ROLE = keccak256("RISK_MANAGER_ROLE");
     bytes32 public constant SETTER_ROLE       = keccak256("SETTER_ROLE");
     bytes32 public constant TAKER_ROLE        = keccak256("TAKER_ROLE");
-    bytes32 public constant UNPAUSER_ROLE     = keccak256("UNPAUSER_ROLE");
 
     bytes32 public constant PERMIT_TYPEHASH = keccak256(
         "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
@@ -288,6 +287,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         emit VSRBoundsSet(minVSR = minVSR_, maxVSR = maxVSR_);
     }
 
+    // TODO: This is front-runnable since the spell is the admin and the spell payload is deployed
+    //       (and is therefore public) before the guardian has a chance to pause. And even then,
+    //       the pause window would be unreasonably long.
     function realizeGain(uint256 gain_) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(gain_ > 0, "SparkPrimeVault/invalid-gain");
 
