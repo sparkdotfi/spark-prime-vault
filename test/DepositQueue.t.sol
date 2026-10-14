@@ -1,0 +1,1220 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+pragma solidity ^0.8.34;
+
+import { stdError } from "../lib/forge-std/src/StdError.sol";
+
+import { LocalTestBase } from "./LocalTestBase.t.sol";
+
+/// @dev Deposit-queue stress tests for `SparkPrimeVault`.
+///
+///      Harness indexes (frozen at RAY after setUp):
+///        spUSDC  chi_s = 1.047633055711877768967605062e27
+///        spPRIME chi_p = 1.009687768242461209408770821e27
+///
+///      Reference conversions at those indexes (all floor):
+///        1_000_000e6 USDC -> 954_532_691_143 spUSDC shares
+///                         -> fill: assets 999_999_999_999, spPRIME 990_405_184_109
+///          100_000e6 USDC ->  95_453_269_114 spUSDC shares
+///                         -> fill: assets  99_999_999_999, spPRIME  99_040_518_410
+///
+///      `maxCapacity` is in spPRIME shares. Capacity -> fillable spUSDC shares is
+///        remaining = floor(floor(cap * chi_p / RAY) * RAY / chi_s)
+contract DepositQueueTest is LocalTestBase {
+
+    event Deposit(address indexed owner, address indexed recipient, uint256 assets, uint256 shares);
+
+    address alice = makeAddr("alice");
+    address bob   = makeAddr("bob");
+    address carol = makeAddr("carol");
+    address dave  = makeAddr("dave");
+    address eve   = makeAddr("eve");
+
+    uint256 constant ONE_M = 1_000_000e6;
+    uint256 constant HUNDRED_K = 100_000e6;
+
+    // spUSDC shares minted for ONE_M / HUNDRED_K USDC at the harness index.
+    uint256 constant S_1M   = 954_532_691_143;
+    uint256 constant S_100K = 95_453_269_114;
+
+    // spPRIME shares minted when S_1M / S_100K spUSDC shares are filled in one go.
+    uint256 constant SH_1M   = 990_405_184_109;
+    uint256 constant SH_100K = 99_040_518_410;
+
+    uint256 constant A_1M   = 999_999_999_999;  // USDC value of S_1M at fill
+    uint256 constant A_100K = 99_999_999_999;
+
+    uint256 constant NO_REQUEST = type(uint256).max;
+
+    /**********************************************************************************************/
+    /*** Helpers                                                                                ***/
+    /**********************************************************************************************/
+
+    // What a fill of `savingsShares` spUSDC shares produces right now (same math as line 653-654).
+    function _fillOf(uint256 savingsShares) internal view returns (uint256 assets, uint256 shares) {
+        assets = spUsdc.convertToAssets(savingsShares);
+        shares = vault.convertToShares(assets);
+    }
+
+    // spUSDC shares fillable by `cap` spPRIME shares of free capacity (same math as line 633-636).
+    function _remainingForCapacity(uint256 cap) internal view returns (uint256) {
+        return spUsdc.convertToShares(vault.convertToAssets(cap));
+    }
+
+    // The public array getter has no length view; probe until the index reverts.
+    function _queueLength() internal returns (uint256 len) {
+        while (true) {
+            try vault.depositQueue(len) { len++; } catch { return len; }
+        }
+    }
+
+    function _sumOpenEntries() internal returns (uint256 sum) {
+        uint256 len = _queueLength();
+        for (uint256 i; i < len; ++i) {
+            (, , uint256 s) = _depositRequest(i);
+            sum += s;
+        }
+    }
+
+    function _shares(uint256 id) internal view returns (uint256 s) {
+        (, , s) = _depositRequest(id);
+    }
+
+    // Puts `who`'s whole deposit in the queue: freeze capacity at current supply first.
+    function _queue(address who, uint256 amt) internal returns (uint256 id) {
+        _setCapacity(vault.totalSupply());
+        id = _deposit(who, amt);
+    }
+
+    function _assertQueueConsistent() internal {
+        assertEq(vault.pendingDepositSavingsShares(), _sumOpenEntries(), "pending != sum(open)");
+        uint256 head = vault.depositHead();
+        uint256 len  = _queueLength();
+        assertLe(head, len, "head > length");
+        for (uint256 i; i < head; ++i) {
+            assertEq(_shares(i), 0, "open entry behind head");
+        }
+        assertLe(vault.totalSupply(), vault.maxCapacity(), "supply > capacity");
+    }
+
+    function setUp() public override {
+        super.setUp();
+        assertEq(spUsdc.nowChi(), 1.047633055711877768967605062e27);
+        assertEq(vault.nowChi(),  1.009687768242461209408770821e27);
+        assertEq(spUsdc.convertToShares(ONE_M), S_1M);
+        assertEq(spUsdc.convertToShares(HUNDRED_K), S_100K);
+    }
+
+    /**********************************************************************************************/
+    /*** H1: instant vs queued                                                                  ***/
+    /**********************************************************************************************/
+
+    function test_requestDeposit_instantFillWhenNobodyQueued() public {
+        _fund(alice, ONE_M);
+
+        assertEq(vault.totalSupply(),                 0);
+        assertEq(vault.balanceOf(alice),              0);
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(vault.depositHead(),                 0);
+        assertEq(_vaultSpUsdc(),                      0);
+        assertEq(usdc.balanceOf(alice),               ONE_M);
+
+        vm.expectEmit(address(vault));
+        emit Deposit(alice, alice, A_1M, SH_1M);
+
+        vm.prank(alice);
+        uint256 id = vault.requestDeposit(ONE_M, alice);
+
+        // The entry is created even for an instant fill and then zeroed by the fill.
+        assertEq(id, 0);
+        (address owner, address recipient, uint256 shares) = _depositRequest(0);
+        assertEq(owner,     alice);
+        assertEq(recipient, alice);
+        assertEq(shares,    0);
+
+        assertEq(vault.totalSupply(),                 SH_1M);
+        assertEq(vault.balanceOf(alice),              SH_1M);
+        assertEq(vault.assetsOf(alice),               999_999_999_998);  // R1 + R3 + R12 rounding
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(vault.depositHead(),                 1);
+        assertEq(_vaultSpUsdc(),                      S_1M);
+        assertEq(usdc.balanceOf(alice),               0);
+        assertEq(usdc.balanceOf(address(spUsdc)),     ONE_M);
+    }
+
+    function test_requestDeposit_secondDepositorQueuedBehindPendingEvenWithFreeCapacity() public {
+        uint256 aliceId = _queue(alice, ONE_M);
+        assertEq(aliceId, 0);
+        assertEq(vault.pendingDepositSavingsShares(), S_1M);
+        assertEq(vault.depositHead(), 0);
+
+        // Open plenty of capacity; alice is still queued because nobody processed the queue.
+        _setCapacity(type(uint128).max);
+        assertGt(vault.availableCapacity(), SH_1M * 10);
+
+        uint256 bobId = _deposit(bob, HUNDRED_K);
+
+        assertEq(bobId, 1);
+        assertEq(vault.balanceOf(bob),                0);
+        assertEq(vault.balanceOf(alice),              0);
+        assertEq(vault.totalSupply(),                 0);
+        assertEq(_shares(0),                          S_1M);
+        assertEq(_shares(1),                          S_100K);
+        assertEq(vault.pendingDepositSavingsShares(), S_1M + S_100K);
+        assertEq(vault.depositHead(),                 0);
+        assertEq(_vaultSpUsdc(),                      S_1M + S_100K);
+        _assertQueueConsistent();
+    }
+
+    function test_requestDeposit_instantFillResumesAfterQueueDrains() public {
+        _queue(alice, ONE_M);
+        _deposit(bob, HUNDRED_K);
+        _setCapacity(type(uint128).max);
+
+        _processDeposits(type(uint256).max, 10);
+
+        assertEq(vault.balanceOf(alice),              SH_1M);
+        assertEq(vault.balanceOf(bob),                SH_100K);
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(vault.depositHead(),                 2);
+
+        uint256 carolId = _deposit(carol, HUNDRED_K);
+
+        assertEq(carolId,                             2);
+        assertEq(vault.balanceOf(carol),              SH_100K);
+        assertEq(_shares(2),                          0);
+        assertEq(vault.depositHead(),                 3);
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(vault.totalSupply(),                 SH_1M + 2 * SH_100K);
+        _assertQueueConsistent();
+    }
+
+    function test_requestDeposit_instantFillResumesAfterCancelDrainsQueue() public {
+        uint256 aliceId = _queue(alice, ONE_M);
+        _setCapacity(type(uint128).max);
+
+        vm.prank(alice);
+        vault.cancelDepositRequest(aliceId, alice);
+
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(vault.depositHead(),                 0);  // not advanced by the cancel
+
+        uint256 bobId = _deposit(bob, HUNDRED_K);
+
+        // Instant path resets the head to the new entry, skipping the cancelled one.
+        assertEq(bobId,                  1);
+        assertEq(vault.balanceOf(bob),   SH_100K);
+        assertEq(vault.depositHead(),    2);
+        _assertQueueConsistent();
+    }
+
+    /**********************************************************************************************/
+    /*** H2: partial fills                                                                      ***/
+    /**********************************************************************************************/
+
+    function test_requestDeposit_partialInstantFillLeavesRemainderAtHead() public {
+        // Capacity for half of alice's shares.
+        uint256 cap = SH_1M / 2;  // 495_202_592_054
+        _setCapacity(cap);
+        assertEq(_remainingForCapacity(cap), 477_266_345_570);
+
+        _fund(alice, ONE_M);
+
+        vm.expectEmit(address(vault));
+        emit Deposit(alice, alice, 499_999_999_997, 495_202_592_052);
+
+        vm.prank(alice);
+        uint256 id = vault.requestDeposit(ONE_M, alice);
+
+        assertEq(id,                                  0);
+        assertEq(vault.balanceOf(alice),              495_202_592_052);
+        assertEq(vault.totalSupply(),                 495_202_592_052);
+        assertEq(vault.availableCapacity(),           2);  // rounding leaves 2 shares unused
+        assertEq(_shares(0),                          S_1M - 477_266_345_570);
+        assertEq(_shares(0),                          477_266_345_573);
+        assertEq(vault.pendingDepositSavingsShares(), 477_266_345_573);
+        assertEq(vault.depositHead(),                 0);
+        assertEq(_vaultSpUsdc(),                      S_1M);
+        _assertQueueConsistent();
+    }
+
+    function test_processDepositQueue_partialThenCompleteFill() public {
+        uint256 id = _queue(alice, ONE_M);
+        _setCapacity(type(uint128).max);
+
+        // Fill exactly 400e9 spUSDC shares via maxSavingsShares_.
+        vm.expectEmit(address(vault));
+        emit Deposit(alice, alice, 419_053_222_284, 415_032_483_768);
+
+        _processDeposits(400e9, 10);
+
+        assertEq(vault.balanceOf(alice),              415_032_483_768);
+        assertEq(_shares(id),                         S_1M - 400e9);
+        assertEq(_shares(id),                         554_532_691_143);
+        assertEq(vault.pendingDepositSavingsShares(), 554_532_691_143);
+        assertEq(vault.depositHead(),                 0);
+        _assertQueueConsistent();
+
+        vm.expectEmit(address(vault));
+        emit Deposit(alice, alice, 580_946_777_714, 575_372_700_340);
+
+        _processDeposits(type(uint256).max, 10);
+
+        assertEq(vault.balanceOf(alice),              415_032_483_768 + 575_372_700_340);
+        assertEq(vault.balanceOf(alice),              990_405_184_108);  // 1 wei below SH_1M
+        assertEq(_shares(id),                         0);
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(vault.depositHead(),                 1);
+        assertEq(_vaultSpUsdc(),                      S_1M);  // fills never move spUSDC
+        _assertQueueConsistent();
+    }
+
+    function test_processDepositQueue_partialFillFromCapacityThenRaise() public {
+        uint256 id = _queue(alice, ONE_M);
+        _setCapacity(SH_1M / 2);
+
+        _processDeposits(type(uint256).max, 10);
+
+        assertEq(vault.balanceOf(alice),    495_202_592_052);
+        assertEq(_shares(id),               477_266_345_573);
+        assertEq(vault.availableCapacity(), 2);
+        assertEq(vault.depositHead(),       0);
+
+        // Available capacity of 2 shares converts to 1 spUSDC share: see test_BUG_dustFill...
+        // Raise capacity and finish.
+        _setCapacity(type(uint128).max);
+        _processDeposits(type(uint256).max, 10);
+
+        assertEq(vault.balanceOf(alice),              495_202_592_052 + 495_202_592_056);
+        assertEq(_shares(id),                         0);
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(vault.depositHead(),                 1);
+        _assertQueueConsistent();
+    }
+
+    /**********************************************************************************************/
+    /*** H3: capacity below totalSupply                                                         ***/
+    /**********************************************************************************************/
+
+    function test_processDepositQueue_capacityBelowTotalSupplyIsNoop() public {
+        _deposit(alice, ONE_M);  // instant, supply = SH_1M
+        uint256 bobId = _queue(bob, HUNDRED_K);
+
+        _setCapacity(SH_1M - 1);
+        assertEq(vault.availableCapacity(), 0);
+        assertEq(vault.totalSupply(),       SH_1M);
+
+        _processDeposits(type(uint256).max, 10);  // no revert
+
+        assertEq(vault.balanceOf(bob),                0);
+        assertEq(_shares(bobId),                      S_100K);
+        assertEq(vault.pendingDepositSavingsShares(), S_100K);
+        assertEq(vault.depositHead(),                 1);
+        assertEq(vault.totalSupply(),                 SH_1M);
+
+        // Capacity must exceed the fill by 2 shares because of the double rounding on line 635
+        // (see test_BUG_exactFitCapacityLeavesDustThatBlocksInstantFills).
+        _setCapacity(SH_1M + SH_100K + 2);
+        _processDeposits(type(uint256).max, 10);
+
+        assertEq(vault.balanceOf(bob),                SH_100K);
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(vault.depositHead(),                 2);
+        assertEq(vault.availableCapacity(),           2);
+        _assertQueueConsistent();
+    }
+
+    function test_requestDeposit_capacityBelowTotalSupplyQueuesWholeDeposit() public {
+        _deposit(alice, ONE_M);
+        _setCapacity(1);
+
+        uint256 bobId = _deposit(bob, HUNDRED_K);
+
+        assertEq(bobId,                               1);
+        assertEq(vault.balanceOf(bob),                0);
+        assertEq(_shares(bobId),                      S_100K);
+        assertEq(vault.pendingDepositSavingsShares(), S_100K);
+        assertEq(vault.depositHead(),                 1);
+        assertEq(vault.totalSupply(),                 SH_1M);
+        assertEq(_vaultSpUsdc(),                      S_1M + S_100K);
+    }
+
+    /**********************************************************************************************/
+    /*** H4: head / cancel bookkeeping                                                          ***/
+    /**********************************************************************************************/
+
+    function _queueThree() internal returns (uint256 a, uint256 b, uint256 c) {
+        a = _queue(alice, ONE_M);
+        b = _deposit(bob,   HUNDRED_K);
+        c = _deposit(carol, HUNDRED_K);
+        assertEq(vault.pendingDepositSavingsShares(), S_1M + 2 * S_100K);
+        assertEq(vault.depositHead(), 0);
+    }
+
+    function test_cancelDepositRequest_atHead() public {
+        (uint256 a, , ) = _queueThree();
+
+        vm.prank(alice);
+        vault.cancelDepositRequest(a, alice);
+
+        assertEq(usdc.balanceOf(alice),               A_1M);  // 1 wei lost to spUSDC rounding (R10)
+        assertEq(_shares(a),                          0);
+        assertEq(vault.pendingDepositSavingsShares(), 2 * S_100K);
+        assertEq(vault.depositHead(),                 0);  // cancel does not move the head
+        assertEq(_vaultSpUsdc(),                      2 * S_100K);
+
+        _setCapacity(type(uint128).max);
+        _processDeposits(type(uint256).max, 10);
+
+        assertEq(vault.balanceOf(alice), 0);
+        assertEq(vault.balanceOf(bob),   SH_100K);
+        assertEq(vault.balanceOf(carol), SH_100K);
+        assertEq(vault.depositHead(),    3);
+        _assertQueueConsistent();
+    }
+
+    function test_cancelDepositRequest_inMiddle() public {
+        (, uint256 b, ) = _queueThree();
+
+        vm.prank(bob);
+        vault.cancelDepositRequest(b, bob);
+
+        assertEq(usdc.balanceOf(bob),                 A_100K);
+        assertEq(_shares(b),                          0);
+        assertEq(vault.pendingDepositSavingsShares(), S_1M + S_100K);
+
+        _setCapacity(type(uint128).max);
+        _processDeposits(type(uint256).max, 10);
+
+        assertEq(vault.balanceOf(alice), SH_1M);
+        assertEq(vault.balanceOf(bob),   0);
+        assertEq(vault.balanceOf(carol), SH_100K);
+        assertEq(vault.depositHead(),    3);
+        _assertQueueConsistent();
+    }
+
+    function test_cancelDepositRequest_atTail() public {
+        (, , uint256 c) = _queueThree();
+
+        vm.prank(carol);
+        vault.cancelDepositRequest(c, carol);
+
+        assertEq(usdc.balanceOf(carol),               A_100K);
+        assertEq(vault.pendingDepositSavingsShares(), S_1M + S_100K);
+
+        _setCapacity(type(uint128).max);
+        _processDeposits(type(uint256).max, 10);
+
+        assertEq(vault.balanceOf(alice), SH_1M);
+        assertEq(vault.balanceOf(bob),   SH_100K);
+        assertEq(vault.balanceOf(carol), 0);
+        assertEq(vault.depositHead(),    3);  // the loop walks past the zeroed tail entry
+        _assertQueueConsistent();
+    }
+
+    function test_cancelDepositRequest_afterPartialFillRefundsRemainderOnly() public {
+        uint256 id = _queue(alice, ONE_M);
+        _setCapacity(type(uint128).max);
+        _processDeposits(400e9, 10);
+
+        assertEq(vault.balanceOf(alice), 415_032_483_768);
+        assertEq(_shares(id),            554_532_691_143);
+
+        vm.prank(alice);
+        vault.cancelDepositRequest(id, alice);
+
+        // Refund = spUSDC.redeem(554_532_691_143) = floor(554_532_691_143 * chi_s / RAY)
+        assertEq(usdc.balanceOf(alice),               580_946_777_714);
+        assertEq(vault.balanceOf(alice),              415_032_483_768);  // filled part stays
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(_vaultSpUsdc(),                      400e9);
+        assertEq(vault.depositHead(),                 0);
+
+        // Next depositor fills instantly and the head jumps over the cancelled entry.
+        _deposit(bob, HUNDRED_K);
+        assertEq(vault.balanceOf(bob), SH_100K);
+        assertEq(vault.depositHead(),  2);
+        _assertQueueConsistent();
+    }
+
+    function test_cancelDepositRequest_revertsSecondCancel() public {
+        uint256 id = _queue(alice, ONE_M);
+
+        vm.prank(alice);
+        vault.cancelDepositRequest(id, alice);
+
+        vm.prank(alice);
+        vm.expectRevert("SparkPrimeVault/no-request");
+        vault.cancelDepositRequest(id, alice);
+
+        vm.prank(guardian);
+        vm.expectRevert("SparkPrimeVault/no-request");
+        vault.cancelDepositRequest(id, guardian);
+    }
+
+    function test_cancelDepositRequest_revertsFilledEntry() public {
+        uint256 id = _deposit(alice, ONE_M);  // instant fill zeroes the entry
+        assertEq(_shares(id), 0);
+
+        vm.prank(alice);
+        vm.expectRevert("SparkPrimeVault/no-request");
+        vault.cancelDepositRequest(id, alice);
+    }
+
+    function test_cancelDepositRequest_revertsNotAuthorized() public {
+        uint256 id = _queue(alice, ONE_M);
+
+        vm.prank(bob);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vault.cancelDepositRequest(id, bob);
+
+        // Rebalancer, admin and riskManager have no cancel power either.
+        vm.prank(rebalancer);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vault.cancelDepositRequest(id, rebalancer);
+
+        vm.prank(admin);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vault.cancelDepositRequest(id, admin);
+    }
+
+    function test_cancelDepositRequest_revertsOutOfBounds() public {
+        _queue(alice, ONE_M);
+
+        vm.prank(alice);
+        vm.expectRevert(stdError.indexOOBError);
+        vault.cancelDepositRequest(1, alice);
+    }
+
+    function test_processDepositQueue_skipsRunOfCancelledEntries() public {
+        (uint256 a, uint256 b, ) = _queueThree();
+
+        vm.prank(alice);
+        vault.cancelDepositRequest(a, alice);
+        vm.prank(bob);
+        vault.cancelDepositRequest(b, bob);
+
+        assertEq(vault.pendingDepositSavingsShares(), S_100K);
+        assertEq(vault.depositHead(), 0);
+
+        _setCapacity(type(uint128).max);
+        _processDeposits(type(uint256).max, 10);
+
+        assertEq(vault.balanceOf(carol), SH_100K);
+        assertEq(vault.depositHead(),    3);
+        _assertQueueConsistent();
+    }
+
+    // INFO: cancelled entries count toward `maxRequests_` (line 641 budgets by index, not by fill).
+    function test_processDepositQueue_cancelledEntriesConsumeMaxRequests() public {
+        (uint256 a, , ) = _queueThree();
+
+        vm.prank(alice);
+        vault.cancelDepositRequest(a, alice);
+
+        _setCapacity(type(uint128).max);
+        _processDeposits(type(uint256).max, 1);
+
+        // Nothing filled: the one request budget was spent walking over alice's zeroed entry.
+        assertEq(vault.balanceOf(bob),   0);
+        assertEq(vault.balanceOf(carol), 0);
+        assertEq(vault.depositHead(),    1);
+
+        _processDeposits(type(uint256).max, 1);
+        assertEq(vault.balanceOf(bob),   SH_100K);
+        assertEq(vault.depositHead(),    2);
+        _assertQueueConsistent();
+    }
+
+    /**********************************************************************************************/
+    /*** H5: FIFO fairness                                                                      ***/
+    /**********************************************************************************************/
+
+    function test_processDepositQueue_fifoFiveDepositorsCapacityForTwoAndAHalf() public {
+        uint256 a = _queue(alice,   HUNDRED_K);
+        uint256 b = _deposit(bob,   HUNDRED_K);
+        uint256 c = _deposit(carol, HUNDRED_K);
+        uint256 d = _deposit(dave,  HUNDRED_K);
+        uint256 e = _deposit(eve,   HUNDRED_K);
+
+        assertEq(vault.pendingDepositSavingsShares(), 5 * S_100K);
+
+        uint256 cap = 2 * SH_100K + SH_100K / 2;  // 247_601_296_025
+        _setCapacity(cap);
+        assertEq(_remainingForCapacity(cap), 238_633_172_783);
+        assertEq(238_633_172_783 - 2 * S_100K, 47_726_634_555);
+
+        _processDeposits(type(uint256).max, 100);
+
+        assertEq(vault.balanceOf(alice), SH_100K);
+        assertEq(vault.balanceOf(bob),   SH_100K);
+        assertEq(vault.balanceOf(carol), 49_520_259_202);  // fill of 47_726_634_555 spUSDC shares
+        assertEq(vault.balanceOf(dave),  0);
+        assertEq(vault.balanceOf(eve),   0);
+
+        assertEq(_shares(a), 0);
+        assertEq(_shares(b), 0);
+        assertEq(_shares(c), S_100K - 47_726_634_555);
+        assertEq(_shares(c), 47_726_634_559);
+        assertEq(_shares(d), S_100K);
+        assertEq(_shares(e), S_100K);
+
+        assertEq(vault.depositHead(),                 2);
+        assertEq(vault.pendingDepositSavingsShares(), 47_726_634_559 + 2 * S_100K);
+        assertEq(vault.totalSupply(),                 2 * SH_100K + 49_520_259_202);
+        assertEq(vault.availableCapacity(),           cap - vault.totalSupply());
+        assertEq(vault.availableCapacity(),           3);
+        _assertQueueConsistent();
+
+        // Even a later generous call cannot fill dave before carol: raise capacity for exactly
+        // carol's remainder and see dave/eve untouched.
+        (, uint256 carolRest) = _fillOf(47_726_634_559);
+        assertEq(carolRest, 49_520_259_206);
+        assertEq(_remainingForCapacity(carolRest),     47_726_634_557);  // 2 short (line 635)
+        assertEq(_remainingForCapacity(carolRest + 2), 47_726_634_559);
+        _setCapacity(vault.totalSupply() + carolRest + 2);
+        _processDeposits(type(uint256).max, 100);
+
+        assertEq(vault.balanceOf(carol), 49_520_259_202 + 49_520_259_206);
+        assertEq(vault.balanceOf(dave),  0);
+        assertEq(vault.balanceOf(eve),   0);
+        assertEq(vault.depositHead(),    3);
+        _assertQueueConsistent();
+    }
+
+    /**********************************************************************************************/
+    /*** H6: yield while queued                                                                 ***/
+    /**********************************************************************************************/
+
+    function test_processDepositQueue_queuedDepositorReceivesSpUsdcYield() public {
+        uint256 id = _queue(alice, ONE_M);
+        assertEq(_shares(id), S_1M);
+
+        _setSpUsdcVsr(FIVE_PCT_VSR);
+        _warpAndDrip(365 days);
+
+        // spPRIME index is frozen; spUSDC index grew ~5%.
+        assertEq(vault.nowChi(), 1.009687768242461209408770821e27);
+        uint256 grownAssets = spUsdc.convertToAssets(S_1M);
+        assertEq(spUsdc.nowChi(), 1.100014708497471657375201112e27);
+        assertEq(grownAssets, 1_049_999_999_998);  // 999_999_999_999 * 1.05 - rounding
+
+        uint256 expectedShares = vault.convertToShares(grownAssets);
+        assertEq(expectedShares, 1_039_925_443_313);
+
+        uint256 spUsdcBefore = _vaultSpUsdc();
+        _setCapacity(type(uint128).max);
+
+        vm.expectEmit(address(vault));
+        emit Deposit(alice, alice, grownAssets, expectedShares);
+
+        _processDeposits(type(uint256).max, 10);
+
+        assertEq(vault.balanceOf(alice),              expectedShares);
+        assertEq(vault.balanceOf(alice) - SH_1M,      49_520_259_204);  // yield captured in spPRIME
+        assertEq(vault.assetsOf(alice),               1_049_999_999_997);
+        assertEq(_vaultSpUsdc(),                      spUsdcBefore);
+        assertEq(_vaultSpUsdc(),                      S_1M);
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        _assertQueueConsistent();
+    }
+
+    function test_cancelDepositRequest_refundsWithSpUsdcYield() public {
+        uint256 id = _queue(alice, ONE_M);
+
+        _setSpUsdcVsr(FIVE_PCT_VSR);
+        _warpAndDrip(365 days);
+        _returnSpUsdcLiquidity(60_000e6);  // spUSDC needs USDC to pay the grown value
+
+        vm.prank(alice);
+        vault.cancelDepositRequest(id, alice);
+
+        assertEq(usdc.balanceOf(alice), 1_049_999_999_998);
+        assertEq(_vaultSpUsdc(),        0);
+    }
+
+    /**********************************************************************************************/
+    /*** H7: recipient edge cases                                                               ***/
+    /**********************************************************************************************/
+
+    function test_requestDeposit_recipientNotOwnerInstant() public {
+        _fund(alice, ONE_M);
+
+        vm.expectEmit(address(vault));
+        emit Deposit(alice, bob, A_1M, SH_1M);
+
+        vm.prank(alice);
+        vault.requestDeposit(ONE_M, bob);
+
+        assertEq(vault.balanceOf(alice), 0);
+        assertEq(vault.balanceOf(bob),   SH_1M);
+    }
+
+    function test_requestDeposit_recipientNotOwnerQueuedFillAndCancel() public {
+        _setCapacity(0);
+        _fund(alice, 2 * ONE_M);
+
+        vm.prank(alice);
+        uint256 id1 = vault.requestDeposit(ONE_M, bob);
+        vm.prank(alice);
+        uint256 id2 = vault.requestDeposit(ONE_M, bob);
+
+        (address owner, address recipient, ) = _depositRequest(id1);
+        assertEq(owner,     alice);
+        assertEq(recipient, bob);
+
+        // Fill the first: shares go to the recipient (capacity + 2 for the line 635 rounding).
+        _setCapacity(SH_1M + 2);
+        _processDeposits(type(uint256).max, 1);
+
+        assertEq(vault.balanceOf(bob),   SH_1M);
+        assertEq(vault.balanceOf(alice), 0);
+        assertEq(_shares(id1),           0);
+        assertEq(_shares(id2),           S_1M);
+
+        // Bob (the recipient) cannot cancel the second.
+        vm.prank(bob);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vault.cancelDepositRequest(id2, bob);
+
+        // Owner cancels: owner may pick the refund address (F-1 patch), here carol.
+        vm.prank(alice);
+        vault.cancelDepositRequest(id2, carol);
+
+        assertEq(usdc.balanceOf(carol), A_1M);
+        assertEq(usdc.balanceOf(alice), 0);
+        assertEq(usdc.balanceOf(bob),   0);
+        assertEq(_vaultSpUsdc(),        S_1M);
+        _assertQueueConsistent();
+    }
+
+    function test_cancelDepositRequest_guardianCancelAlwaysRefundsOwner() public {
+        _setCapacity(0);
+        _fund(alice, ONE_M);
+        vm.prank(alice);
+        uint256 id = vault.requestDeposit(ONE_M, bob);
+
+        vm.prank(guardian);
+        vault.cancelDepositRequest(id, guardian);  // recipient_ ignored for non-owner (F-1 patch)
+
+        assertEq(usdc.balanceOf(alice),    A_1M);
+        assertEq(usdc.balanceOf(guardian), 0);
+        assertEq(usdc.balanceOf(bob),      0);
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+    }
+
+    // LOW: shares minted to the vault's own address are unrecoverable (no function moves them)
+    // and permanently occupy capacity.
+    function test_requestDeposit_recipientIsVaultSharesAreStuck() public {
+        _fund(alice, ONE_M);
+
+        vm.prank(alice);
+        vault.requestDeposit(ONE_M, address(vault));
+
+        assertEq(vault.balanceOf(address(vault)), SH_1M);
+        assertEq(vault.balanceOf(alice),          0);
+        assertEq(vault.totalSupply(),             SH_1M);
+        assertEq(vault.pendingRedeemShares(),     0);  // not escrow: nothing will ever burn them
+
+        // Nothing can get them out: no request/cancel is tied to them; redeem queue is empty.
+        _processRedeems(type(uint256).max, 10);
+        assertEq(vault.balanceOf(address(vault)), SH_1M);
+
+        // And they take capacity from everyone else for good.
+        _setCapacity(SH_1M);
+        assertEq(vault.availableCapacity(), 0);
+        uint256 bobId = _deposit(bob, HUNDRED_K);
+        assertEq(vault.balanceOf(bob), 0);
+        assertEq(_shares(bobId),       S_100K);
+    }
+
+    function test_requestDeposit_revertsZeroRecipient() public {
+        _fund(alice, ONE_M);
+        vm.prank(alice);
+        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vault.requestDeposit(ONE_M, address(0));
+
+        vm.prank(alice);
+        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vault.requestDeposit(ONE_M, address(0), 7);
+    }
+
+    function test_requestDeposit_revertsBelowMinimumBoundary() public {
+        _setMinimums(HUNDRED_K, 0);
+        _fund(alice, HUNDRED_K);
+
+        vm.prank(alice);
+        vm.expectRevert("SparkPrimeVault/below-minimum");
+        vault.requestDeposit(HUNDRED_K - 1, alice);
+
+        vm.prank(alice);
+        vault.requestDeposit(HUNDRED_K, alice);
+        assertEq(vault.balanceOf(alice), SH_100K);
+    }
+
+    /**********************************************************************************************/
+    /*** H8: pause                                                                              ***/
+    /**********************************************************************************************/
+
+    function test_pause_blocksRequestCancelProcessButNotTake() public {
+        uint256 id = _queue(alice, ONE_M);
+        _setCapacity(type(uint128).max);
+        _fund(bob, HUNDRED_K);
+
+        _pause();
+
+        vm.prank(bob);
+        vm.expectRevert("SparkPrimeVault/paused");
+        vault.requestDeposit(HUNDRED_K, bob);
+
+        vm.prank(bob);
+        vm.expectRevert("SparkPrimeVault/paused");
+        vault.requestDeposit(HUNDRED_K, bob, 1);
+
+        vm.prank(alice);
+        vm.expectRevert("SparkPrimeVault/paused");
+        vault.cancelDepositRequest(id, alice);
+
+        vm.prank(guardian);
+        vm.expectRevert("SparkPrimeVault/paused");
+        vault.cancelDepositRequest(id, guardian);
+
+        vm.prank(rebalancer);
+        vm.expectRevert("SparkPrimeVault/paused");
+        vault.processDepositQueue(type(uint256).max, 10);
+
+        // take() is not gated: the queued depositor's backing can leave during a pause (F-7).
+        _take(S_1M);
+        assertEq(_vaultSpUsdc(),         0);
+        assertEq(spUsdc.balanceOf(taker), S_1M);
+        assertEq(_shares(id),            S_1M);
+
+        _unpause();
+        _processDeposits(type(uint256).max, 10);
+        assertEq(vault.balanceOf(alice), SH_1M);
+    }
+
+    /**********************************************************************************************/
+    /*** H9: bounds                                                                             ***/
+    /**********************************************************************************************/
+
+    function test_processDepositQueue_maxRequestsHonouredExactly() public {
+        (uint256 a, uint256 b, uint256 c) = _queueThree();
+        _setCapacity(type(uint128).max);
+
+        _processDeposits(type(uint256).max, 2);
+
+        assertEq(vault.balanceOf(alice), SH_1M);
+        assertEq(vault.balanceOf(bob),   SH_100K);
+        assertEq(vault.balanceOf(carol), 0);
+        assertEq(_shares(a),             0);
+        assertEq(_shares(b),             0);
+        assertEq(_shares(c),             S_100K);
+        assertEq(vault.depositHead(),    2);
+        _assertQueueConsistent();
+
+        _processDeposits(type(uint256).max, 1);
+        assertEq(vault.balanceOf(carol), SH_100K);
+        assertEq(vault.depositHead(),    3);
+
+        // maxRequests_ larger than the queue is clamped: head == length, no revert.
+        _processDeposits(type(uint256).max, type(uint256).max);
+        assertEq(vault.depositHead(), 3);
+        _assertQueueConsistent();
+    }
+
+    function test_processDepositQueue_maxSavingsSharesHonouredExactlyAcrossEntries() public {
+        (uint256 a, uint256 b, uint256 c) = _queueThree();
+        _setCapacity(type(uint128).max);
+
+        // Exactly alice + 10 wei of bob.
+        _processDeposits(S_1M + 10, 10);
+
+        (uint256 dustAssets, uint256 dustShares) = _fillOf(10);
+        assertEq(dustAssets, 10);
+        assertEq(dustShares, 9);
+
+        assertEq(vault.balanceOf(alice),              SH_1M);
+        assertEq(vault.balanceOf(bob),                9);
+        assertEq(_shares(a),                          0);
+        assertEq(_shares(b),                          S_100K - 10);
+        assertEq(_shares(c),                          S_100K);
+        assertEq(vault.pendingDepositSavingsShares(), 2 * S_100K - 10);
+        assertEq(vault.depositHead(),                 1);
+        _assertQueueConsistent();
+    }
+
+    function test_processDepositQueue_maxSavingsSharesZeroIsNoop() public {
+        _queueThree();
+        _setCapacity(type(uint128).max);
+
+        _processDeposits(0, 10);
+
+        assertEq(vault.totalSupply(),                 0);
+        assertEq(vault.pendingDepositSavingsShares(), S_1M + 2 * S_100K);
+        assertEq(vault.depositHead(),                 0);
+    }
+
+    function test_processDepositQueue_maxRequestsZeroIsNoop() public {
+        _queueThree();
+        _setCapacity(type(uint128).max);
+
+        _processDeposits(type(uint256).max, 0);
+
+        assertEq(vault.totalSupply(),                 0);
+        assertEq(vault.pendingDepositSavingsShares(), S_1M + 2 * S_100K);
+        assertEq(vault.depositHead(),                 0);
+    }
+
+    function test_processDepositQueue_emptyQueueIsNoop() public {
+        _processDeposits(type(uint256).max, 10);
+        _processDeposits(0, 0);
+
+        assertEq(vault.depositHead(),  0);
+        assertEq(vault.totalSupply(),  0);
+
+        // Fully drained queue is a no-op too.
+        _deposit(alice, ONE_M);
+        _processDeposits(type(uint256).max, 10);
+        assertEq(vault.depositHead(), 1);
+        assertEq(vault.totalSupply(), SH_1M);
+    }
+
+    function test_processDepositQueue_revertsNotRebalancer() public {
+        _queue(alice, ONE_M);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSignature(
+            "AccessControlUnauthorizedAccount(address,bytes32)", alice, REBALANCER_ROLE
+        ));
+        vault.processDepositQueue(type(uint256).max, 10);
+    }
+
+    /**********************************************************************************************/
+    /*** H10: dust boundary (known F-4)                                                         ***/
+    /**********************************************************************************************/
+
+    // Known F-4 (line 650-662). At the harness indexes a fill of exactly 1 spUSDC share converts to
+    // assets_ = floor(1 * chi_s / RAY) = 1, then shares_ = floor(1 * RAY / chi_p) = 0.
+    // 2 spUSDC shares already mint 1 spPRIME share, so remaining_ == 1 is the only dust value.
+    // Reachable via maxSavingsShares_ == 1 or via availableCapacity() == 2 (-> remaining_ == 1).
+    // The test asserts the buggy behaviour: spUSDC deducted from the head request, 0 shares minted.
+    function test_BUG_dustFillMintsZeroShares() public {
+        uint256 id = _queue(alice, ONE_M);
+        _setCapacity(type(uint128).max);
+
+        (uint256 a1, uint256 s1) = _fillOf(1);
+        (uint256 a2, uint256 s2) = _fillOf(2);
+        assertEq(a1, 1); assertEq(s1, 0);  // boundary: 1 share -> 0 spPRIME
+        assertEq(a2, 2); assertEq(s2, 1);  // 2 shares -> 1 spPRIME
+
+        // Path 1: maxSavingsShares_ == 1.
+        vm.expectEmit(address(vault));
+        emit Deposit(alice, alice, 1, 0);
+
+        _processDeposits(1, 10);
+
+        assertEq(vault.balanceOf(alice),              0);
+        assertEq(vault.totalSupply(),                 0);
+        assertEq(_shares(id),                         S_1M - 1);
+        assertEq(vault.pendingDepositSavingsShares(), S_1M - 1);
+        assertEq(vault.depositHead(),                 0);
+
+        // Path 2: availableCapacity() == 2 -> remaining_ == 1. Repeatable every call.
+        _setCapacity(2);
+        assertEq(_remainingForCapacity(2), 1);
+        assertEq(_remainingForCapacity(1), 0);  // capacity 1 is a no-op
+
+        _processDeposits(type(uint256).max, 10);
+        _processDeposits(type(uint256).max, 10);
+
+        assertEq(vault.balanceOf(alice),              0);
+        assertEq(vault.totalSupply(),                 0);
+        assertEq(_shares(id),                         S_1M - 3);
+        assertEq(vault.pendingDepositSavingsShares(), S_1M - 3);
+
+        // The 3 spUSDC shares (3 wei USDC, ~3.14e-6 USD) stay in the vault as unbacked equity.
+        assertEq(_vaultSpUsdc(), S_1M);
+
+        // The depositor's eventual fill is 4 spPRIME shares short of an instant fill (SH_1M).
+        _setCapacity(type(uint128).max);
+        _processDeposits(type(uint256).max, 10);
+        (, uint256 rest) = _fillOf(S_1M - 3);
+        assertEq(rest, 990_405_184_105);
+        assertEq(vault.balanceOf(alice), SH_1M - 4);
+        _assertQueueConsistent();
+    }
+
+    /**********************************************************************************************/
+    /*** H12: other                                                                             ***/
+    /**********************************************************************************************/
+
+    // Fills never move spUSDC, so the queue processes fine after take() removed its backing.
+    // Consequence: shares are minted against backing that already left; cancel then reverts
+    // inside spUSDC (known F-2).
+    function test_processDepositQueue_fillsAfterTakeRemovedBacking() public {
+        uint256 a = _queue(alice, ONE_M);
+        uint256 b = _deposit(bob, HUNDRED_K);
+
+        _takeAll();
+        assertEq(_vaultSpUsdc(), 0);
+        assertEq(spUsdc.balanceOf(taker), S_1M + S_100K);
+
+        // Cancel is blocked for both (spUSDC has no shares to redeem from the vault).
+        vm.prank(bob);
+        vm.expectRevert("SparkVault/insufficient-balance");
+        vault.cancelDepositRequest(b, bob);
+
+        _setCapacity(type(uint128).max);
+        _processDeposits(type(uint256).max, 10);  // no revert
+
+        assertEq(vault.balanceOf(alice),              SH_1M);
+        assertEq(vault.balanceOf(bob),                SH_100K);
+        assertEq(vault.totalSupply(),                 SH_1M + SH_100K);
+        assertEq(vault.totalAssets(),                 1_099_999_999_997);  // notional, nothing backs it
+        assertEq(_vaultSpUsdc(),                      0);
+        assertEq(vault.availableLiquidAssets(),       0);
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(_shares(a), 0);
+        assertEq(_shares(b), 0);
+
+        // A redeem by alice cannot be paid until the taker returns spUSDC.
+        _requestRedeem(alice, SH_1M);
+        _processRedeems(type(uint256).max, 10);
+        assertEq(usdc.balanceOf(alice), 0);
+        assertEq(vault.pendingRedeemShares(), SH_1M);
+
+        _returnToVault(S_1M + S_100K);
+        _processRedeems(type(uint256).max, 10);
+        assertEq(usdc.balanceOf(alice), A_1M - 1);  // R8 + R9 rounding
+        assertEq(vault.pendingRedeemShares(), 0);
+    }
+
+    // Partial processing after a take: fill proceeds even when the vault holds fewer spUSDC than
+    // pendingDepositSavingsShares (nothing checks the balance).
+    function test_processDepositQueue_partialTakeStillFillsFully() public {
+        _queue(alice, ONE_M);
+        _take(S_1M / 2);
+        _setCapacity(type(uint128).max);
+
+        _processDeposits(type(uint256).max, 10);
+
+        assertEq(vault.balanceOf(alice), SH_1M);
+        assertEq(_vaultSpUsdc(),         S_1M - S_1M / 2);
+    }
+
+    // Cancelling an earlier entry after a take drains a later depositor's backing (known F-2).
+    function test_cancelDepositRequest_earlyCancelAfterTakeStrandsLaterDepositor() public {
+        uint256 a = _queue(alice, HUNDRED_K);
+        uint256 b = _deposit(bob, HUNDRED_K);
+
+        _take(S_100K);  // one depositor's worth leaves
+        assertEq(_vaultSpUsdc(), S_100K);
+
+        vm.prank(alice);
+        vault.cancelDepositRequest(a, alice);  // alice is made whole with bob's spUSDC
+
+        assertEq(usdc.balanceOf(alice), A_100K);
+        assertEq(_vaultSpUsdc(),        0);
+        assertEq(_shares(b),            S_100K);
+
+        vm.prank(bob);
+        vm.expectRevert("SparkVault/insufficient-balance");
+        vault.cancelDepositRequest(b, bob);
+    }
+
+    // Capacity -> spUSDC conversion (line 635) rounds down twice, so filling S spUSDC shares needs
+    // capacity for their spPRIME value + 2. With +2 everything fills.
+    function test_requestDeposit_instantFillCapacityBoundary() public {
+        assertEq(_remainingForCapacity(SH_1M + 2), S_1M);
+        assertEq(_remainingForCapacity(SH_1M + 1), S_1M - 1);
+        assertEq(_remainingForCapacity(SH_1M),     S_1M - 1);
+
+        _setCapacity(SH_1M + 2);
+        uint256 id = _deposit(alice, ONE_M);
+
+        assertEq(vault.balanceOf(alice),              SH_1M);
+        assertEq(_shares(id),                         0);
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(vault.availableCapacity(),           2);
+        assertEq(vault.depositHead(),                 1);
+
+        // The 2 leftover capacity shares convert to 1 spUSDC share: bob's deposit of 2 USDC
+        // (1 spUSDC share) is filled with 0 spPRIME (F-4) and bob's entry is zeroed.
+        assertEq(spUsdc.convertToShares(2), 1);
+        uint256 bobId = _deposit(bob, 2);
+        assertEq(vault.balanceOf(bob), 0);
+        assertEq(_shares(bobId),       0);
+        assertEq(usdc.balanceOf(bob),  0);
+        assertEq(_vaultSpUsdc(),       S_1M + 1);
+        _assertQueueConsistent();
+    }
+
+    // LOW (new): a deposit sized to exactly fit the capacity (capacity == its spPRIME value) is
+    // 1 spUSDC share short because of the line 635 double rounding. That 1-share remainder stays
+    // open at the head, so `pendingDepositSavingsShares != 0` and every later depositor is queued
+    // regardless of free capacity until the rebalancer processes the dust, which mints 0 (F-4).
+    function test_BUG_exactFitCapacityLeavesDustThatBlocksInstantFills() public {
+        _setCapacity(SH_1M);
+        uint256 aliceId = _deposit(alice, ONE_M);
+
+        assertEq(vault.balanceOf(alice),              SH_1M - 2);
+        assertEq(_shares(aliceId),                    1);
+        assertEq(vault.pendingDepositSavingsShares(), 1);
+        assertEq(vault.availableCapacity(),           2);
+        assertEq(vault.depositHead(),                 0);
+
+        // Open capacity for everyone; bob is still fully queued behind 1 wei of alice's dust.
+        _setCapacity(type(uint128).max);
+        uint256 bobId = _deposit(bob, HUNDRED_K);
+
+        assertEq(vault.balanceOf(bob), 0);
+        assertEq(_shares(bobId),       S_100K);
+        assertEq(vault.depositHead(),  0);
+
+        // Rebalancer clears it: alice's 1 share mints 0, bob fills.
+        vm.expectEmit(address(vault));
+        emit Deposit(alice, alice, 1, 0);
+        _processDeposits(type(uint256).max, 10);
+
+        assertEq(vault.balanceOf(alice), SH_1M - 2);
+        assertEq(vault.balanceOf(bob),   SH_100K);
+        assertEq(vault.depositHead(),    2);
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        _assertQueueConsistent();
+    }
+
+    // Zero-asset request (known F-5): a ghost entry while someone is queued ahead.
+    function test_requestDeposit_zeroAssetsCreatesGhostEntry() public {
+        _queue(alice, ONE_M);
+        _fund(bob, 0);
+
+        vm.prank(bob);
+        uint256 id = vault.requestDeposit(0, bob);
+
+        assertEq(id, 1);
+        assertEq(_shares(id), 0);
+        assertEq(vault.pendingDepositSavingsShares(), S_1M);
+
+        vm.prank(bob);
+        vm.expectRevert("SparkPrimeVault/no-request");
+        vault.cancelDepositRequest(id, bob);
+    }
+
+    /**********************************************************************************************/
+    /*** H11: fuzz                                                                              ***/
+    /**********************************************************************************************/
+
+    function testFuzz_requestDeposit_instantFillNeverExceedsCapacity(
+        uint256 cap, uint256 amt1, uint256 amt2, uint256 amt3
+    ) public {
+        cap  = bound(cap,  0, 5_000_000e6);
+        amt1 = bound(amt1, 0, 2_000_000e6);
+        amt2 = bound(amt2, 0, 2_000_000e6);
+        amt3 = bound(amt3, 0, 2_000_000e6);
+
+        _setCapacity(cap);
+
+        address[3] memory users = [alice, bob, carol];
+        uint256[3] memory amts  = [amt1, amt2, amt3];
+
+        for (uint256 i; i < 3; ++i) {
+            bool    instant   = vault.pendingDepositSavingsShares() == 0;
+            uint256 fillable  = _remainingForCapacity(vault.availableCapacity());
+            uint256 s         = spUsdc.convertToShares(amts[i]);
+            uint256 supplyBef = vault.totalSupply();
+
+            uint256 id = _deposit(users[i], amts[i]);
+
+            uint256 filled = instant ? (s < fillable ? s : fillable) : 0;
+            (, uint256 expShares) = _fillOf(filled);
+
+            assertEq(_shares(id),                  s - filled);
+            assertEq(vault.balanceOf(users[i]),    expShares);
+            assertEq(vault.totalSupply(),          supplyBef + expShares);
+            assertLe(vault.totalSupply(),          cap);
+            _assertQueueConsistent();
+        }
+    }
+
+    function testFuzz_processDepositQueue_pendingEqualsSumOfOpenEntries(uint256 seed) public {
+        uint256 cap = bound(uint256(keccak256(abi.encode(seed, "cap"))), 0, 3_000_000e6);
+        _setCapacity(cap);
+
+        address[5] memory users = [alice, bob, carol, dave, eve];
+        uint256 len;
+
+        for (uint256 step; step < 12; ++step) {
+            uint256 r  = uint256(keccak256(abi.encode(seed, step)));
+            uint256 op = r % 4;
+
+            if (op == 0 || op == 1) {
+                address who = users[(r >> 8) % 5];
+                uint256 amt = bound(r >> 16, 1, 800_000e6);
+                _deposit(who, amt);
+                len++;
+            } else if (op == 2 && len != 0) {
+                uint256 id = (r >> 8) % len;
+                (address owner, , uint256 s) = _depositRequest(id);
+                if (s != 0) {
+                    uint256 pendBef = vault.pendingDepositSavingsShares();
+                    uint256 headBef = vault.depositHead();
+                    vm.prank(owner);
+                    vault.cancelDepositRequest(id, owner);
+                    assertEq(vault.pendingDepositSavingsShares(), pendBef - s);
+                    assertEq(vault.depositHead(), headBef);
+                }
+            } else {
+                uint256 maxSS  = bound(r >> 8,  0, 2_000_000e6);
+                uint256 maxReq = bound(r >> 72, 0, 6);
+                if ((r >> 80) % 3 == 0) {
+                    cap = bound(r >> 88, 0, 3_000_000e6);
+                    if (cap >= vault.totalSupply()) _setCapacity(cap);  // never below supply here
+                }
+                uint256 headBef = vault.depositHead();
+                _processDeposits(maxSS, maxReq);
+                assertGe(vault.depositHead(), headBef);
+            }
+
+            _assertQueueConsistent();
+        }
+    }
+
+    // With both VSRs frozen, a queued depositor filled in one go receives exactly the instant
+    // amount; filled in k chunks they receive at most 2*(k-1) spPRIME shares fewer, never more.
+    function testFuzz_requestDeposit_queuedDepositorGetsAtLeastAsManySharesAsInstant(
+        uint256 amt, uint256 k, uint256 seed
+    ) public {
+        amt = bound(amt, 1, 10_000_000e6);
+        k   = bound(k, 1, 5);
+
+        uint256 instantShares;
+        {
+            _deposit(alice, amt);
+            instantShares = vault.balanceOf(alice);
+        }
+
+        uint256 id = _queue(bob, amt);
+        uint256 s  = _shares(id);
+        assertEq(s, spUsdc.convertToShares(amt));
+        _setCapacity(type(uint128).max);
+
+        // Split s into k chunks (last chunk takes the rest).
+        uint256 left = s;
+        for (uint256 i; i + 1 < k && left > 1; ++i) {
+            uint256 chunk = bound(uint256(keccak256(abi.encode(seed, i))), 1, left - 1);
+            _processDeposits(chunk, 1);
+            left -= chunk;
+            assertEq(_shares(id), left);
+        }
+        _processDeposits(type(uint256).max, 1);
+
+        assertEq(_shares(id),                         0);
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+
+        uint256 queuedShares = vault.balanceOf(bob);
+
+        assertLe(queuedShares, instantShares);
+        assertLe(instantShares - queuedShares, 2 * (k - 1));
+        if (k == 1) assertEq(queuedShares, instantShares);
+    }
+
+}
