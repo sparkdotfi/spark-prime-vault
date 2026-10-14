@@ -47,7 +47,6 @@ interface IERC4626Like {
 
 }
 
-// TODO: Prevent recipient of deposit request and redeem cancellation from being the contract itself.
 // TODO: requestDepositWithPermit?
 // TODO: Get pendingOfReceiver()/getPendingOfOwner() even needed?
 
@@ -85,11 +84,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         uint256         assets
     );
 
-    event DepositCancellationRequest(
-        uint256 indexed depositRequestId,
-        uint256 indexed cancelRequestId,
-        address indexed recipient
-    );
+    event DepositCancellationRequest(uint256 indexed depositRequestId, uint256 cancelRequestId);
 
     event DepositCancellationRecipientUpdated(uint256 indexed requestId, address indexed recipient);
 
@@ -450,7 +445,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
             }
         }
 
-        emit DepositCancellationRequest(requestId_, newRequestId_, recipient_);
+        emit DepositCancellationRequest(requestId_, newRequestId_);
     }
 
     function requestRedeem(uint256 shares_, address recipient_)
@@ -661,22 +656,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         }
     }
 
-    function getPendingDepositCancellationRequest(uint256 requestId_)
-        external
-        view
-        returns (address owner_, address recipient_, uint256 shares_)
-    {
-        require(
-            requestId_ >= firstPendingDepositCancellationId &&
-            requestId_ < _depositCancellationRequests.length,
-            "SparkPrimeVault/invalid-request-id"
-        );
-
-        Request storage request_ = _depositCancellationRequests[requestId_];
-
-        return (request_.owner, request_.recipient, request_.shares);
-    }
-
     function getPendingDepositCancellationRequests()
         external
         view
@@ -704,21 +683,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         for (uint256 i_ = startId_; i_ < endId_; ++i_) {
             requests_[i_ - startId_] = _depositCancellationRequests[i_];
         }
-    }
-
-    function getPendingRedeemRequest(uint256 requestId_)
-        external
-        view
-        returns (address owner_, address recipient_, uint256 shares_)
-    {
-        require(
-            requestId_ >= firstPendingRedeemId && requestId_ < _redeemRequests.length,
-            "SparkPrimeVault/invalid-request-id"
-        );
-
-        Request storage request_ = _redeemRequests[requestId_];
-
-        return (request_.owner, request_.recipient, request_.shares);
     }
 
     function getPendingRedeemRequests() external view returns (Request[] memory requests_) {
