@@ -5,7 +5,7 @@ import { stdError } from "../lib/forge-std/src/StdError.sol";
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
 
-/// @dev Cancelled-deposit queue tests for `SparkPrimeVault` (refactor/more-simplifying).
+/// @dev Cancelled-deposit queue tests for `SparkPrimeVault` (refactor/more-simplifying @ ff828d2).
 ///
 ///      Harness indexes (frozen at RAY after setUp):
 ///        spUSDC  chi_s = 1.047633055711877768967605062e27
@@ -229,15 +229,14 @@ contract CancelledDepositQueueTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** 3. BUG: budget ignores spUSDC liquidity                                                ***/
+    /*** 3. Budget is spUSDC's maxRedeem (V2-6 fixed at ff828d2)                                ***/
     /**********************************************************************************************/
 
-    // `_processCancelledDepositQueue` budgets by the vault's spUSDC SHARE balance (line 742), not
-    // by what spUSDC can actually pay (`maxRedeem(vault)`). When spUSDC's own USDC is deployed
-    // elsewhere the per-entry `redeem` reverts `SparkVault/insufficient-liquidity` and nobody in
-    // the cancelled queue is paid, even partially. Contrast: `_processRedeemQueue` (line 780)
-    // bounds itself with `maxWithdraw` and degrades gracefully.
-    function test_BUG_processCancelledDepositQueue_revertsWhenSpUsdcIlliquid() public {
+    // `_processCancelledDepositQueue` (line 784) now budgets by `spUSDC.maxRedeem(vault)` =
+    // min(floor(liquidity * RAY / chi_s), vault balance). When spUSDC's USDC is deployed
+    // elsewhere the head entry is paid as far as the liquidity goes, stays at the head, and is
+    // completed once liquidity returns.
+    function test_processCancelledDepositQueue_paysWhatLiquidityAllows() public {
         _cancel(alice, _deposit(alice, ONE_M), alice);
 
         // spUSDC holds exactly alice's 1M USDC; its taker deploys half of it.
@@ -246,45 +245,134 @@ contract CancelledDepositQueueTest is LocalTestBase {
 
         uint256 payable_ = spUsdc.maxRedeem(address(vault));
         assertEq(payable_, 477_266_345_571);          // < S_1M = 954_532_691_143
-        assertEq(_vaultSpUsdc(), S_1M);               // budget the contract uses
+        assertEq(spUsdc.convertToAssets(payable_), 499_999_999_998);
 
-        vm.expectRevert("SparkVault/insufficient-liquidity");
+        vm.expectEmit(address(vault));
+        emit DepositCancellation(alice, alice, payable_, 499_999_999_998);
         _processCancelledDeposits(type(uint256).max, type(uint256).max);
 
-        // Nothing moved.
-        assertEq(usdc.balanceOf(alice),                        0);
-        assertEq(vault.pendingCancelledDepositSavingsShares(), S_1M);
-        assertEq(vault.cancelledDepositHead(),                 0);
-
-        // Workaround exists only if the planner computes maxRedeem itself and passes it in.
-        _processCancelledDeposits(payable_, type(uint256).max);
-        assertEq(usdc.balanceOf(alice), 499_999_999_998);
-        assertEq(vault.cancelledDepositHead(), 0);
+        assertEq(usdc.balanceOf(alice),                        499_999_999_998);
+        assertEq(usdc.balanceOf(address(spUsdc)),              2);
         assertEq(vault.pendingCancelledDepositSavingsShares(), S_1M - payable_);
+        assertEq(vault.cancelledDepositHead(),                 0);   // partial: head stays
+        ( ,, uint256 left ) = _cancelledDepositRequest(0);
+        assertEq(left, 477_266_345_572);
+
+        // No liquidity, no payment, no revert.
+        _drainAllSpUsdcLiquidity();
+        _processCancelledDeposits(type(uint256).max, type(uint256).max);
+        assertEq(usdc.balanceOf(alice),        499_999_999_998);
+        assertEq(vault.cancelledDepositHead(), 0);
+
+        // Liquidity returns: the remainder is paid and the entry closes.
+        _returnSpUsdcLiquidity(500_000e6 + 2);
+        assertGe(spUsdc.maxRedeem(address(vault)), left);
+        _processCancelledDeposits(type(uint256).max, type(uint256).max);
+
+        assertEq(usdc.balanceOf(alice),                        499_999_999_998 + 500_000_000_000);
+        assertGe(usdc.balanceOf(alice),                        A_1M - 1);  // two floors, <= 1 wei
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
+        assertEq(vault.cancelledDepositHead(),                 1);
+        assertEq(_vaultSpUsdc(),                               0);
     }
 
-    function test_BUG_processCancelledDepositQueue_batchRevertsWhenSecondEntryIlliquid() public {
+    function test_processCancelledDepositQueue_batchPaysFirstFullyAndSecondPartially() public {
         _cancel(alice, _deposit(alice, ONE_M),     alice);
         _cancel(bob,   _deposit(bob,   HUNDRED_K), bob);
 
         // Liquidity 1_040_000e6 covers alice (999_999_999_999) but not alice + bob.
         _drainSpUsdcLiquidity(60_000e6);
         assertEq(usdc.balanceOf(address(spUsdc)), 1_040_000e6);
-        assertGt(1_040_000e6, A_1M);
-        assertLt(1_040_000e6, A_1M + A_100K);
 
-        vm.expectRevert("SparkVault/insufficient-liquidity");
+        uint256 budget = spUsdc.maxRedeem(address(vault));
+        assertEq(budget, 992_713_998_789);
+        uint256 bobShares = budget - S_1M;
+        assertEq(bobShares, 38_181_307_646);
+        assertEq(spUsdc.convertToAssets(bobShares), 40_000_000_000);
+
         _processCancelledDeposits(type(uint256).max, type(uint256).max);
 
-        // Even alice, who could have been paid in full, got nothing.
-        assertEq(usdc.balanceOf(alice),        0);
-        assertEq(usdc.balanceOf(bob),          0);
-        assertEq(vault.cancelledDepositHead(), 0);
+        assertEq(usdc.balanceOf(alice),                        A_1M);
+        assertEq(usdc.balanceOf(bob),                          40_000_000_000);
+        assertEq(A_1M + 40_000_000_000,                        1_039_999_999_999);  // <= liquidity
+        assertEq(usdc.balanceOf(address(spUsdc)),              1);
+        assertEq(vault.cancelledDepositHead(),                 1);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), S_100K - bobShares);
+        ( ,, uint256 bobLeft ) = _cancelledDepositRequest(1);
+        assertEq(bobLeft, S_100K - bobShares);
 
-        // maxRequests = 1 is the only way to get alice paid.
-        _processCancelledDeposits(type(uint256).max, 1);
-        assertEq(usdc.balanceOf(alice),        A_1M);
-        assertEq(vault.cancelledDepositHead(), 1);
+        _returnSpUsdcLiquidity(60_000e6);
+        _processCancelledDeposits(type(uint256).max, type(uint256).max);
+        assertEq(usdc.balanceOf(bob),          40_000_000_000 + spUsdc.convertToAssets(bobLeft));
+        assertGe(usdc.balanceOf(bob),          A_100K - 1);
+        assertEq(vault.cancelledDepositHead(), 2);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
+    }
+
+    // The planner's own cap still applies on top of the liquidity clamp.
+    function test_processCancelledDepositQueue_budgetIsMinOfCapAndMaxRedeem() public {
+        _cancel(alice, _deposit(alice, ONE_M), alice);
+        _drainSpUsdcLiquidity(500_000e6);
+        uint256 maxRedeem = spUsdc.maxRedeem(address(vault));  // 477_266_345_571
+
+        _processCancelledDeposits(S_100K, type(uint256).max);
+        assertEq(usdc.balanceOf(alice), A_100K);
+
+        // The clamp is recomputed from the liquidity left after the first payment.
+        uint256 budget = spUsdc.maxRedeem(address(vault));
+        assertEq(budget, spUsdc.convertToShares(500_000e6 - A_100K));
+        // The first floor left 1 wei of liquidity behind, worth at most one extra share.
+        assertGe(budget, maxRedeem - S_100K);
+        assertLe(budget, maxRedeem - S_100K + 1);
+        _processCancelledDeposits(type(uint256).max, type(uint256).max);
+        assertEq(usdc.balanceOf(alice), A_100K + spUsdc.convertToAssets(budget));
+        assertLe(usdc.balanceOf(alice), 500_000e6);
+        assertEq(vault.cancelledDepositHead(), 0);
+    }
+
+    // Residual floor mismatch (same family as C-1 on the redeem queue, benign here): maxRedeem
+    // floors liquidity into shares, so when the liquidity equals the exact assets owed the clamp
+    // comes out one share short. Each fill then pays floor(s * chi_s / RAY) and
+    // sum(floor) <= floor(sum) <= liquidity, so a batch can never revert. Direction is the safe
+    // one: the queue under-pays by dust and needs one more call, never a revert.
+    function testFuzz_processCancelledDepositQueue_neverRevertsOnLiquidity(
+        uint64[6] calldata amounts,
+        uint256   liquidityKept,
+        uint8     maxRequests,
+        uint32    warpSecs
+    ) public {
+        address[3] memory users = [alice, bob, carol];
+        uint256 owed;
+        for (uint256 i; i < 6; ++i) {
+            uint256 amt = bound(uint256(amounts[i]), 2, 2_000_000e6);  // 1 wei -> 0 spUSDC shares
+            address u   = users[i % 3];
+            _cancel(u, _deposit(u, amt), u);
+            owed += amt;
+        }
+        assertEq(usdc.balanceOf(address(spUsdc)), owed);
+
+        _setSpUsdcVsr(TEN_PCT_VSR);
+        _warpAndDrip(bound(uint256(warpSecs), 0, 365 days));
+
+        uint256 keep = bound(liquidityKept, 0, owed);
+        _drainSpUsdcLiquidity(owed - keep);
+
+        uint256 budget = spUsdc.maxRedeem(address(vault));
+        assertLe(spUsdc.convertToAssets(budget), keep);
+
+        uint256 before = usdc.balanceOf(alice) + usdc.balanceOf(bob) + usdc.balanceOf(carol);
+        _processCancelledDeposits(type(uint256).max, bound(uint256(maxRequests), 0, 8));  // must not revert
+        uint256 paid = usdc.balanceOf(alice) + usdc.balanceOf(bob) + usdc.balanceOf(carol) - before;
+
+        assertLe(paid, keep);
+        assertLe(paid, spUsdc.convertToAssets(budget));
+        assertEq(vault.pendingCancelledDepositSavingsShares(), _sumOpenCancelled());
+
+        // Whatever is left can be paid once liquidity (plus the accrued yield) is back.
+        _returnSpUsdcLiquidity(2 * owed);
+        _processCancelledDeposits(type(uint256).max, type(uint256).max);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
+        assertEq(vault.cancelledDepositHead(), 6);
     }
 
     /**********************************************************************************************/
@@ -393,12 +481,31 @@ contract CancelledDepositQueueTest is LocalTestBase {
         assertGt(expected, 1_099_000e6);
         assertLt(expected, 1_101_000e6);
 
-        // spUSDC needs the USDC to exist locally to pay the yield out.
+        // spUSDC needs the USDC to exist locally to pay the yield out. With liquidity equal to
+        // the exact assets owed, `maxRedeem` = floor(expected * RAY / chi_s) is one share short
+        // of S_1M (the product S_1M * chi_s / RAY is not an integer), so the clamp (line 784)
+        // pays expected - 1 and leaves 1 spUSDC share (1 wei) queued.
         _returnSpUsdcLiquidity(expected - ONE_M);
+        assertEq(usdc.balanceOf(address(spUsdc)), expected);
+        assertEq(spUsdc.maxRedeem(address(vault)), S_1M - 1);
 
         _processCancelledDeposits(type(uint256).max, type(uint256).max);
-        assertEq(usdc.balanceOf(alice), expected);
-        assertEq(_vaultSpUsdc(),        0);
+        assertEq(usdc.balanceOf(alice),                        expected - 1);
+        assertEq(_vaultSpUsdc(),                               1);
+        assertEq(vault.cancelledDepositHead(),                 0);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 1);
+
+        // 1 wei of liquidity is left but floor(1 * RAY / chi_s) == 0 shares: still nothing.
+        assertEq(usdc.balanceOf(address(spUsdc)), 1);
+        _processCancelledDeposits(type(uint256).max, type(uint256).max);
+        assertEq(usdc.balanceOf(alice), expected - 1);
+
+        // One more wei of liquidity closes it: the canceller ends with exactly `expected`.
+        _returnSpUsdcLiquidity(1);
+        _processCancelledDeposits(type(uint256).max, type(uint256).max);
+        assertEq(usdc.balanceOf(alice),        expected);
+        assertEq(_vaultSpUsdc(),               0);
+        assertEq(vault.cancelledDepositHead(), 1);
     }
 
     /**********************************************************************************************/

@@ -1,4 +1,150 @@
-# NEWSURFACE worker report (round 2)
+# NEWSURFACE worker report
+
+## Round 3 (ff828d2)
+
+Target: `src/SparkPrimeVault.sol` on `refactor/more-simplifying` @ ff828d2. Files:
+`test/NewSurface.t.sol` (54 tests in three contracts: `NewSurfaceTest`, `NewSurfaceRealizeGainTest`,
+`NewSurfaceMiscTest`; the single contract no longer fits the compiler's jump-tag space) and
+`test/CancelledDepositQueue.t.sol` (22 tests). All 76 pass; the three fuzz properties pass at
+5_000 runs. Harness constants unchanged: chi_s = 1.047633055711877768967605062e27, chi_p =
+1.009687768242461209408770821e27, 1_000_000e6 USDC = 954_532_691_143 spUSDC = 990_405_184_109
+spPRIME, totalAssets after that deposit = 999_999_999_998.
+
+### Fixed since round 2 (regression tests)
+
+- V2-1 / N-1 (recipient updaters had no authorization). `:422`, `:471`, `:543` now require
+  `msg.sender == request_.owner` after `invalid-recipient` and `no-request`. Owner path keeps the
+  exact amounts: fill pays the new recipient 990_405_184_109 spPRIME / 999_999_999_998 USDC /
+  999_999_999_999 USDC refund; stranger, guardian, admin and the current recipient revert
+  `not-authorized`; filled and cancelled entries revert `no-request` (nothing is written into dead
+  slots any more); zero recipient reverts `invalid-recipient` before the index is touched; out of
+  range panics 0x32. `test_updateDepositRecipient_ownerRedirectsQueuedDeposit`,
+  `_strangerGuardianAdminAndRecipientRevert`, `_ownerRedirectsRemainderOfPartialFill`,
+  `_filledEntryRevertsNoRequest`, `_cancelledEntryRevertsNoRequest`,
+  `test_updateRedeemRecipient_ownerRedirectsQueuedRedeem`, `_strangerGuardianAndRecipientRevert`,
+  `_filledAndCancelledEntriesRevertNoRequest`,
+  `test_updateCancelledDepositRecipient_ownerRedirectsRefund`,
+  `test_updateRecipient_zeroRecipientReverts`, `test_updateRecipient_outOfRangePanics`.
+  Side effect worth keeping: the cancelled entry keeps the depositor as `owner` even when the
+  GUARDIAN cancelled and named itself recipient (F-1), so the depositor can re-point the refund to
+  themselves before settlement. `test_updateCancelledDepositRecipient_ownerReclaimsGuardianChosenRecipient`.
+- V2-3 / N-2 (full loss zeroed chi). `:376` `loss_ > 0 && loss_ < totalAssets_`. `loss ==
+  totalAssets`, `totalAssets + 1` and `max` revert `invalid-loss`, chi untouched, vault keeps
+  working. `test_realizeLoss_fullLossAndAboveRevertInvalidLoss`. With one share in supply
+  (`totalAssets == 1`) no loss is admissible at all. `test_realizeLoss_oneShareSupplyAdmitsNoLoss`.
+- V2-6 / N-3 (cancelled queue reverted on spUSDC illiquidity). `:784` budgets by
+  `spUSDC.maxRedeem(vault)`. 500k of 1M deployed: pays 477_266_345_571 shares = 499_999_999_998
+  USDC, head stays, 477_266_345_572 shares remain, zero liquidity pays nothing without reverting,
+  remainder 500_000_000_000 paid after liquidity returns (two floors lose 1 wei total). Batch with
+  1_040_000e6 liquidity: alice 999_999_999_999 in full, bob 38_181_307_646 shares = 40_000_000_000,
+  total 1_039_999_999_999 <= liquidity, head 1, bob completed later.
+  `test_processCancelledDepositQueue_paysWhatLiquidityAllows`,
+  `_batchPaysFirstFullyAndSecondPartially`, `_budgetIsMinOfCapAndMaxRedeem`.
+
+### Persists
+
+- C-3: no floor under `realizeLoss`. `loss = totalAssets - 1` is accepted (`:376`) and leaves
+  `chi = floor(RAY / S) = 1_009_687_768_243_692`; because `S * floor(RAY / S) < RAY`, `totalAssets()`,
+  `assetsOf(alice)` all read 0 while 954_532_691_143 spUSDC (~1M USDC) still sits in the vault. A
+  further loss reverts `invalid-loss`; MAX_VSR for a year only doubles chi (totalAssets 1). The
+  one recovery is `realizeGain(ta - 1)`, which restores totalAssets to within 1 wei. A hot-wallet
+  RISK_MANAGER can still do this in one call while paused. Severity unchanged (Medium, admin-side).
+  `test_BUG_realizeLoss_noFloor_totalAssetsMinusOneWipesHolders`.
+- Info: the `no-shares` check at `:380` is unreachable. `totalSupply == 0` forces
+  `totalAssets() == 0`, so `loss_ < 0` fails first for every loss (1, 1e12, max all revert
+  `invalid-loss`). `test_realizeLoss_zeroSupplyRevertsInvalidLossNotNoShares`.
+- Info: chi == 0 is still reachable from `realizeLoss` once `totalSupply > RAY` (1e27 shares, a
+  1.2e21 USDC vault in the harness): `floor(1 * RAY / S) == 0`, `convertToShares` panics with
+  division by zero until admin calls `realizeGain`. `test_realizeLoss_chiZeroStillReachableAboveRaySupply`.
+- N-4 (unbounded `setCapacity`), ghost redeem entries, head-walk gas: unchanged, tests moved to
+  `NewSurfaceMiscTest` as is.
+
+### New: `realizeGain` (`src/SparkPrimeVault.sol:297-308`)
+
+Behaviour held: `chi' = floor((totalAssets() + G) * RAY / S)` exactly
+(1_110_656_545_066_042_825_345_107_777 for G = 100_000e6 on 990_405_184_109 shares), event
+`GainRealized(chi', G)`, totalAssets rises by G or G - 1 (exactly G - 1 here: 1_099_999_999_997);
+reverts `AccessControlUnauthorizedAccount(DEFAULT_ADMIN_ROLE)` for riskManager / guardian / setter /
+rebalancer / alice, `invalid-gain` for 0 (checked before `no-shares`), `no-shares` for empty supply;
+works paused and unpaused; undripped VSR yield is folded in first (rho refreshed); holders and
+escrowed redeem shares share the gain pro rata (rise in [100_000e6 - 2, 100_000e6] each for a
+200k gain), queued spUSDC deposits do not (entry unchanged, fills for fewer shares, same value);
+repeated gains accumulate with exact chi; gain G then loss G ends within [TA - 2, TA] and
+`chi' <= chi`. `test_realizeGain_exactChiEventAndTotalAssets`, `_revertsForNonAdmin`,
+`_revertsOnZeroGain`, `_revertsOnZeroSupply`, `_worksPausedAndUnpaused`, `_dripsBeforeApplyingGain`,
+`_escrowedRedeemSharesAndHoldersShareGainQueuedDepositsDoNot`, `_repeatedGainsAccumulate`,
+`_thenLossRoundTripBound`.
+
+#### G-1 Low: gain above the drip bound bricks the vault irrecoverably (A-9 via `realizeGain`)
+`src/SparkPrimeVault.sol:306` has no upper bound on `gain_`. Once `chi > maxUint256 / RAY =
+115_792_089_237_316_195_423_570_985_008_687_907_853_269_984_665_640`, `_rpow(vsr, dt) * chi` at
+`:649` (`drip`) and `:698` (`nowChi`) overflows as soon as one second passes. At the harness
+supply the smallest such gain is `GAIN_BRICK = 114_681_085_459_449_903_921_528_244_645_760_029`
+(~1.15e29 USDC); one wei less gives chi = ...508_017_464_175_173 and drip survives. Scenario: admin
+calls `realizeGain(GAIN_BRICK)` (chi = ...517_705_232_418_866, same-block `totalAssets()` still
+answers 114_681_085_459_449_903_921_529_244_645_760_026), one second later `drip`, `nowChi`,
+`totalAssets`, `convertToShares`, `requestDeposit`, `requestRedeem`, all three `process*Queue`,
+`setVSR`, `realizeGain(1)` and (paused) `realizeLoss(1)` revert with panic 0x11. `transfer` and
+`cancelDepositRequest` (no drip) still work. No role can undo it; only an upgrade. The safe band
+shrinks with the VSR: a chi that survives at `vsr == RAY` overflows one second after
+`setVSR(ONE_PCT_VSR)`. Impact: total freeze of funds on an admin typo; admin-only, so Low.
+`test_BUG_realizeGain_aboveDripThresholdBricksVault`, `test_BUG_realizeGain_dripThresholdShrinksWithVsr`.
+
+#### G-2 Low: unchecked `uint192` cast wraps a large gain into dust
+`:306` casts the quotient without a check. For gains in [6.2e42, 1.16e50) wei at the harness
+supply the quotient is >= 2^192 and wraps modulo 2^192. Smallest case: `GAIN_TRUNCATE =
+6_216_874_099_906_568_962_213_193_772_734_343_774_180_112` gives chi = 458_233_707_431_279,
+`totalAssets() == 0`, `assetsOf(alice) == 0`, and the event advertises the wrapped chi as if it
+were intended; one wei less keeps chi below 2^192 (but already far above the G-1 bound). Backing
+stays in the vault; a second `realizeGain(ta)` restores the value, so this one is recoverable,
+unlike G-1. Impact: a silent write of holders to zero instead of a revert. Admin-only, Low.
+`test_BUG_realizeGain_uint192TruncationWrapsChiToDust`.
+
+#### G-3 Info: `(totalAssets + gain) * RAY` overflows above `GAIN_OVERFLOW`
+`GAIN_OVERFLOW = maxUint256 / RAY - totalAssets + 1 =
+115_792_089_237_316_195_423_570_985_008_687_907_852_269_984_665_643` and `max` revert with panic
+0x11; one less goes through (and wraps per G-2). Clean revert, no state change.
+`test_realizeGain_uint256OverflowRevertsAboveThreshold`.
+
+#### G-4 Info: no pause requirement
+`realizeGain` has neither `whenNotPaused` nor `require(paused)`, while `realizeLoss` requires the
+pause. A gain can be written mid-incident with queues live. The sandwich around it is ADVERSARIAL's.
+`test_realizeGain_worksPausedAndUnpaused`.
+
+Suggested bound for all four: `require(chi_ <= type(uint256).max / RAY / MAX_RPOW_PER_DRIP)` or
+simply `require(gain_ <= totalAssets())`, and compute into a `uint256` before the cast.
+
+### Residual rounding on the cancelled queue (Info)
+
+`maxRedeem` floors liquidity into shares and each fill pays `floor(s_i * chi_s / RAY)`, so
+`sum(floor) <= floor(sum) <= liquidity`: a batch cannot revert on liquidity, in contrast to C-1 on
+the redeem queue. Fuzz (6 random cancels, random yield up to a year at 10%, random liquidity kept,
+random `maxRequests`, 5_000 runs): the call never reverts, pays at most the kept liquidity and at
+most `convertToAssets(maxRedeem)`, counters track open entries, and everything clears once
+liquidity returns. `testFuzz_processCancelledDepositQueue_neverRevertsOnLiquidity`.
+The direction of the mismatch is the safe one but it is visible: with liquidity equal to the exact
+assets owed (yield test, 1 year at 10%: 1_099_999_999_998), `maxRedeem` = S_1M - 1 because
+`S_1M * chi_s / RAY` is not an integer, so the fill pays `expected - 1`, leaves one spUSDC share
+(1 wei) queued with the head at 0, the leftover 1 wei of liquidity converts to 0 shares, and the
+entry needs one more wei of liquidity and one more call to close. The `yieldWhileQueuedGoesToCanceller`
+expectation changed from `expected` to `expected - 1` for that reason; the test now walks the two
+extra steps and ends at exactly `expected`. `test_processCancelledDepositQueue_yieldWhileQueuedGoesToCanceller`.
+
+### Properties held (round 3 additions)
+
+- Owner-only updaters on all three queues, exact payouts to the new recipient.
+- `realizeLoss`: `floor((TA - L) * RAY / S)` exact, chi' in [floor(RAY / S), chi] for every
+  admitted loss (fuzz, 5_000 runs), escrowed redeem shares take the loss, queued deposits do not.
+- `realizeGain`: exact chi, event, bounds above, pro-rata sharing, drip-before-apply.
+- Cancelled queue: partial fills at the liquidity clamp with exact amounts, no batch revert (fuzz).
+
+### Unsettled
+
+- Whether `realizeGain` should carry a sanity bound (G-1/G-2) and the pause requirement (G-4).
+- What floor `realizeLoss` should enforce below `loss < totalAssets` (C-3).
+- Netting (`processQueues`) is still not on this branch.
+
+## Round 2 (0bc9288, merged through 8bbe02b)
 
 Target: `src/SparkPrimeVault.sol` on `refactor/more-simplifying` as merged through
 `review/poc-tests-v2` @ 8bbe02b (pause back on GUARDIAN, `realizeLoss` via `totalAssets()`).
