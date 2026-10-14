@@ -1,73 +1,74 @@
-# Rounding campaign report: `src/SparkPrimeVault.sol`
+# Rounding campaign report, round 2: `src/SparkPrimeVault.sol`
 
-Branch `campaign/rounding`. File `test/Rounding.t.sol` (38 tests, 37 pass, 1 deliberate failing
-proof), reference generator `test/tables/drip_reference.py` -> `test/tables/drip.csv`,
-`test/tables/DripTable.sol`. Final run: `FOUNDRY_FUZZ_RUNS=10000 forge test --match-path
-test/Rounding.t.sol`: 37 passed, 1 failed (`test_BUG_...`), 0 skipped.
+Branch `campaign-v2/rounding`, source = `refactor/more-simplifying` merged with
+`review/poc-tests-v2` (`realizeLoss` with two floors, `pause()` on GUARDIAN). File
+`test/Rounding.t.sol` (53 tests, 52 pass, 1 deliberate failing proof), reference generator
+`test/tables/drip_reference.py` -> `test/tables/drip.csv`, `test/tables/DripTable.sol` (unchanged:
+`drip`/`nowChi`/`_rpow` are semantically identical, the 112-row table still matches exactly).
+Final run: `FOUNDRY_FUZZ_RUNS=10000 forge test --match-path test/Rounding.t.sol ...`: 52 passed,
+1 failed (`test_BUG_...`), 0 skipped; 29 fuzz tests at 10000 runs each.
 
-Notation: `c_s = chi_s / RAY` (spUSDC index), `c_p = chi_p / RAY` (spPRIME index), both >= 1.
-"Harness chis" = `chi_s = 1047633055711877768967605062`, `chi_p = 1009687768242461209408770821`
-(verified equal to the python `_rpow` mirror in `test_R11_harnessIndexesMatchReference`).
-Random chis = VSR anywhere in `[RAY, MAX_VSR]` on both vaults, up to 10 years of accrual.
+Notation: `c_s = chi_s / RAY` (spUSDC index), `c_p = chi_p / RAY` (spPRIME index), both >= 1
+until a loss is realised. `S = totalSupply`, `TA = totalAssets() = floor(S chi_p / RAY)`.
+Harness chis `chi_s = 1047633055711877768967605062`, `chi_p = 1009687768242461209408770821`
+(`test_R11_harnessIndexesMatchReference`). Random chis = VSR anywhere in `[RAY, MAX_VSR]` on both
+vaults, up to 10 years of accrual.
 
-## (a) Findings
+## (a) What changed since round 1
 
-### N-1 · Medium · `processRedeemQueue` batch reverts when per-fill ceil burns exceed the vault's spUSDC
+| Row | Round 1 | Round 2 | Status |
+|---|---|---|---|
+| R1 | `:366` | `:382` | re-pinned, same proof |
+| R2 | `:633-636` | `:702-705` | re-pinned, same proof |
+| R3, R4 | `:653`, `:654` | `:722`, `:723` | re-pinned, same proof |
+| R5 | `:426` floor(shares chi / RAY) >= minWithdraw | `:484` `shares_ >= minRedeem` in shares | row replaced: no rounding at the check; asset value of the minimum drifts up with chi; `shares_ == 0` accepted |
+| R6 | `:435` `_divup` | `:491` `_divUp` | re-pinned; new edge test for 1-share requests |
+| R7 | `:675` | `:782` | re-pinned |
+| R8, R9 | `:688`, `:698` | `:795`, `:805` | re-pinned; C-1 (round-1 N-1) persists, same revert |
+| R10 | `:411` refund inside `cancelDepositRequest` | `:765` refund inside `_processCancelledDepositQueue`; budget `:744` | row moved: same floor, same direction; budget exact in spUSDC shares; k-chunk settlement bound added |
+| R11 | `:575`, `:621` | `:641`, `:690` | re-pinned, table unchanged |
+| R12 | `:590`, `:594` | `:660`, `:664` | re-pinned |
+| R13 | n/a | `:357` `chi = uint192(((totalAssets() - loss) * RAY) / totalSupply)` | new row |
+| cap | `setCapacity` bounded to `uint128` | unbounded | exact overflow threshold added |
 
-**Location:** `src/SparkPrimeVault.sol:675` (clamp `convertToShares(availableLiquidAssets())`) and
-`:698` (`spUSDC.withdraw(assets_, ...)`, which burns `ceil(assets * RAY / chi_s)` spUSDC shares).
+### Findings carried or new
 
-**What happens:** `availableLiquidAssets()` is `spUSDC.maxWithdraw(vault) = min(liquidity,
-floor(bal_s * c_s))`. That bound is correct for ONE fill: `ceil(paid / c_s) <= bal_s` whenever
-`paid <= floor(bal_s * c_s)`. For `n` fills in one call the vault burns
-`sum ceil(paid_i / c_s)`, which can exceed `bal_s` by up to `n - 1` shares. The `n`-th `withdraw`
-then reverts with `SparkVault/insufficient-balance` and the whole batch is undone.
+**C-1 (round-1 N-1) persists.** `test_BUG_processRedeemQueue_batchCeilBurnsExceedSpUsdcBalance`
+still fails with `SparkVault/insufficient-balance` for the same reason: the clamp at `:782` is in
+assets per call, the burn at `:805` is a ceil per fill. Same numbers (3548 spUSDC, 2396 + 1285
+shares burn 3549). One-request-per-call workaround unchanged
+(`test_processRedeemQueue_batchCeilBurn_oneRequestPerCallSucceeds`).
 
-**Exact example (harness chis, `test_BUG_processRedeemQueue_batchCeilBurnsExceedSpUsdcBalance`):**
-vault holds 3548 spUSDC shares (after `take()`), `maxWithdraw = 3717` USDC, clamp
-`remaining_ = 3681` spPRIME shares. Two queued requests of 2396 and 1285 shares (= 3681) pay
-2419 + 1297 USDC and burn `ceil(2419/1.0476) + ceil(1297/1.0476) = 2310 + 1239 = 3549 > 3548`.
-`processRedeemQueue(max, 2)` reverts. `processRedeemQueue(max, 1)` twice works (second call
-re-clamps to 1283 shares, leaves 2 shares queued and 1 spUSDC share in the vault):
-`test_processRedeemQueue_batchCeilBurn_oneRequestPerCallSucceeds`.
+**N-2 (dust deposit < c_s buys 0 spUSDC) persists** at `:382`, `minDeposit` still defaults to 0
+(`test_R1_dustDeposit_belowOneSpUsdcShare_isLostToSpUsdc`).
 
-**When it triggers:** only when the batch consumes the vault's whole spUSDC balance (queue larger
-than liquidity, the normal state of a redeem queue) and `c_s > 1`. Frequency over random splits
-at harness chis with the balance exhausted: 2 requests 0.04%, 3 requests 3.2%, 5 requests 7.8%,
-10 requests 17%. Over random chis in `[1, 3]` and 2..5 requests: 22%.
+**R13-a · Low · `realizeLoss` over-realises by 1 wei in the generic case.** With `S` coprime to
+10 (every realistic supply), `totalAssets()` drops by `loss + 1` for every `loss` except the
+values with `S | (TA - loss) RAY`, which for the harness supply are only `TA - S` (chi lands
+exactly on RAY) and `TA` (chi 0). Harness: `realizeLoss(1)` drops `totalAssets` from
+999 999 999 998 to 999 999 999 996. One wei per call; a sequence of k calls over-realises up to
+k wei. No funds at risk (the spUSDC backing is untouched), but `LossRealized(chi, loss)`
+understates the holders' loss by 1 wei. Fix if wanted: `chi -= _divUp(loss * RAY, S)` (the
+previous formula; over-realises `< S / RAY`, invisible at 6 decimals) or compute from `S * chi`
+without going through the `totalAssets()` floor.
 
-**Impact:** no funds at risk; batch processing reverts unpredictably, the rebalancer must fall
-back to `maxRequests_ = 1` or pass a `maxShares_` a few shares under the clamp. Breaks any
-automation that calls `processRedeemQueue(max, max)`.
+**R13-b · Info · relative error is unbounded for small supply.** The `TA` floor throws away up
+to 1 wei, which is `RAY / S` chi units. With `S = 1` share any 1-wei loss sets `chi = 0`
+(`test_R13_realizeLoss_singleShareSupply_oneWeiLossZeroesChi`). With `S = 1e6` (one USDC of
+supply) a 1-wei loss can move chi by up to 1e21 units on top of the exact 1e21.
 
-**Fix options:** clamp in spUSDC shares instead of assets: track `remainingSavings_ = bal_s`
-and per fill require `ceil(assets_ * RAY / chi_s) <= remainingSavings_` (or
-`min(assets_, spUSDC.convertToAssets(remainingSavings_ - 1))`); or call
-`spUSDC.redeem(min(bal_s, ceil(...)))` and pay what that returns (underpays the user by < 1 wei
-instead); or simply `break` before the fill when `spUSDC.previewWithdraw(assets_) >
-spUSDC.balanceOf(vault)`.
+**R13-c · Info · post-loss `chi < RAY` breaks R8's `paid >= 1`.** After a loss,
+`convertToAssets(s)` is 0 for `s < RAY / chi`; `_processRedeemQueue` burns the shares and pays 0
+USDC (`spUSDC.withdraw(0)` burns 0 spUSDC). `test_R13_afterLoss_chiBelowRay_smallRedeemPaysZero`:
+1e9 shares burned for 0 wei at `chi ~ 1e15`.
 
-### N-2 · Low · Deposits below `c_s` USDC wei buy 0 spUSDC shares and are unrecoverable
-
-**Location:** `src/SparkPrimeVault.sol:366` (`spUSDC.deposit`) with `minDeposit = 0` (line 353).
-
-**What happens:** `requestDeposit(X)` with `X < c_s` (at harness chis: `X = 1`) transfers X USDC
-into spUSDC, receives 0 spUSDC shares, pushes a 0-share entry; `cancelDepositRequest` reverts
-`no-request`, nothing is minted. The USDC is donated to spUSDC holders. Refinement of F-5 (there
-the request amount itself is 0). Test: `test_R1_dustDeposit_belowOneSpUsdcShare_isLostToSpUsdc`.
-Also observed in `testFuzz_R3_R4_fillConversion_roundsInFavourOfVault` for random chis (e.g. 50
-wei at `c_s > 50`). **Fix:** `minDeposit >= ceil(c_s)` at deploy, or require `savingsShares_ != 0`.
-
-### Refuted or corrected rows of R1..R12
-
-No row is refuted on direction. Two bounds in the review are tightened or corrected:
-
-- **R9** "<= 1 wei spUSDC share per fill, acceptable": true per fill, but the review did not note
-  that the `maxWithdraw` clamp is per-call while the ceil is per-fill, so a batch can need up to
-  `n - 1` shares more than the vault holds (N-1 above).
-- **R10 / R2 / round trip**: the review's bounds assume `c_s, c_p ~ 1`. The exact bounds scale
-  with the indexes (`1 + c_s`, `1 + 1/c_s`, `2 + c_s + c_p`), which matters once the indexes grow
-  (at `c_s = 2`, a cancel can lose 2 wei; at harness chis everything stays at the stated 1-2 wei).
+**CAP-1 · Info · exact overflow bound of `setCapacity`.** Every deposit computes
+`availableCapacity() * nowChi()` at `:704`; it reverts (panic 0x11) iff
+`maxCapacity - totalSupply > type(uint256).max / nowChi()`. The bound shrinks with chi: harness
+limit 1.14681e50, after 365 days at 5% 1.09220e50; a capacity set in between bricks deposits a
+year later (`test_capacity_overflowThreshold_shrinksAsChiGrows`,
+`testFuzz_capacity_overflowThreshold_isMaxUintOverChi`). The harness value `type(uint128).max`
+(3.4e38) stays 1e8 times inside the limit even after 10 years at 100% APY.
 
 ## (b) Proven rounding table
 
@@ -76,93 +77,96 @@ cross-multiplication (`value * den <= num` and `num - value * den < den`, or the
 
 | # | Site (`src/SparkPrimeVault.sol`) | Direction | Favours | Proven bound | Test |
 |---|---|---|---|---|---|
-| R1 | `:366` spUSDC `deposit`: `floor(X * RAY / chi_s)` | down | spUSDC | `< 1` spUSDC share below exact; `X < c_s` gives 0 (N-2) | `testFuzz_R1_spUsdcDeposit_roundsInFavourOfSpUsdc` |
-| R2 | `:633-636` `spUSDC.convertToShares(convertToAssets(A))` | down, down | vault | admitted `<= A c_p / c_s`, gap `< 1 + 1/c_s <= 2` spUSDC shares; `totalSupply <= cap` | `testFuzz_R2_capacityToSavingsShares_roundsInFavourOfVault` |
-| R3 | `:653` `spUSDC.convertToAssets(s)` | down | vault | `< 1` USDC wei below `s c_s`; vault's spUSDC always worth `>=` assets credited | `testFuzz_R3_R4_fillConversion_roundsInFavourOfVault` |
-| R4 | `:654` `convertToShares(assets)` | down | vault | `< 1` share below `assets / c_p`; zero-mint region exactly `s <= sMax` (section c) | same, `testFuzz_F4_zeroMintRegion_exactCharacterisation` |
-| R5 | `:426` `shares * chi / RAY >= minWithdraw` | down | vault (stricter) | floor never admits what the exact check rejects; rejects exact values in `[min - 0.5, min)` | `testFuzz_R5_minWithdraw_floorIsStricterThanExact`, `test_R5_minWithdraw_floorRejectsRequestWithinHalfWeiOfMinimum` |
-| R6 | `:435` `_divup(shares * fee, WAD)` | up | vault | `>= exact`, `< 1` share above; never 0 for `fee > 0` | `testFuzz_R6_redeemFee_roundsInFavourOfVault`, `testFuzz_fee_isCeilAndAtMostOneWeiAbove` |
-| R7 | `:675` `convertToShares(maxWithdraw)` | down | vault | clamp `<= L / c_p`, `< 1` share below; paid `<= L` | `testFuzz_R7_liquidityClamp_roundsInFavourOfVault` |
-| R8 | `:688` `convertToAssets(shares)` | down | vault | paid `< 1` wei below `shares c_p`; `>= shares >= 1` | `testFuzz_R8_R9_redeemFill_floorPayoutCeilBurn` |
-| R9 | `:698` spUSDC `withdraw`: `ceil(paid * RAY / chi_s)` | up | spUSDC, against vault | `< 1` spUSDC share above per fill, `<= bal_s` for a single fill; batch of `n` can exceed `bal_s` by `n - 1` (N-1) | same, `test_BUG_processRedeemQueue_batchCeilBurnsExceedSpUsdcBalance` |
-| R10 | `:411` spUSDC `redeem(shares)`: `floor(s * chi_s / RAY)` | down | spUSDC, against user | refund `<= X`, loss `< 1 + c_s` wei (harness: `<= 2`) | `testFuzz_R10_cancelDeposit_roundsAgainstCancellingUser` |
-| R11 | `:575`, `:621` `_rpow(vsr, dt) * chi / RAY` | half-up per step | neutral | equals the python mirror exactly on 112 (vsr, dt, chi0) rows; daily vs yearly drip differ by 172 RAY units at 5% | `test_R11_dripMatchesReferenceTable`, `test_R11_rpowDriftVsContinuous`, `test_R11_dripPathDependenceIsBounded` |
-| R12 | `:590`, `:594` `convertToAssets` / `convertToShares` | down / down | vault | `assets >= shares`, `shares <= assets`; `a - A(S(a)) < 1 + c_p`; `s - S(A(s)) <= 1` | `testFuzz_R12_*` (4 tests) |
+| R1 | `:382` spUSDC `deposit`: `floor(X * RAY / chi_s)` | down | spUSDC | `< 1` spUSDC share below exact; `X < c_s` gives 0 (N-2) | `testFuzz_R1_spUsdcDeposit_roundsInFavourOfSpUsdc` |
+| R2 | `:702-705` `spUSDC.convertToShares(convertToAssets(A))` | down, down | vault | admitted `<= A c_p / c_s`, gap `< 1 + 1/c_s <= 2` spUSDC shares; `totalSupply <= cap` | `testFuzz_R2_capacityToSavingsShares_roundsInFavourOfVault` |
+| R3 | `:722` `spUSDC.convertToAssets(s)` | down | vault | `< 1` USDC wei below `s c_s` | `testFuzz_R3_R4_fillConversion_roundsInFavourOfVault` |
+| R4 | `:723` `convertToShares(assets)` | down | vault | `< 1` share below; zero-mint region exactly `s <= sMax` (section c) | same, `testFuzz_F4_zeroMintRegion_exactCharacterisation` |
+| R5 | `:484` `shares_ >= minRedeem` (shares) | none | n/a | exact in shares for any chi; asset value `floor(minRedeem c_p)` grows with chi (harness, 1000e6 shares: 1 009 687 768 -> 1 060 172 156 after 1y at 5% -> 1 644 674 980 after 10y); `shares_ == 0` accepted, creates a dead 0-share entry | `testFuzz_R5_minRedeem_checkIsExactInShares`, `test_R5_minRedeem_assetValueDriftsUpWithChi`, `test_R5_zeroShareRequest_isAcceptedWhenMinRedeemIsZero` |
+| R6 | `:491` `_divUp(shares * fee, WAD)` | up | vault | `>= exact`, `< 1` share above; never 0 for `fee > 0`; `s < WAD / fee` pays exactly 1 share (rate `1 / s`), `s = 1` is 100% fee and a dead entry | `testFuzz_R6_redeemFee_roundsInFavourOfVault`, `testFuzz_fee_isCeilAndAtMostOneWeiAbove`, `test_R6_feeCeil_oneShareRequest_isEntirelyFee` |
+| R7 | `:782` `convertToShares(maxWithdraw)` | down | vault | clamp `<= L / c_p`, `< 1` share below; paid `<= L` | `testFuzz_R7_liquidityClamp_roundsInFavourOfVault` |
+| R8 | `:795` `convertToAssets(shares)` | down | vault | paid `< 1` wei below `shares c_p`; `>= shares >= 1` while `chi >= RAY` (not after a loss, R13-c) | `testFuzz_R8_R9_redeemFill_floorPayoutCeilBurn` |
+| R9 | `:805` spUSDC `withdraw`: `ceil(paid * RAY / chi_s)` | up | spUSDC, against vault | `< 1` spUSDC share above per fill, `<= bal_s` for a single fill; batch of `n` can exceed `bal_s` by `n - 1` (C-1) | same, `test_BUG_processRedeemQueue_batchCeilBurnsExceedSpUsdcBalance` |
+| R10 | `:765` spUSDC `redeem(shares)` in `_processCancelledDepositQueue`: `floor(s * chi_s / RAY)` | down | spUSDC, against canceller | one shot: refund `<= X`, loss `< 1 + c_s` wei; k chunks: `<= k - 1` wei below one shot, loss `< c_s + k`; budget `:744` `min(max, bal_s)` exact in spUSDC shares | `testFuzz_R10_cancelDepositAndSettle_roundsAgainstCancellingUser`, `testFuzz_R10_cancelDepositSettledInChunks_losesAtMostKMinusOneMore`, `test_R10_chunkedSettlement_example`, `test_R10_budgetIsVaultSpUsdcBalance_noConversion` |
+| R11 | `:641`, `:690` `_rpow(vsr, dt) * chi / RAY` | half-up per step | neutral | equals the python mirror exactly on 112 rows; daily vs yearly drip differ by 172 RAY units at 5% | `test_R11_dripMatchesReferenceTable`, `test_R11_rpowDriftVsContinuous`, `test_R11_dripPathDependenceIsBounded` |
+| R12 | `:660`, `:664` `convertToAssets` / `convertToShares` | down / down | vault | `assets >= shares`, `shares <= assets` (while `chi >= RAY`); `a - A(S(a)) < 1 + c_p`; `s - S(A(s)) <= 1` | `testFuzz_R12_*` (4 tests) |
+| R13 | `:357` `chi = uint192(((TA - L) * RAY) / S)` | down, down (TA floor, then division floor) | against holders | `TA' in {TA - L - 1, TA - L}` for `S < RAY`, exactly `TA - L` iff `S \| (TA - L) RAY`; chi over-reduction `< RAY / S + 1` units; `chi' <= chi` (cast cannot truncate); largest succeeding loss `= TA` (chi 0), `TA + 1` underflows; `S == 0` underflows before dividing; k losses vs one: `0 <= TA_single - TA_k <= k` | `testFuzz_R13_*` (4 tests), `test_R13_*` (4 tests) |
 
-`_divup`: `_divup(0, y) == 0` for every `y` including 0 (the `x_ != 0` guard stops the unchecked
-underflow), `_divup(k y, y) == k`, `_divup(k y + 1, y) == k + 1`, `_divup(1, 0)` panics with
-division-by-zero: `test_divup_*`, `testFuzz_divup_*`.
+`_divUp`: `_divUp(0, y) == 0` for every `y` including 0, `_divUp(k y, y) == k`,
+`_divUp(k y + 1, y) == k + 1`, `_divUp(1, 0)` panics with division-by-zero: `test_divUp_*`,
+`testFuzz_divUp_*`.
 
 ## (c) Quantities
 
-**Round-trip loss (deposit X -> fill -> requestRedeem all, fee 0 -> process).** Four floors
-(R1, R3, R4, R8): proven `X - out < 2 + c_s + c_p` wei for any chis
-(`testFuzz_roundTrip_instantDepositRedeem_lossBound`, 10000 runs, X in [1, 1e15]). At harness
-chis the bound is 4.057 so the loss is **at most 4 wei**; brute force over X in [1, 4e6]: max 4
-wei (first at X = 836: 836 -> 797 spUSDC -> 834 USDC -> 825 shares -> 832 USDC), histogram
-{1 wei: 1, 2 wei: 3 781 586, 3 wei: 216 766, 4 wei: 1 647}. Fuzz at harness chis asserts `<= 4`
-(`testFuzz_roundTrip_instantDepositRedeem_harnessChis_lossAtMost4`,
-`test_roundTrip_maxLossExample_836wei`). Queued-deposit path: identical bound and max
-(`testFuzz_roundTrip_queuedDepositRedeem_*`). The vault keeps `s - ceil(out / c_s)` spUSDC dust
-(2 shares in the X = 836 example); it never goes short on a single round trip.
+**R13 `realizeLoss` derivation.** `TA = floor(S chi / RAY)`, `chi' = floor((TA - L) RAY / S)`.
+Then `S chi' <= (TA - L) RAY` and `S chi' > (TA - L) RAY - S`, so `S chi' / RAY` lies in
+`(TA - L - S / RAY, TA - L]`. For `S < RAY` (any 6-decimal supply below 1e21 USDC) the new
+`totalAssets()` is `TA - L` when `S` divides `(TA - L) RAY` and `TA - L - 1` otherwise. In chi
+units the reduction exceeds the exact `L RAY / S` by less than `RAY / S + 1`. Holders lose at
+least `loss` (direction proven) and at most 1 wei more, and in the generic case exactly 1 wei
+more (`testFuzz_R13_realizeLoss_floorsAgainstHolders_overRealisesAtMostOneWei` asserts the exact
+characterisation). Harness, 1 000 000e6 deposited (`S = 990 405 184 109`, `TA = 999 999 999 998`):
 
-**Capacity chain.** `totalSupply <= maxCapacity` after any fill and any further queue processing
-(`testFuzz_capacity_totalSupplyNeverExceedsMaxCapacity`). Unfillable residual after repeated
-processing: `residual < 1 + (2 + c_s) / c_p` shares, i.e. `residual * chi_p < chi_p + 2 RAY +
-chi_s` (`testFuzz_capacity_underUseBound`). At harness chis: **at most 2 shares**
-(`testFuzz_capacity_underUseBound_harnessChis_atMost2`); residual 1 computes `remaining_ = 0`,
-residual 2 computes `remaining_ = 1` spUSDC share which mints 0 and burns 1 spUSDC share from the
-head request per call (F-4, `test_capacity_residualTwo_isUnfillable_andDustBurnsSpUsdc`).
-
-**Zero-mint region (F-4).** `convertToShares(spUSDC.convertToAssets(s)) == 0` iff `s <= sMax`
-with `K = (chi_p - 1) / RAY` and `sMax = ceil((K + 1) RAY / chi_s) - 1`. For `chi_p in (RAY, 2 RAY)`
-this is `sMax = 1` for any `chi_s > RAY` and `0` at `chi_s == RAY`.
-
-| chi_s | chi_p | max zero-mint s |
-|---|---|---|
-| 1e27 | 1e27 | 0 |
-| 1.0476e27 (harness) | 1.0097e27 (harness) | 1 |
-| 1e27 | 1.0097e27 | 1 |
-| 1.0476e27 | 1e27 | 0 |
-| 1.5e27 | 1.5e27 | 1 |
-| 1e27 | 2e27 | 1 |
-| 1e27 | 2e27 + 1 | 2 |
-| 2e27 | 10e27 | 4 |
-
-(`test_F4_zeroMintRegion_table`, brute-forced; `testFuzz_F4_zeroMintRegion_exactCharacterisation`
-checks the formula against the live vault for random chis.)
-
-**Drip drift (`_rpow` vs continuous `chi0 * vsr^t`, 80-digit Decimal, RAY units, chi0 = RAY).**
-
-| vsr | 365 d | 10 y |
-|---|---|---|
-| FOUR_PCT | -318 029 | -4 526 538 |
-| FIVE_PCT | -4 298 403 | -66 682 338 |
-| MAX_VSR | +1 506 719 | +7 714 388 883 |
-
-Relative drift `< 1e-18` after 10 years at 100% APY (chi = 1.024e30). On a 1e12 USDC-wei position
-that is `< 1e-6` wei, invisible at 6 decimals. `nowChi()` / `drip()` equal the reference table
-exactly for every VSR constant x {1 s, 60 s, 1 h, 1 d, 30 d, 365 d, 10 y} x {chi0 = RAY, chi0 =
-harness} (112 rows).
-
-**Rate mismatch, 1_000_000e6 deposited at harness chis, 365 days, surplus = spUSDC backing -
-`totalAssets()` in USDC wei (`test_rateMismatch_3x3_surplusAfter365d`, exact):**
-
-| spUSDC \ spPRIME | 0% | 4% | 5% |
+| loss | new `totalAssets` | drop | new chi |
 |---|---|---|---|
-| 0% | +1 | -39 999 999 999 | -49 999 999 999 |
-| 4% | +40 000 000 000 | 0 | -10 000 000 000 |
-| 5% | +50 000 000 000 | +10 000 000 000 | 0 |
+| 1 | 999 999 999 996 | 2 | 1009687768240663846587628160 |
+| 999 999 999 | 998 999 999 998 | 1 000 000 000 | 1008678080474439529214223187 |
+| 9 594 815 889 (= TA - S) | 990 405 184 109 | exact | 1e27 |
+| 999 999 999 997 (= TA - 1) | 1 | exact | 1 009 687 (= RAY / S) |
+| 999 999 999 998 (= TA) | 0 | exact | 0 (brick: `convertToShares` divides by zero) |
+| 999 999 999 999 (= TA + 1) | revert, panic 0x11 | | |
 
-Backing at 0/4/5%: 999 999 999 999 / 1 039 999 999 998 / 1 049 999 999 998; notional:
-999 999 999 998 / 1 039 999 999 998 / 1 049 999 999 998. The 5%/4% spread is exactly 10 000e6;
-4%/5% is a 10 000e6 deficit that only a `setChi` can realise (out of scope).
+`uint192` cast: `chi' <= (TA - L) RAY / S <= TA RAY / S <= chi < 2^192`, so no value that passes
+the subtraction can be truncated (`testFuzz_R13_realizeLoss_castNeverTruncates`, chis up to
+1.024e30). `S == 0`: `totalAssets()` is 0 and `0 - loss` underflows before the division
+(`test_R13_realizeLoss_zeroSupply_revertsOnUnderflowNotDivision`). Path dependence: `k` losses
+summing to `L` leave `chi_k <= chi_single` (floor is monotone and `S chi_i / RAY <= TA_{i-1} -
+l_{i-1}`), with `(chi_single - chi_k) S < k (RAY + S)` and `0 <= TA_single - TA_k <= k`
+(`testFuzz_R13_realizeLoss_sequenceVsSingle_pathDependenceBound`, k in [2, 6]). One aggregated
+loss is strictly better for holders than a stream of small ones.
+
+**Round-trip loss (deposit X -> fill -> requestRedeem all, fee 0 -> process).** Unchanged: four
+floors (R1, R3, R4, R8), `X - out < 2 + c_s + c_p` wei for any chis, at most 4 wei at harness
+chis (first at X = 836), identical on the queued-deposit path
+(`testFuzz_roundTrip_*`, `test_roundTrip_maxLossExample_836wei`).
+
+**Deposit -> cancel -> settle.** One shot: refund `= floor(floor(X / c_s) c_s)`, loss `< 1 + c_s`
+(harness: `<= 2`). Settled in k chunks `s_1..s_k`: refund `= sum floor(s_i c_s) >= floor(s c_s) -
+(k - 1)`, so at most `k - 1` wei below one shot and `X - refund < c_s + k`. Harness example,
+1000e6 -> 954 532 691 spUSDC: one shot 999 999 999; 17 one-share chunks then the rest still
+999 999 999; 18 one-share chunks then the rest 999 999 998 (each 1-share chunk leaves 0.0476
+USDC in spUSDC, 18 of them tip the remainder's floor). The budget `min(maxSavingsShares,
+spUSDC.balanceOf(vault))` has no conversion: with 12 345 spUSDC left in the vault exactly 12 345
+shares settle and the entry stays at the head with the rest.
+
+**Capacity chain.** `totalSupply <= maxCapacity` after any fill and any further processing;
+unfillable residual `< 1 + (2 + c_s) / c_p` shares (harness: at most 2); residual 2 burns 1
+spUSDC share per attempt without minting (F-4). Overflow: deposits revert iff
+`maxCapacity - totalSupply > type(uint256).max / nowChi()`:
+
+| chi_p | `type(uint256).max / chi` |
+|---|---|
+| 1e27 (fresh) | 1.15792e50 |
+| 1.0097e27 (harness) | 114681085459589801375833087904206311575507395147570 |
+| 1.0602e27 (harness + 1y at 5%) | 109220081390085525123890485623544109152849575647725 |
+| 1.024e30 (10y at 100%) | 1.13e47 |
+
+**Zero-mint region (F-4).** Unchanged: `convertToShares(spUSDC.convertToAssets(s)) == 0` iff
+`s <= ceil((K + 1) RAY / chi_s) - 1`, `K = (chi_p - 1) / RAY` (8-row table in
+`test_F4_zeroMintRegion_table`, harness `sMax = 1`).
+
+**Drip drift and reference table.** Unchanged (112 rows exact; `_rpow` drift vs continuous
+`-318 029` RAY units at 4%/365d, `+7 714 388 883` at 100%/10y, relative `< 1e-18`).
+
+**Rate mismatch 3x3 (1 000 000e6, 365 days, surplus in USDC wei).** Unchanged: diagonal +1/0/0,
+off-diagonal +-10 000e6 per 1% of spread, exact values in `test_rateMismatch_3x3_surplusAfter365d`.
 
 ## (d) Unsettled
 
-- N-1 fix choice (clamp in spUSDC shares vs `redeem` vs pre-check) is a design decision; all
-  three keep every other row's direction.
-- The round-trip and capacity bounds are proven analytically and fuzzed to 10000 runs, not
-  exhaustively verified beyond X <= 4e6 at harness chis.
-- Drift of chained drips (daily vs yearly) was measured at one rate (5%, 172 RAY units over 365
-  days) and bounded loosely at 400; no general bound derived.
+- C-1 fix choice (clamp in spUSDC shares vs `redeem` vs pre-check) still open; every option keeps
+  the other rows' directions.
+- R13-a is a 1-wei accounting nit per call; whether `LossRealized.loss` should report the realised
+  drop (loss + 1) or the input is a product decision.
+- R13 bounds assume `S < RAY` (below 1e21 USDC of supply). For `S >= RAY` the drop can reach
+  `loss + ceil(S / RAY)`; not reachable at 6 decimals.
+- The k-chunk and k-loss bounds are fuzzed for k <= 6 and proven analytically for any k; not
+  exhaustively verified beyond that.
