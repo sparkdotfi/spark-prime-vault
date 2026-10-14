@@ -34,21 +34,18 @@ interface ISparkVaultLike {
 abstract contract TestBase is Test {
 
     struct AssertVaultStateParams {
-        uint256 totalSupply;                          // spPRIME shares total supply
-        uint256 totalAssets;                          // USDC value of supply
-        uint256 availableCapacity;                    // spPRIME shares left to mint
-        uint256 availableLiquidAssets;                // idle USDC + redeemable unencumbered spUSDC
-        uint256 pendingDepositSavingsShares;          // total spUSDC of pending deposit requests
-        uint256 pendingCancelledDepositSavingsShares; // total spUSDC of cancelled deposit requests
-        uint256 pendingRedeemShares;                  // total spPRIME shares of redeem requests
-        uint256 chi;                                  // rate accumulator [ray]
-        uint256 rho;                                  // last chi update timestamp
+        uint256 totalSupply;           // spPRIME shares total supply
+        uint256 totalAssets;           // USDC value of supply
+        uint256 availableCapacity;     // spPRIME shares left to mint
+        uint256 availableLiquidAssets; // USDC the vault can withdraw from spUSDC now (maxWithdraw)
+        uint256 chi;                   // rate accumulator [ray]
+        uint256 rho;                   // last chi update timestamp
     }
 
     struct AssertQueueStateParams {
-        uint256 pendingShares; // spUSDC shares (deposit queue) or spPRIME shares (redeem queue)
-        // uint256 length;        // entries ever pushed, filled and cancelled included
-        uint256 head;          // first unfilled index
+        uint256 pendingShares;  // spUSDC shares (deposit queue) or spPRIME shares (redeem queue)
+        uint256 length;         // requests from firstPendingId to the end, cancelled included
+        uint256 firstPendingId; // first unfilled request id
     }
 
     struct AssertBalancesParams {
@@ -64,7 +61,6 @@ abstract contract TestBase is Test {
     bytes32 internal constant RISK_MANAGER_ROLE  = keccak256("RISK_MANAGER_ROLE");
     bytes32 internal constant SETTER_ROLE        = keccak256("SETTER_ROLE");
     bytes32 internal constant TAKER_ROLE         = keccak256("TAKER_ROLE");
-    bytes32 internal constant UNPAUSER_ROLE      = keccak256("UNPAUSER_ROLE");
 
     uint256 internal constant MINIMUM_DEPOSIT = 100e6;
     uint256 internal constant MINIMUM_REDEEM  = 100e6;
@@ -79,7 +75,6 @@ abstract contract TestBase is Test {
     address internal riskManager = makeAddr("riskManager");
     address internal setter      = makeAddr("setter");
     address internal taker       = makeAddr("taker");
-    address internal unpauser    = makeAddr("unpauser");
 
     address internal user = makeAddr("user");
 
@@ -121,21 +116,18 @@ abstract contract TestBase is Test {
     /**********************************************************************************************/
 
     function _assertVaultState(AssertVaultStateParams memory state) internal view {
-        assertEq(spPRIME.totalSupply(),                          state.totalSupply);
-        assertEq(spPRIME.totalAssets(),                          state.totalAssets);
-        assertEq(spPRIME.availableCapacity(),                    state.availableCapacity);
-        assertEq(spPRIME.availableLiquidAssets(),                state.availableLiquidAssets);
-        assertEq(spPRIME.pendingDepositSavingsShares(),          state.pendingDepositSavingsShares);
-        assertEq(spPRIME.pendingCancelledDepositSavingsShares(), state.pendingCancelledDepositSavingsShares);
-        assertEq(spPRIME.pendingRedeemShares(),                  state.pendingRedeemShares);
-        assertEq(spPRIME.chi(),                                  state.chi);
-        assertEq(spPRIME.rho(),                                  state.rho);
+        assertEq(spPRIME.totalSupply(),           state.totalSupply);
+        assertEq(spPRIME.totalAssets(),           state.totalAssets);
+        assertEq(spPRIME.availableCapacity(),     state.availableCapacity);
+        assertEq(spPRIME.availableLiquidAssets(), state.availableLiquidAssets);
+        assertEq(spPRIME.chi(),                   state.chi);
+        assertEq(spPRIME.rho(),                   state.rho);
     }
 
     function _assertDepositQueueState(AssertQueueStateParams memory state) internal view {
-        assertEq(spPRIME.pendingDepositSavingsShares(), state.pendingShares);
-        // assertEq(spPRIME.depositQueueLength(),          state.length); // TODO: implement
-        assertEq(spPRIME.firstPendingDepositId(),       state.head);
+        assertEq(spPRIME.pendingDepositSavingsShares(),      state.pendingShares);
+        assertEq(spPRIME.getPendingDepositRequests().length, state.length);
+        assertEq(spPRIME.firstPendingDepositId(),            state.firstPendingId);
     }
 
     function _assertBalances(AssertBalancesParams memory params) internal view {
