@@ -218,7 +218,7 @@ contract LocalTestBase is Test {
     }
 
     function _pause() internal {
-        vm.prank(admin);  // pause moved from GUARDIAN to DEFAULT_ADMIN on refactor/more-simplifying
+        vm.prank(guardian);
         vault.pause();
     }
 
