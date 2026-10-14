@@ -1,180 +1,208 @@
-# Redeem-queue campaign report (`test/RedeemQueue.t.sol`)
+# Redeem-queue campaign report, round 2 (`test/RedeemQueue.t.sol`)
 
-Branch `campaign/redeem-queue`. 32 tests, all pass (`FOUNDRY_FUZZ_RUNS=5000`). The two
-`test_BUG_*` tests prove the new bug with `vm.expectRevert`, so they pass while the bug exists and
-will fail once it is fixed.
+Branch `campaign-v2/redeem-queue`, `src/SparkPrimeVault.sol` from upstream `refactor/more-simplifying`
+merged with `review/poc-tests-v2` (`pause()` on GUARDIAN, `realizeLoss` floor formula). 45 tests,
+all pass (`FOUNDRY_FUZZ_RUNS=5000`). The three `test_BUG_*` tests prove bugs with `vm.expectRevert`
+or exact state, so they pass while the bug exists and fail once it is fixed.
 
-Harness indexes after `setUp` (both VSRs frozen at RAY): chi_s = 1.047633055711877768967605062e27,
-chi_p = 1.009687768242461209408770821e27. A 1_000_000e6 deposit gives the vault 954_532_691_143
-spUSDC and mints 990_405_184_109 spPRIME. Notation: L = USDC in spUSDC, S = spUSDC held by the
-vault, A = `spUSDC.maxWithdraw(vault)` = min(L, floor(S * chi_s / RAY)), rem = floor(A * RAY / chi_p).
+Harness indexes after `setUp` are unchanged from round 1: chi_s = 1.047633055711877768967605062e27,
+chi_p = 1.009687768242461209408770821e27; 1_000_000e6 deposited = 954_532_691_143 spUSDC /
+990_405_184_109 spPRIME; 100_000e6 = 95_453_269_114 / 99_040_518_410. Notation: L = USDC in spUSDC,
+S = spUSDC held by the vault, A = `spUSDC.maxWithdraw(vault)`, rem = floor(A * RAY / chi_p).
+
+## Round-2 delta (what changed upstream on the redeem side)
+
+| Change | Line | Effect on round-1 tests |
+|---|---|---|
+| `requestRedeem` only checks `shares_ >= minRedeem`; `minRedeem` is in shares; `shares_ != 0` gone | 195, 484 | `test_requestRedeem_revertsZeroShares` inverted (now a bug test); `minWithdraw` boundary rewritten in shares |
+| `cancelRedeemRequest` requires `recipient_ != 0`, `delete`s the entry, advances `redeemHead` past zero entries when the head is cancelled | 506-532 | RQ-3 narrowed: a cancelled head no longer costs a `maxRequests_` slot |
+| Full fills `delete` the entry (getter returns zeros) | 809 | `_expectedPayouts` in the payout fuzz now snapshots recipients before the call |
+| New unauthenticated `updateRedeemRecipient(id, r)` | 534-538 | New tests, section 13 |
+| `setChi` replaced by `realizeLoss(loss)` (paused only, `chi = floor((totalAssets - loss) * RAY / totalSupply)`) | 351-360 | New RQ-5 mirror test |
+| `Redeem(owner, recipient, shares, assets)` argument order; `_divup` -> `_divUp`; `take` string `insufficient-shares`; `pause` GUARDIAN | 108-113, 905 | Event test added; helper renamed |
 
 ## (a) Bugs and suspicious behaviour
 
-### RQ-1 · Medium · A multi-request `processRedeemQueue` batch can revert on spUSDC ceil-rounding
+### RQ-1 (= C-1) · Medium · Re-confirmed: a multi-request `processRedeemQueue` batch reverts on spUSDC ceil-rounding
 
-**Location:** `src/SparkPrimeVault.sol:675` (budget computed once from `maxWithdraw`) and
-`src/SparkPrimeVault.sol:698` (`spUSDC.withdraw(assets_)` per fill, burns `ceil(assets * RAY / chi_s)`).
-
-**What happens:** The share budget `remaining_` is derived once from `A`, and each of the N fills
-burns spUSDC rounded up independently. The sum of the per-fill burns can exceed the single
-aggregate burn by up to N-1 wei of spUSDC. When the budget is fully consumed (the vault's spUSDC
-claim or the USDC liquidity is binding, which is the normal state once `take()` has deployed
-capital and the queue exceeds what is left), the last fill's `withdraw` reverts inside spUSDC
-with `SparkVault/insufficient-balance`, rolling back the whole batch. For a single fill the
-bound always holds (proved by fuzz), so the revert needs N >= 2.
+**Location:** `src/SparkPrimeVault.sol:782` (share budget computed once from `availableLiquidAssets()`),
+`src/SparkPrimeVault.sol:805` (`spUSDC.withdraw(assets_)` per fill burns `ceil(assets * RAY / chi_s)`).
+Both lines are the round-1 logic unchanged.
 
 **Scenario 1 (vault-share bound), `test_BUG_processRedeemQueue_batchRevertsOnCeilRounding_vaultSharesBound`:**
-alice deposits 1_000_000e6; the taker takes 954_531_688_310 spUSDC leaving S = 1_002_833
-(worth A = 1_050_601 USDC, rem = 1_040_520 shares). alice queues two redeems of 520_260 shares.
-Each pays 525_300 USDC (sum 1_050_600 <= A) but burns 501_417 spUSDC each, 1_002_834 total,
-one more than held. `processRedeemQueue(max, 2)` reverts `SparkVault/insufficient-balance`.
-Processing one request per call works: first pays 525_300 and leaves 501_416 spUSDC; the second
-call re-derives a budget of 520_258 shares, pays 525_298 USDC and leaves 2 shares queued and
-1 wei spUSDC in the vault.
+alice deposits 1_000_000e6; the taker leaves S = 1_002_833 (A = 1_050_601, rem = 1_040_520). Two
+requests of 520_260 shares pay 525_300 each (1_050_600 <= A) but burn 501_417 each = 1_002_834 > S.
+`processRedeemQueue(max, 2)` reverts `SparkVault/insufficient-balance`, nothing moves. One request
+per call works: 525_300 then 525_298 paid, 2 shares and 1 wei spUSDC left.
 
-**Scenario 2 (USDC-liquidity bound), `test_BUG_processRedeemQueue_batchRevertsOnCeilRounding_liquidityBound`:**
-alice deposits 1_000_000e6, spUSDC's taker drains 2 wei so L = 999_999_999_998 (vault claim
-999_999_999_999). Three requests of 22_947_880_715 / 299_586_688_493 / 667_870_614_900 shares
-(sum = rem = 990_405_184_108) pay 23_170_194_465 + 302_489_014_899 + 674_340_790_633 =
-999_999_999_997 USDC (fits L) but burn 22_116_708_078 + 288_735_653_434 + 643_680_329_632 =
-954_532_691_144 spUSDC against S = 954_532_691_143. `processRedeemQueue(max, 3)` reverts
-`SparkVault/insufficient-balance`. Split 2 + 1 it succeeds; carol is paid 674_340_790_631
-(2 wei less than in the batch) and 2 shares remain queued.
+**Scenario 2 (liquidity bound), `test_BUG_processRedeemQueue_batchRevertsOnCeilRounding_liquidityBound`:**
+L = 999_999_999_998 (2 wei drained). Three requests summing to rem = 990_405_184_108 pay
+999_999_999_997 USDC (fits L) but burn 954_532_691_144 against S = 954_532_691_143. Batch of 3
+reverts; split 2 + 1 works, carol gets 674_340_790_631 (2 wei less than the batch would pay).
 
-**Frequency (Python model at the harness indexes, budget fully consumed, random request sizes):**
-2 fills 0.05 %, 3 fills 3.2 %, 5 fills 7.5 %, 10 fills 17 %, 50 fills 45 % of batches revert.
-`testFuzz_processRedeemQueue_batchOverburnBoundedByFillsMinusOne` reaches the revert branch on
-its first fuzz run when the prime VSR has grown the claim past the backing.
+**Impact and fix:** unchanged from round 1 (batch automation reverts non-deterministically when the
+queue drains the last wei of backing; funds safe; re-clamp `remaining_` inside the loop from
+`availableLiquidAssets()` or burn via `redeem(convertToShares(assets_))`). The payout fuzz still
+reaches the revert branch (`testFuzz_processRedeemQueue_batchOverburnBoundedByFillsMinusOne` asserts
+reason and no state change).
 
-**Impact:** The rebalancer's batch call reverts non-deterministically whenever the queue is
-drained to the last wei of available backing, which is exactly the situation after a `take()`
-or a liquidity crunch. Funds are never lost (the revert is atomic). Workaround is
-`maxRequests_ = 1` or a `maxShares_` a few wei below the budget. Gas is wasted per failed
-attempt; a full-drain batch of 50 fails about half the time.
+### RQ-6 (= C-2) · Medium · Re-confirmed: a redeem to a USDC-blacklisted recipient blocks the whole queue
 
-**Fix:** Re-read the bound inside the loop so each fill is individually safe, e.g. before line 687
-`uint256 cap_ = convertToShares(IERC4626Like(savings).maxWithdraw(address(this))); if (cap_ < remaining_) remaining_ = cap_; if (remaining_ == 0) break;`
-(the single-fill bound then applies to every iteration). Alternatively subtract `maxRequests_ - 1`
-spUSDC-equivalents from the initial budget, or burn via `redeem(convertToShares(assets_))` and
-accept paying 1 wei less per fill.
+**Location:** `src/SparkPrimeVault.sol:805` inside the strict FIFO loop (lines 787-810), no skip-on-failure.
 
-**Proving tests:** the two `test_BUG_*` above; `testFuzz_processRedeemQueue_singleFillNeverReverts`
-(the N = 1 bound, 5000 runs over random VSRs, warps, drains and takes);
-`testFuzz_processRedeemQueue_batchOverburnBoundedByFillsMinusOne` (burn excess <= N-1 when the
-batch succeeds, revert reason and no state change when it does not).
+**Scenario, `test_BUG_blacklistedRecipientBlocksRedeemQueue`:** attacker deposits 1e6 and queues 1 share
+to a blacklisted address (USDC `transfer` mocked to revert `Blacklistable: account is blacklisted`);
+alice queues 990_405_184_109 behind. `processRedeemQueue(max, 10)`, `(max, 1)` and `(1, 1)` all
+revert; head stays 0, alice unpaid. Guardian cancel to the owner refunds the attacker's share and,
+new this round, advances the head to 1, so alice is paid 999_999_999_998 with a single slot; the
+attacker re-queues and bob is stuck behind the new jam again. Cost to the attacker: gas.
 
-### RQ-2 · Low · USDC paid to `recipient == address(vault)` is stuck
+**New this round:** the jam can also be cleared by anyone through `updateRedeemRecipient`, see RQ-8.
 
-**Location:** `src/SparkPrimeVault.sol:698` (no check on `request.recipient`), `src/SparkPrimeVault.sol:611`
-(`availableLiquidAssets` only counts spUSDC), `src/SparkPrimeVault.sol:294` (`take` moves spUSDC only).
+### RQ-7 · Low · `requestRedeem(0)` succeeds and pushes a zero-share ghost entry
 
-**Scenario, `test_processRedeemQueue_recipientIsVault_usdcStuck`:** alice deposits 100_000e6 and
-requests all 99_040_518_410 shares with recipient = the vault. The fill pays 99_999_999_998 USDC
-to the vault contract. `availableLiquidAssets()` stays at 1 wei, `take()` leaves the USDC
-untouched, and a later redeemer (bob) cannot be paid from it when spUSDC is illiquid. No
-function in the contract moves USDC out except through the spUSDC deposit in `requestDeposit`
-(which pulls from `msg.sender`, not from the vault's own balance). Same class as F-6
-(informational there because USDC is not meant to be custodied); this is a user-triggerable way
-to put USDC there. Self-inflicted only; a proxy upgrade recovers it.
+**Location:** `src/SparkPrimeVault.sol:484` (`require(shares_ >= minRedeem)` with `minRedeem`
+initialised to 0 at line 195; the round-1 `shares_ != 0` check is gone).
 
-**Companion, `test_processRedeemQueue_recipientIsSpUsdc_donatesToSpUsdc`:** recipient = spUSDC
-burns the vault's 95_453_269_113 spUSDC while spUSDC's USDC balance does not change: the
-99_999_999_998 USDC is donated to spUSDC holders. Also self-inflicted.
+**Scenario, `test_BUG_requestRedeem_zeroSharesCreatesGhostEntry`:** with the 1 % fee set,
+`requestRedeem(0, alice)` emits `RedeemRequest(alice, alice, 0, 0, 0)`, moves no shares, burns no
+fee, and pushes entry 0 with 0 shares. `cancelRedeemRequest(0)` reverts `SparkPrimeVault/no-request`.
+carol, who holds no shares, pushes 10 more. bob's real request lands at index 11 and needs
+`maxRequests_ = 12` to be reached: `(max, 11)` pays nobody and moves the head to 11, `(max, 1)` then
+pays bob 98_999_999_998. `setMinRedeem(1)` closes the path (`requestRedeem(0)` reverts
+`below-minimum`).
 
-**Fix:** `require(recipient_ != address(this) && recipient_ != savings, "SparkPrimeVault/invalid-recipient")`
-in `requestRedeem` (and the same for `requestDeposit`).
+**Impact:** free throughput griefing (same class as F-5 but now needs no shares and no fee; ~2.3k gas
+per ghost cold, one wasted `maxRequests_` slot each until the head passes). The head still advances,
+so no funds are blocked. **Fix:** `require(shares_ != 0)` or launch with `minRedeem >= 1`.
 
-### RQ-3 · Info · Cancelled and ghost entries consume `maxRequests_`
+### RQ-8 · Info here (High, owned by NEWSURFACE) · `updateRedeemRecipient` is unauthenticated: it both unblocks a blacklisted head and lets anyone take the payout
 
-**Location:** `src/SparkPrimeVault.sol:678` (`end_` sized by index) and `:685` (`continue`).
+**Location:** `src/SparkPrimeVault.sol:534-538` (only `recipient_ != 0`; no owner check, no liveness check).
 
-**Scenario, `test_processRedeemQueue_cancelledEntryCountsTowardMaxRequests`:** alice, bob, carol
-queue 99_040_518_410 shares each; alice cancels. `processRedeemQueue(max, 1)` pays nobody and
-moves the head from 0 to 1; the next call pays bob 99_999_999_998. Combined with F-5 ghosts this
-lets anyone make a bounded number of rebalancer calls no-ops (one wasted call per `maxRequests_`
-ghosts); the head still advances so it is throughput griefing, already covered by F-5.
+**Scenario, `test_updateRedeemRecipient_anyoneUnblocksBlacklistedHeadAndTakesThePayout`:** alice and
+bob queue 99_040_518_410 each; alice is blacklisted after queueing, so processing reverts and bob is
+stuck. mallory (unrelated) calls `updateRedeemRecipient(0, mallory)`. The next pass pays mallory
+99_999_999_998 (alice's whole request), pays bob 99_999_999_998, head 2. The queue is unblocked and
+alice is robbed in the same transaction. The intended path works:
+`test_updateRedeemRecipient_ownerRepointsAndFillPaysNewRecipient` (owner repoints to bob, owner
+field unchanged, fill pays bob, `address(0)` rejected). Repointing a filled or cancelled entry is
+accepted and harmless (shares are 0), an index past the array panics 0x32:
+`test_updateRedeemRecipient_deadEntryAndOutOfRange`. Not re-reported as a finding; the tests pin both
+sides for whoever patches it (`msg.sender == owner` keeps the unblock property only for the owner,
+so the guardian cancel remains the planner's tool for C-2).
 
-### RQ-4 · Info · `pause` freezes redeemers while `take` keeps working (quantified F-7)
+### RQ-2 · Low · USDC paid to `recipient == address(vault)` is stuck (unchanged)
 
-`test_processRedeemQueue_pausedBlocksRedeemsNotTake`: alice queues 99_040_518_410 shares (claim
-99_999_999_998 USDC); guardian pauses; `processRedeemQueue` and `cancelRedeemRequest` revert
-`SparkPrimeVault/paused`; the taker removes all 95_453_269_114 spUSDC; after unpause
-`availableLiquidAssets() == 0` and the claim stays queued in full. Known (F-7), no new finding.
+`test_processRedeemQueue_recipientIsVault_usdcStuck`, `test_processRedeemQueue_recipientIsSpUsdc_donatesToSpUsdc`:
+same numbers as round 1 (99_999_999_998 USDC in the vault contract, invisible to
+`availableLiquidAssets`, untouched by `take`; recipient = spUSDC donates the value to spUSDC
+holders). `requestRedeem` still only rejects `address(0)` (line 483).
 
-### RQ-5 · Info · Notional index: queue-time prime yield is paid from other holders' backing
+### RQ-3 · Info · Only non-head cancelled and ghost entries consume `maxRequests_` (narrowed)
 
-`test_processRedeemQueue_primeYieldAccruesWhileQueued`: alice and bob deposit 100_000e6 each;
-prime VSR 5 %; alice queues 99_040_518_410 shares (99_999_999_998 USDC at request time). After
-365 days chi_p = 1.060172156654584269839902363e27 and the fill pays 104_999_999_998 USDC
-(5_000_000_000 more). spUSDC VSR was RAY so backing did not grow: bob's notional claim is
-104_999_999_998 against 95_000_000_000 USDC worth of spUSDC. Known as I-7; the test quantifies it.
+`test_processRedeemQueue_cancelledEntryCountsTowardMaxRequests`: bob (index 1) cancels; `(max, 2)`
+pays alice and spends the second slot on the hole (carol unpaid, head 2); `(max, 1)` pays carol.
+Contrast: alice cancels at the head, head jumps to the next live entry and one slot reaches bob.
+Round-1 wording "cancelled entries consume a slot" now holds only for holes behind the head.
 
-Conversely `test_processRedeemQueue_spUsdcYieldStaysInVault`: spUSDC at 5 % for a year, prime
-flat: alice is paid 99_999_999_998 and 5_000_000_000 USDC worth of spUSDC stays in the vault with
-`totalSupply == 0` and `totalAssets() == 0`.
+### RQ-4 · Info · `pause` freezes redeemers while `take` keeps working (unchanged)
+
+`test_processRedeemQueue_pausedBlocksRedeemsNotTake`: guardian pauses, `processRedeemQueue` and
+`cancelRedeemRequest` revert `SparkPrimeVault/paused`, taker removes all 95_453_269_114 spUSDC, after
+unpause the 99_999_999_998 claim stays queued in full.
+
+### RQ-5 · Info · Notional index, both directions (quantified)
+
+Yield: `test_processRedeemQueue_primeYieldAccruesWhileQueued`, unchanged: a year at 5 % pays the
+queued redeemer 104_999_999_998 (5_000_000_000 more than at request time) out of bob's backing,
+leaving bob's 104_999_999_998 claim on 95_000_000_000 USDC of spUSDC.
+
+Loss (new mirror): `test_processRedeemQueue_realizeLossWhileQueued_escrowTakesLossProRata`: alice and
+bob hold 99_040_518_410 each (`totalAssets` 199_999_999_997); alice is queued. Guardian pauses,
+risk manager calls `realizeLoss(10_000e6)`: chi = floor((199_999_999_997 - 10_000e6) * RAY /
+198_081_036_820) = 0.959203379825079411152892409e27, `totalAssets` 189_999_999_996. The fill pays
+alice 94_999_999_998 instead of 99_999_999_998 and bob's `assetsOf` is 94_999_999_998: the escrow
+takes exactly half of the loss. Because spUSDC was intact in this scenario the vault still holds
+105_000_000_000 USDC worth of spUSDC against bob's 94_999_999_998 claim; a loss realised before the
+capital actually disappears leaves a surplus that `take` can remove and chi never gives back
+(`loss == totalAssets` sets chi to 0; NEWSURFACE proves the brick).
 
 ## (b) Properties that held (each with its test)
 
 1. Single fill never reverts and pays `floor(fill * chi_p / RAY)`, burning exactly
    `ceil(paid * RAY / chi_s)` spUSDC, under random VSRs in [RAY, MAX_VSR], warps up to 5 years,
    random drains and takes: `testFuzz_processRedeemQueue_singleFillNeverReverts` (5000 runs).
-2. Single-fill rounding: `0 <= fill * chi_p - paid * RAY < RAY` and
-   `0 <= burned * chi_s - paid * RAY < chi_s`; spUSDC value given up `< paid + chi_s / RAY + 1`:
-   `testFuzz_processRedeemQueue_singleFillRoundingBounds` (5000 runs).
-3. Batch over-burn is bounded by N-1 wei of spUSDC above the aggregate burn when the batch
-   succeeds: `testFuzz_processRedeemQueue_batchOverburnBoundedByFillsMinusOne`.
-4. Total USDC withdrawn in a batch never exceeds `A` (so `SparkVault/insufficient-liquidity` is
-   unreachable from the queue; only the share-balance revert of RQ-1 is): follows from
-   `sum floor(s_i * chi_p / RAY) <= rem * chi_p / RAY <= A`, checked in
-   `testFuzz_processRedeemQueue_neverPaysMoreThanSharesTimesChi` (`liqBefore - liqAfter == sum payouts`).
-5. Liquidity-bound partial fill (L = 300_000e6): pays 299_999_999_999, leaves 1 wei USDC in
-   spUSDC, request remainder 693_283_628_876, head stays at 0; after liquidity returns the claim
-   binds (699_999_999_999) and the rest pays 699_999_999_998, head 1, vault keeps 1 wei spUSDC:
-   `test_processRedeemQueue_partialFill_spUsdcLiquidityBound`.
-6. Share-bound partial fill (S = 300_000e6 spUSDC): pays 314_289_916_712, burns 299_999_999_999,
-   remainder 679_130_821_283; a 1-wei spUSDC claim converts to 0 prime shares and is a no-op:
-   `test_processRedeemQueue_partialFill_vaultSharesBound`.
+2. Single-fill rounding: `0 <= fill * chi_p - paid * RAY < RAY`, `0 <= burned * chi_s - paid * RAY < chi_s`,
+   spUSDC value given up `< paid + chi_s / RAY + 1`: `testFuzz_processRedeemQueue_singleFillRoundingBounds` (5000).
+3. Batch over-burn bounded by N-1 wei of spUSDC above the aggregate burn when the batch succeeds;
+   revert reason and no state change when it does not: `testFuzz_processRedeemQueue_batchOverburnBoundedByFillsMinusOne` (5000).
+4. Total USDC withdrawn in a batch never exceeds A (`liqBefore - liqAfter == sum payouts`):
+   `testFuzz_processRedeemQueue_neverPaysMoreThanSharesTimesChi` (5000).
+5. Liquidity-bound partial fill (L = 300_000e6): pays 299_999_999_999, remainder 693_283_628_876,
+   head stays 0; after liquidity returns the claim binds and pays 699_999_999_998, head 1, 1 wei
+   spUSDC left: `test_processRedeemQueue_partialFill_spUsdcLiquidityBound`.
+6. Share-bound partial fill (S = 300_000e6): pays 314_289_916_712, burns 299_999_999_999, remainder
+   679_130_821_283; 1 wei spUSDC converts to 0 shares and is a no-op: `test_processRedeemQueue_partialFill_vaultSharesBound`.
 7. FIFO with cancelled entries skipped; partial entry stays at the head; later entries never fill
-   before an earlier open one even when they would fit: `test_processRedeemQueue_fifo_skipsCancelled`,
-   `test_processRedeemQueue_headBlocksLaterSmallerRequests`.
-8. `maxRequests_` honoured exactly (0 is a no-op, values above the queue length clamp);
-   `maxShares_` honoured to the share (q-1 then 11 across two entries); `maxShares_ = 0` and empty
-   queue are no-ops: `test_processRedeemQueue_maxRequests`, `test_processRedeemQueue_maxShares`,
-   `test_processRedeemQueue_maxSharesZero_noop`, `test_processRedeemQueue_emptyQueue_noop`.
-9. Fee: 1 % on 1_000_000e6 shares burns exactly 10_000_000_000, queues 990_000_000_000, pays
-   999_590_890_560 and burns 954_142_182_810 spUSDC; 999_999_999_999 shares also burn
-   10_000_000_000 (rounds up); full balance with fee is accepted (fee 990_405_185 on
-   99_040_518_410); 1-wei request becomes a ghost (F-5, referenced, not re-reported):
-   `test_requestRedeem_feeOnePercent_exactAmounts`, `test_requestRedeem_feeRoundsUp`,
-   `test_requestRedeem_fullBalanceWithFee`, `test_requestRedeem_oneWeiWithFee_ghostEntry_F5`.
-10. 200 users x 5_000e6, 4 batches of 50: every user paid 4_999_999_998, head 200,
-    `pendingRedeemShares == 0`, `balanceOf(vault) == 0`, `totalSupply == 0`, 200 wei spUSDC dust
-    left; 8_046_221 gas for 200 fills, 40_231 gas per fill:
-    `test_processRedeemQueue_200UsersIn4BatchesOf50`.
-11. `availableLiquidAssets() == 0` (drained spUSDC or full `take()`) makes processing a no-op
-    without revert; 1 wei spUSDC returned is still a no-op:
-    `test_processRedeemQueue_zeroLiquidity_noop`, `test_processRedeemQueue_afterFullTake_noop`.
-12. `requestRedeem` reverts `SparkPrimeVault/insufficient-balance` at balance + 1,
-    `SparkPrimeVault/below-minimum` for 0 shares and for 990_405_184 shares when
-    `minWithdraw = 1_000e6` (999_999_999 wei), `SparkPrimeVault/invalid-recipient` for
-    address(0): `test_requestRedeem_revertsInsufficientBalanceBoundary`,
-    `test_requestRedeem_revertsZeroShares`, `test_requestRedeem_minWithdrawBoundary`,
-    `test_requestRedeem_revertsRecipientZero`.
-13. Invariants over random 24-step sequences (deposit, request, cancel, process with random
-    `maxShares_`/`maxRequests_`, drain, return, take, warp with both VSRs > RAY and a 0.1 % fee):
-    `balanceOf(vault) == pendingRedeemShares == sum of open request shares`, every entry before
-    `redeemHead` has 0 shares, `redeemHead <= queue length`:
-    `testFuzz_processRedeemQueue_balanceOfVaultEqualsPendingRedeemShares` (5000 runs).
-14. Every batch pays each recipient exactly `sum floor(filled_i * chi_p / RAY)`, burns exactly
-    the filled shares from `totalSupply`, respects `maxShares_`, and the spUSDC given up is worth
-    at most 1 wei USDC per fill above what was paid:
-    `testFuzz_processRedeemQueue_neverPaysMoreThanSharesTimesChi` (5000 runs).
+   before an earlier open one: `test_processRedeemQueue_fifo_skipsCancelled`, `test_processRedeemQueue_headBlocksLaterSmallerRequests`.
+8. `maxRequests_` honoured exactly (0 no-op, clamps to the queue); `maxShares_` to the share (q-1 then
+   11 across two entries); `maxShares_ = 0` and empty queue are no-ops: `test_processRedeemQueue_maxRequests`,
+   `test_processRedeemQueue_maxShares`, `test_processRedeemQueue_maxSharesZero_noop`, `test_processRedeemQueue_emptyQueue_noop`.
+9. Fee: 1 % on 1_000_000e6 shares burns exactly 10_000_000_000, pays 999_590_890_560;
+   999_999_999_999 shares also burn 10_000_000_000; full balance with fee accepted (fee 990_405_185);
+   1-wei request with fee is a ghost (F-5): `test_requestRedeem_feeOnePercent_exactAmounts`,
+   `test_requestRedeem_feeRoundsUp`, `test_requestRedeem_fullBalanceWithFee`, `test_requestRedeem_oneWeiWithFee_ghostEntry_F5`.
+10. 200 users x 5_000e6 in 4 batches of 50: every user paid 4_999_999_998, head 200,
+    `pendingRedeemShares == balanceOf(vault) == totalSupply == 0`, 200 wei spUSDC dust;
+    8_198_733 gas for 200 fills, 40_993 per fill (round 1: 40_231; the `delete` costs ~760 gas
+    more per fill net of refunds): `test_processRedeemQueue_200UsersIn4BatchesOf50`.
+11. `availableLiquidAssets() == 0` (drained or fully taken) is a no-op without revert, 1 wei spUSDC
+    too: `test_processRedeemQueue_zeroLiquidity_noop`, `test_processRedeemQueue_afterFullTake_noop`.
+12. `requestRedeem` reverts `insufficient-balance` at balance + 1, `invalid-recipient` for
+    `address(0)`; `minRedeem` is in shares: `minRedeem - 1` reverts `below-minimum`, exactly
+    `minRedeem` passes, independent of chi; the minimum is gross of fee (1_000e6 requested at 1 %
+    queues 990_000_000): `test_requestRedeem_revertsInsufficientBalanceBoundary`,
+    `test_requestRedeem_revertsRecipientZero`, `test_requestRedeem_minRedeemBoundary_inShares`.
+    Drift note: 1_000e6 shares = 1_009_687_768 USDC today and 1_060_172_156 USDC after a year at 5 %
+    (+5.0 %); a request worth 1_050e6 USDC (990_405_184 shares) is still rejected then:
+    `test_requestRedeem_minRedeemDriftsInAssetTerms`.
+13. Invariants over random 24-step sequences (deposit, request, zero-share ghost, cancel,
+    `updateRedeemRecipient` by anyone to any entry, process with random `maxShares_`/`maxRequests_`,
+    drain, return, take, warp with both VSRs > RAY and a 0.1 % fee): `balanceOf(vault) ==
+    pendingRedeemShares == sum of open request shares`, every entry before `redeemHead` has 0 shares,
+    `redeemHead <= length`, `balanceOf(vault) + user balances == totalSupply`:
+    `testFuzz_processRedeemQueue_balanceOfVaultEqualsPendingRedeemShares` (5000).
+14. Every batch pays each recipient (snapshotted before the call, since filled entries are deleted)
+    exactly `sum floor(filled_i * chi_p / RAY)`, burns exactly the filled shares from `totalSupply`,
+    respects `maxShares_`, spUSDC given up worth at most 1 wei per fill above what was paid:
+    `testFuzz_processRedeemQueue_neverPaysMoreThanSharesTimesChi` (5000).
+15. (new) Cancelling the head advances `redeemHead` past it and past zero-share entries behind it
+    (0 -> 3 over two ghosts), the entry reads as `(0, 0, 0)` and cannot be cancelled twice, one slot
+    then reaches the next live entry: `test_cancelRedeemRequest_headCancelSkipsGhostsBehindIt`.
+16. (new) Cancelling a non-head entry leaves the head; holes are walked later:
+    `test_cancelRedeemRequest_nonHeadCancelLeavesHead`. Cancelling the only entry sets
+    `redeemHead == length == 1`, processing is a no-op, the next request is at the head:
+    `test_cancelRedeemRequest_lastEntryCancelMovesHeadToLength`.
+17. (new) Partial fill (299_999_999_999 paid), then owner cancels the remainder: exactly
+    693_283_628_876 shares refunded, head 0 -> 2 (past a ghost), the next entry fills with one slot:
+    `test_cancelRedeemRequest_afterPartialFill_refundsRemainderAndAdvancesHead`.
+18. (new) `cancelRedeemRequest(id, address(0))` reverts `invalid-recipient` (closes the C-6 cancel
+    leg): `test_cancelRedeemRequest_revertsRecipientZero`.
+19. (new) A full fill `delete`s the entry (getter `(0, 0, 0)`, cancel reverts `no-request`, slot
+    still counted in the array); a partial fill keeps owner, recipient and remainder:
+    `test_processRedeemQueue_fullFillDeletesEntry`.
+20. (new) `Redeem(owner, recipient, shares, assets)` emitted as `(alice, bob, 99_040_518_410,
+    99_999_999_998)`: `test_processRedeemQueue_emitsRedeemSharesThenAssets`.
 
 ## (c) Unsettled
 
-- RQ-1 frequency numbers come from a Python model at the harness indexes; the on-chain rate
-  depends on the live chi_s/chi_p fractional parts and request-size distribution. The direction
-  (grows with N, zero for N = 1) is proven by the tests.
-- Whether queue-time prime yield paid from other holders' backing (RQ-5) is acceptable is a
-  product decision (I-7); the tests only quantify it.
+- RQ-1 frequency (2 fills 0.05 %, 10 fills 17 %, 50 fills 45 % at the harness indexes) is the
+  round-1 Python model; the code path is unchanged so the numbers carry over, but they were not
+  re-sampled against the merged source.
+- C-2 is proven with a mocked USDC revert; a fork test against real USDC `Blacklistable` is still
+  recommended.
+- `realizeLoss` with `totalSupply == 0` divides by zero and `loss > totalAssets` underflows; both
+  revert (panic) rather than brick, but neither is covered here (NEWSURFACE scope).
+- Whether queue-time prime yield paid from others' backing, and the symmetric surplus left after a
+  `realizeLoss` that precedes the actual capital loss, are acceptable remains a product decision (I-7).
