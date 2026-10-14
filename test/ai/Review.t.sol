@@ -19,10 +19,10 @@ interface ISpUsdc {
 }
 
 // Proof-of-concept tests for the review findings against mainnet spUSDC. Each test name carries
-// the finding id. Ported to `refactor/more-simplifying` (round 2): src/ is UNPATCHED upstream,
-// so F-1 asserts the vulnerable behaviour again (guardian-chosen recipient, now paid on
-// settlement), F-2 follows the new cancel semantics (cancel succeeds, settlement starves) and
-// F-3 asserts the fixed loop. Not executed in this environment (no RPC); compiled only.
+// the finding id. Round 4 (bf93b0d): F-1 is fixed upstream (guardian cancel must refund the
+// owner; `cancelRedeemRequest` removed), so the F-1 test now asserts the fix. F-2 follows the
+// cancel semantics (cancel succeeds, settlement starves) and F-3 asserts the fixed loop. Not
+// executed in this environment (no RPC); compiled only.
 contract ReviewTest is TestBase {
 
     IERC20Full internal usdcT = IERC20Full(address(usdc));
@@ -68,32 +68,35 @@ contract ReviewTest is TestBase {
     }
 
     /*******************************************************************************************/
-    /*** F-1: guardian can redirect a cancelled request to any recipient (UNPATCHED upstream) ***/
+    /*** F-1 (FIXED at bf93b0d): guardian cancel can only refund the request owner           ***/
     /*******************************************************************************************/
 
-    function test_F1_guardianCancelDepositRedirectsFunds() public {
+    function test_F1_guardianCancelDepositRefundsOwnerOnly() public {
         _deposit(alice, 1_000_000e6);              // fills capacity exactly
         uint256 id = _deposit(bob, 100_000e6);     // queued (capacity full)
 
         assertGt(vault.pendingDepositSavingsShares(), 0);
 
         vm.prank(guardian);
-        uint256 cancelId = vault.requestDepositCancellation(id, thief);
+        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vault.requestDepositCancellation(id, thief);
 
-        // The cancelled entry records the owner (bob) but pays `recipient_` (thief).
+        vm.prank(guardian);
+        uint256 cancelId = vault.requestDepositCancellation(id, bob);
+
         (address owner, address recipient, uint256 shares) = _cancelledDepositRequest(cancelId);
         assertEq(owner,     bob);
-        assertEq(recipient, thief);
+        assertEq(recipient, bob);
         assertGt(shares,    0);
 
         _settleCancels();
 
-        // VULNERABLE: the refund lands with the guardian-chosen recipient.
-        assertApproxEqAbs(usdcT.balanceOf(thief), 100_000e6, 2);
-        assertEq(usdcT.balanceOf(bob), 900_000e6);
+        assertEq(usdcT.balanceOf(thief), 0);
+        assertApproxEqAbs(usdcT.balanceOf(bob), 1_000_000e6, 2);
     }
 
-    function test_F1_guardianCancelRedeemRedirectsShares() public {
+    // Redeems have no cancel entry point any more; the selector is not in the ABI.
+    function test_F1_cancelRedeemRequestRemoved() public {
         _deposit(alice, 500_000e6);
         uint256 shares = vault.balanceOf(alice);
 
@@ -101,11 +104,12 @@ contract ReviewTest is TestBase {
         uint256 id = vault.requestRedeem(shares, alice);
 
         vm.prank(guardian);
-        vault.cancelRedeemRequest(id, thief);
-
-        // VULNERABLE: escrowed shares go to the guardian-chosen recipient.
-        assertEq(vault.balanceOf(thief), shares);
-        assertEq(vault.balanceOf(alice), 0);
+        (bool ok, ) = address(vault).call(
+            abi.encodeWithSignature("cancelRedeemRequest(uint256,address)", id, thief)
+        );
+        assertFalse(ok);
+        assertEq(vault.balanceOf(thief), 0);
+        assertEq(vault.balanceOf(address(vault)), shares);
     }
 
     /*******************************************************************************************/

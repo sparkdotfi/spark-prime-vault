@@ -20,11 +20,18 @@ contract UninitializedERC1967Proxy is ERC1967Proxy {
 
 /// @dev Setter bounds (what each role can and cannot do once its key is compromised), setter
 ///      validation gaps, setter events, `realizeLoss`, `realizeGain` (round 3), `take`,
-///      `initialize`, and ERC20/permit basics, on `refactor/more-simplifying` @ ff828d2.
+///      `initialize`, and ERC20/permit basics, on `fix/update-guardian-transfer` @ bf93b0d.
+///      Round 4 adds the request-event exactness checks and the `realizeGain` front-run note.
 contract AdminTest is LocalTestBase {
 
     event Approval(address indexed owner, address indexed spender, uint256 value);
     event Transfer(address indexed from, address indexed to, uint256 value);
+    event DepositCancellationRequest(uint256 indexed depositRequestId, uint256 cancelRequestId);
+    event DepositCancellationRecipientUpdated(uint256 indexed requestId, address indexed recipient);
+    event DepositRecipientUpdated(uint256 indexed requestId, address indexed recipient);
+    event RedeemRecipientUpdated(uint256 indexed requestId, address indexed recipient);
+    event Paused();
+    event Unpaused();
     event CapacitySet(uint256 capacity);
     event GainRealized(uint192 chi, uint256 gain);
     event LossRealized(uint192 chi, uint256 loss);
@@ -818,6 +825,212 @@ contract AdminTest is LocalTestBase {
         assertGt(vault.chi(), chi_);
         assertGe(vault.totalAssets() + 1, totalAssets_ + gain_);
         assertLe(vault.totalAssets(),     totalAssets_ + gain_);
+    }
+
+    // Round 4 (upstream TODO at src/SparkPrimeVault.sol:290): `realizeGain` is front-runnable.
+    // The gain is spread pro rata over whoever holds shares at that block, so a depositor who
+    // enters right before the call captures its share of the gain and can queue a redeem right
+    // after. With alice and bob holding equal shares, bob's late deposit takes half of a gain
+    // that was earned before he arrived. Pause does not help: the admin spell is public, and
+    // `realizeGain` is not gated on `paused` anyway. Pinned as data, owner-acknowledged.
+    function test_realizeGain_frontRunnable() public {
+        _deposit(alice, 1_000e6);
+        uint256 aliceAssetsBefore_ = vault.assetsOf(alice);
+
+        // Bob sees the realizeGain transaction in the mempool and deposits first.
+        _deposit(bob, 1_000e6);
+        assertApproxEqAbs(vault.balanceOf(bob), vault.balanceOf(alice), 1);
+
+        vm.prank(admin);
+        vault.realizeGain(100e6);
+
+        uint256 aliceGain_ = vault.assetsOf(alice) - aliceAssetsBefore_;
+        uint256 bobGain_   = vault.assetsOf(bob) - 1_000e6;
+        assertApproxEqAbs(aliceGain_, 50e6, 2);
+        assertApproxEqAbs(bobGain_,   50e6, 2);
+
+        // Bob can leave with the gain in the same block; nothing requires a holding period.
+        uint256 bobShares_ = vault.balanceOf(bob);
+        vm.prank(bob);
+        vault.requestRedeem(bobShares_, bob);
+        _processRedeems(type(uint256).max, 10);
+        assertApproxEqAbs(usdc.balanceOf(bob), 1_050e6, 3);
+    }
+
+    // R4-1 (Low, admin fat-finger, irrecoverable in-contract): `realizeGain` has no bound on the
+    // resulting chi. Every mutating path calls `drip()`, and `drip()` computes
+    // `_rpow(vsr, dt) * chi` in uint256: with vsr == RAY that overflows once chi > ~1.16e50.
+    // After such a gain the vault works for the rest of the block, then every drip reverts on
+    // the next second: deposits, redeems, queue processing, setVSR, realizeLoss (drips first) and
+    // realizeGain itself. Only `upgradeToAndCall` to a patched implementation can recover it.
+    function test_realizeGain_hugeGainBricksDripNextBlock() public {
+        _deposit(alice, 1_000e6);
+        uint256 supply_ = vault.totalSupply();
+
+        // chi lands near 1e35 * RAY / 1e9 = 1e53: inside uint192 (6.3e57), above the drip bound.
+        vm.prank(admin);
+        vault.realizeGain(1e35);
+        assertGt(uint256(vault.chi()), 1.16e50);
+        assertLt(uint256(vault.chi()), type(uint192).max);
+
+        // Same timestamp: drip short-circuits, so realizeLoss could still undo it in-block.
+        vault.drip();
+        assertEq(vault.totalAssets(), supply_ * vault.chi() / RAY);
+
+        skip(1);
+
+        vm.expectRevert(stdError.arithmeticError);
+        vault.drip();
+        vm.expectRevert(stdError.arithmeticError);
+        vault.nowChi();
+        vm.expectRevert(stdError.arithmeticError);
+        vault.totalAssets();
+
+        _fund(bob, 1e6);
+        vm.prank(bob);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.requestDeposit(1e6, bob);
+
+        vm.prank(alice);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.requestRedeem(1e6, alice);
+
+        vm.prank(rebalancer);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.processPendingRedeems(type(uint256).max, 1);
+
+        vm.prank(setter);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.setVSR(RAY);
+
+        _pause();
+        vm.prank(riskManager);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.realizeLoss(1);
+
+        vm.prank(admin);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.realizeGain(1);
+
+        // Not even `take` is affected, so the backing can still leave; the holders cannot.
+        uint256 bal_ = _vaultSpUsdc();
+        vm.prank(taker);
+        vault.take(bal_);
+        assertEq(_vaultSpUsdc(), 0);
+    }
+
+    // R4-2 (Low, admin fat-finger): the `uint192` cast in `realizeGain` truncates silently. A
+    // gain that puts the full-precision chi at `2^192 + RAY` is accepted, `GainRealized` is
+    // emitted, and the stored chi wraps to ~RAY: below the previous chi, so every holder loses
+    // value on a call named "gain". `realizeLoss` guards the other direction with a floor.
+    function test_realizeGain_uint192TruncationLowersChi() public {
+        _deposit(alice, 1_000e6);
+        uint256 supply_      = vault.totalSupply();
+        uint256 totalAssets_ = vault.totalAssets();
+        uint192 chiBefore_   = vault.chi();
+        assertGt(chiBefore_, RAY);
+
+        uint256 target_ = (uint256(type(uint192).max) + 1) + RAY;
+        uint256 gain_   = (target_ * supply_ / RAY) - totalAssets_ + 1;
+
+        vm.prank(admin);
+        vault.realizeGain(gain_);
+
+        assertLt(vault.chi(), chiBefore_);
+        assertApproxEqAbs(uint256(vault.chi()), RAY, 1e18);  // wrapped to ~RAY, not 2^192+RAY
+        assertLt(vault.totalAssets(), totalAssets_);
+        assertLt(vault.assetsOf(alice), 1_000e6);
+    }
+
+    // `realizeGain` while paused is accepted (not gated), while `realizeLoss` requires paused.
+    // Both drip first and both emit nothing but `Drip` + their own event.
+    function test_realizeGain_whilePausedNoPauseEventSideEffects() public {
+        _deposit(alice, 1_000e6);
+        _pause();
+        vm.prank(admin);
+        vm.recordLogs();
+        vault.realizeGain(1e6);
+        assertTrue(vault.paused());
+        assertEq(vm.getRecordedLogs().length, 1);  // GainRealized only (no time passed)
+    }
+
+    /**********************************************************************************************/
+    /*** Request events (round 4): exact signatures and values                                 ***/
+    /**********************************************************************************************/
+
+    function test_requestDepositCancellation_eventExact() public {
+        _deposit(alice, 1_000e6);
+        _setCapacity(vault.totalSupply());
+        uint256 id1_ = _deposit(bob, 100e6);
+        uint256 id2_ = _deposit(bob, 50e6);
+
+        vm.prank(bob);
+        vm.expectEmit(true, true, true, true, address(vault));
+        emit DepositCancellationRequest(id2_, 0);
+        uint256 c0_ = vault.requestDepositCancellation(id2_, bob);
+        assertEq(c0_, 0);
+
+        vm.prank(guardian);
+        vm.expectEmit(true, true, true, true, address(vault));
+        emit DepositCancellationRequest(id1_, 1);
+        uint256 c1_ = vault.requestDepositCancellation(id1_, bob);
+        assertEq(c1_, 1);
+    }
+
+    function test_updateRecipient_eventsExact() public {
+        _deposit(alice, 1_000e6);
+        uint256 redId_ = _requestRedeem(alice, 100e6);
+        _setCapacity(vault.totalSupply());
+        uint256 depId_  = _deposit(bob, 100e6);
+        uint256 dep2Id_ = _deposit(bob, 50e6);
+        vm.prank(bob);
+        uint256 cancelId_ = vault.requestDepositCancellation(dep2Id_, bob);
+
+        address payout_ = makeAddr("payout");
+
+        vm.prank(bob);
+        vm.expectEmit(true, true, true, true, address(vault));
+        emit DepositRecipientUpdated(depId_, payout_);
+        vault.updateDepositRecipient(depId_, payout_);
+
+        vm.prank(bob);
+        vm.expectEmit(true, true, true, true, address(vault));
+        emit DepositCancellationRecipientUpdated(cancelId_, payout_);
+        vault.updateDepositCancellationRecipient(cancelId_, payout_);
+
+        vm.prank(alice);
+        vm.expectEmit(true, true, true, true, address(vault));
+        emit RedeemRecipientUpdated(redId_, payout_);
+        vault.updateRedeemRecipient(redId_, payout_);
+    }
+
+    // `pause` / `unpause` emit argument-less events; nothing else is logged.
+    function test_pauseUnpause_eventsExact() public {
+        vm.prank(guardian);
+        vm.recordLogs();
+        vault.pause();
+        assertEq(vm.getRecordedLogs().length, 1);
+
+        vm.prank(guardian);
+        vm.expectEmit(address(vault));
+        emit Paused();
+        vault.pause();
+
+        vm.prank(admin);
+        vm.expectEmit(address(vault));
+        emit Unpaused();
+        vault.unpause();
+    }
+
+    // Info (round 4): `CancelRedeemRequest(uint256,uint256)` is still declared but no code path
+    // emits it any more. Asserted through the ABI: the event is in the contract's event list
+    // (it would be in the ABI JSON) while the function that used to emit it is gone.
+    function test_cancelRedeemRequest_selectorGone() public {
+        (bool ok_, bytes memory ret_) = address(vault).call(
+            abi.encodeWithSignature("cancelRedeemRequest(uint256,address)", 0, alice)
+        );
+        assertFalse(ok_);
+        assertEq(ret_.length, 0);  // No fallback, no receive: plain selector miss
     }
 
     /**********************************************************************************************/
