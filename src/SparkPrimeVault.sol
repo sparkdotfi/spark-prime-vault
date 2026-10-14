@@ -116,6 +116,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     event CapacitySet(uint256 capacity);
 
+    event GainRealized(uint192 chi, uint256 loss);
+
     event LossRealized(uint192 chi, uint256 loss);
 
     event Drip(uint192 chi, uint256 diff);
@@ -288,6 +290,17 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         require(minVSR_ <= maxVSR_, "SparkPrimeVault/min-vsr-gt-max-vsr");
 
         emit VSRBoundsSet(minVSR = minVSR_, maxVSR = maxVSR_);
+    }
+
+    function realizeGain(uint256 gain_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(paused,    "SparkPrimeVault/not-paused");
+        require(gain_ > 0, "SparkPrimeVault/invalid-loss");
+
+        drip();
+
+        uint192 chi_ = uint192(((totalAssets() + gain_) * RAY) / totalSupply);
+
+        emit GainRealized(chi = chi_, gain_);
     }
 
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
