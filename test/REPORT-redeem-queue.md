@@ -1,3 +1,48 @@
+# Round 3 (ff828d2)
+
+Worker: QUEUES. File: `test/RedeemQueue.t.sol` (`RedeemQueueTest is LocalTestBase`), branch `campaign-v3/queues`, source `src/SparkPrimeVault.sol` at upstream `refactor/more-simplifying` `ff828d2`.
+Result: 47 tests, 47 pass (42 unit, 5 fuzz at 5000 runs). The three `test_BUG_*` tests still pass by asserting the revert or the exact buggy state. Harness indexes and reference conversions are unchanged from round 2.
+
+Line remap (round-2 numbers in the sections below -> ff828d2): `minRedeem` decl 195 -> 199; `requestRedeem` 481-507 (recipient :486, `minRedeem` :487); `cancelRedeemRequest` 506-532 -> 509-535 (`delete` :521, head walk :527-532); `updateRedeemRecipient` 534-538 -> 537-546; `realizeLoss` 351-360 -> 369-385; `realizeGain` (new) 297-309; `_processRedeemQueue` 782-810 -> 819-853 (budget :822, loop :827-850, `continue` :832, `withdraw` :845, `delete` :849); `Redeem` event 110-115; `take` 329-338.
+
+## Fixed since round 2
+
+- RQ-8 (NEWSURFACE's High) is fixed: `updateRedeemRecipient` (`src/SparkPrimeVault.sol:537-546`) requires a non-zero recipient (:538), a live entry (`no-request`, :542) and `msg.sender == request_.owner` (`not-authorized`, :543). Consequence for C-2: the stranger unblock-and-steal path is gone, the owner can self-rescue, and the guardian cancel is the only third-party unblock. `test_updateRedeemRecipient_anyoneUnblocksBlacklistedHeadAndTakesThePayout` split into `test_updateRedeemRecipient_strangerCannotRepointBlacklistedHead` (mallory, bob behind her and the guardian all revert `not-authorized`; entry unchanged; queue still reverts on the blacklist; guardian cancel returns `99_040_518_410` shares to alice, head 1, bob paid `99_999_999_998`, mallory 0) and `test_updateRedeemRecipient_ownerSelfRescuesBlacklistedHead` (alice repoints to carol, `RedeemRecipientUpdated(0, carol)`, `Redeem(alice, carol, 99_040_518_410, 99_999_999_998)`, carol and bob paid `99_999_999_998` each, head 2). `test_updateRedeemRecipient_deadEntryAndOutOfRange`: a filled entry reverts `no-request` for the former owner and a stranger, a cancelled entry reverts `no-request` for its owner, `id + 1` panics 0x32. The random-ops fuzz repoints only through the entry owner and asserts `not-authorized` for a non-owner and `no-request` for a dead entry (5000 runs).
+- `realizeLoss` (`:369-385`) now requires `0 < loss < totalAssets` (:376) and `totalSupply != 0` (:380): the `loss == totalAssets` brick and the zero-supply division from the round-2 unsettled list are closed. RQ-5's loss test used `10_000e6` of `199_999_999_997` and is unaffected (same chi `0.959203379825079411152892409e27`, alice paid `94_999_999_998`).
+
+## Persisting (re-confirmed at ff828d2)
+
+- RQ-1 (= C-1) · Medium · multi-request batch reverts on spUSDC ceil-rounding: budget once at `src/SparkPrimeVault.sol:822`, `spUSDC.withdraw(assets_)` per fill at `:845`. `test_BUG_processRedeemQueue_batchRevertsOnCeilRounding_vaultSharesBound` (2 x 520_260 shares, `SparkVault/insufficient-balance`, nothing moves, one per call works) and `..._liquidityBound` (3 requests summing to `990_405_184_108`, batch reverts, 2 + 1 works) pass by asserting the revert; the payout fuzz still reaches the revert branch.
+- RQ-6 (= C-2) · Medium · blacklisted recipient at the head blocks the queue: `:845` inside the strict FIFO loop (`:827-850`). `test_BUG_blacklistedRecipientBlocksRedeemQueue` passes by asserting the revert on `(max, 10)`, `(max, 1)` and `(1, 1)`; the guardian cancel unblocks, the attacker re-jams for gas. Round 3 narrows the unblock set to owner-or-guardian (see Fixed).
+- RQ-7 · Low · `requestRedeem(0)` ghosts: `:487` with `minRedeem` 0 (`:199`). `test_BUG_requestRedeem_zeroSharesCreatesGhostEntry`.
+- RQ-2 · Low · USDC to `recipient == address(vault)` stuck, `:486` only rejects zero. `test_processRedeemQueue_recipientIsVault_usdcStuck`, `..._recipientIsSpUsdc_donatesToSpUsdc`.
+- RQ-3 · Info · non-head holes and ghosts consume `maxRequests_` (`:825`, `:832`); head cancels do not (`:527`). `test_processRedeemQueue_cancelledEntryCountsTowardMaxRequests`.
+- RQ-4 · Info · pause freezes redeemers, `take` (`:329-338`) keeps working. `test_processRedeemQueue_pausedBlocksRedeemsNotTake`.
+- RQ-5 · Info · notional index both directions; the loss leg unchanged (`:369-385`), the yield leg unchanged.
+
+## New gain/loss observations
+
+- RQ-9 · Info · A queued redeemer is paid MORE after `realizeGain` (`src/SparkPrimeVault.sol:297-309`, DEFAULT_ADMIN, no pause requirement, `chi = (totalAssets + gain) * RAY / totalSupply`, event `GainRealized(chi, gain)` :308). Escrowed shares are in `totalSupply`, so the gain is pro rata with holders. `test_processRedeemQueue_realizeGainWhileQueued_escrowSharesGainProRata`: alice and bob hold `99_040_518_410` each (`totalAssets` `199_999_999_997`), alice queued; `realizeGain(10_000e6)` unpaused sets chi `1.060172156650366224592543507e27`, `totalAssets` `209_999_999_996`; the fill emits `Redeem(alice, alice, 99_040_518_410, 104_999_999_998)` and pays alice `104_999_999_998` (+`5_000_000_000`), bob's `assetsOf` is `104_999_999_998`. The backing did not grow: the vault burns `100_225_932_569` spUSDC and keeps `90_680_605_659` worth `95_000_000_000` USDC against bob's `104_999_999_998` claim. A gain realised before the capital arrives is paid to the first redeemer out of the common spUSDC, exactly the RQ-5 yield shape; if the gain never arrives the last redeemer is short by it.
+- Asymmetry: `realizeLoss` needs `paused` and `loss < totalAssets`; `realizeGain` needs neither pause nor an upper bound, so a gain can land between a `requestRedeem` and its fill in the same block. Factual only; the sandwich is ADVERSARIAL's.
+
+## Properties held (round 3)
+
+Properties 1-20 of the round-2 section below re-held on ff828d2 with the same exact values (5000 fuzz runs), with property 13 restated: the random-ops fuzz now repoints only via the entry owner and asserts the two new reverts. New:
+
+21. Only the entry owner can repoint a live redeem; the recipient, a stranger and the guardian get `not-authorized`; the entry is unchanged after the attempts. `test_updateRedeemRecipient_strangerCannotRepointBlacklistedHead`.
+22. The owner repoint of a blacklisted head unblocks the queue in one pass and pays the new recipient the full `floor(shares * chi_p / RAY)`. `test_updateRedeemRecipient_ownerSelfRescuesBlacklistedHead`.
+23. Dead entries (filled or cancelled) reject repoints with `no-request` for every caller; past-the-end panics 0x32. `test_updateRedeemRecipient_deadEntryAndOutOfRange`.
+24. A realised gain of `g` on `n` equal holders (escrow included) raises each claim by exactly `g / n` to the wei, the queued redeemer's payout included. `test_processRedeemQueue_realizeGainWhileQueued_escrowSharesGainProRata`.
+
+## Unsettled
+
+- RQ-1 frequency numbers (2 fills 0.05%, 10 fills 17%, 50 fills 45%) are still the round-1 Python model; the code path is byte-for-byte the round-2 logic.
+- C-2 is proven with a mocked USDC revert; a fork test against real USDC `Blacklistable` is still recommended.
+- `realizeGain` has no upper bound and no pause requirement; whether a gain should be realisable with an open redeem queue, and the ordering between `realizeGain` and `processRedeemQueue` in one block, are ADVERSARIAL's.
+- Whether queue-time payouts funded from others' backing (yield, loss surplus, realised gain) are acceptable remains a product decision (I-7).
+
+---
+
 # Redeem-queue campaign report, round 2 (`test/RedeemQueue.t.sol`)
 
 Branch `campaign-v2/redeem-queue`, `src/SparkPrimeVault.sol` from upstream `refactor/more-simplifying`
