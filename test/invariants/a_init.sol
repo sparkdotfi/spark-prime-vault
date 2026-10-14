@@ -1,0 +1,234 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+pragma solidity ^0.8.34;
+
+import { Test, console } from "../../lib/forge-std/src/Test.sol";
+
+import { SparkVault }      from "../lib/spusdc/SparkVault.sol";
+import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
+
+import { MockUSDC } from "../LocalTestBase.t.sol";
+
+// Handler base for the spPRIME invariant campaign. Holds the actors (read from the roles granted
+// by `LocalTestBase`), N users, and the ghost bookkeeping every invariant reads.
+//
+// Conventions shared by every handler flow:
+//   - every input is bounded and every action that would revert is skipped (fail_on_revert=true);
+//   - `vm.startPrank`/`vm.stopPrank` only, never `vm.prank`;
+//   - users are never the vault, the takers or any role holder;
+//   - transfers never target the vault (invariant B relies on it; `vaultDonations` flags it).
+contract Init is Test {
+
+    uint256 constant RAY = 1e27;
+    uint256 constant WAD = 1e18;
+
+    uint256 constant ONE_PCT_VSR   = 1.000000000315522921573372069e27;
+    uint256 constant FOUR_PCT_VSR  = 1.000000001243680656318820312e27;
+    uint256 constant FIVE_PCT_VSR  = 1.000000001547125957863212448e27;
+    uint256 constant TEN_PCT_VSR   = 1.000000003022265980097387650e27;
+    uint256 constant FORTY_PCT_VSR = 1.000000010669464688489416886e27;
+    uint256 constant MAX_VSR       = 1.000000021979553151239153027e27;
+
+    bytes32 constant DEFAULT_ADMIN_ROLE = 0x00;
+    bytes32 constant GUARDIAN_ROLE      = keccak256("GUARDIAN_ROLE");
+    bytes32 constant REBALANCER_ROLE    = keccak256("REBALANCER_ROLE");
+    bytes32 constant RISK_MANAGER_ROLE  = keccak256("RISK_MANAGER_ROLE");
+    bytes32 constant SETTER_ROLE        = keccak256("SETTER_ROLE");
+    bytes32 constant TAKER_ROLE         = keccak256("TAKER_ROLE");
+
+    uint256 constant MAX_DEPOSIT = 1_000_000_000e6;  // 1bn USDC per request
+
+    MockUSDC        public usdc;
+    SparkVault      public spUsdc;
+    SparkPrimeVault public vault;
+
+    // spPRIME actors
+    address public admin;
+    address public guardian;
+    address public rebalancer;
+    address public riskManager;
+    address public setter;
+    address public taker;
+
+    // spUSDC actors
+    address public spSetter;
+    address public spTaker;
+
+    /**********************************************************************************************/
+    /*** Users                                                                                  ***/
+    /**********************************************************************************************/
+
+    uint256 public constant N = 6;
+
+    address[N] public users;
+
+    /**********************************************************************************************/
+    /*** Ghost bookkeeping                                                                      ***/
+    /**********************************************************************************************/
+
+    // USDC level
+    uint256 public totalUsdcMinted;        // every USDC wei ever minted by the handler
+    uint256 public usersDepositedUsdc;     // USDC users pushed into requestDeposit
+    uint256 public spUsdcYieldMinted;      // USDC minted straight into spUSDC (returned liquidity)
+    uint256 public takerInjectedUsdc;      // USDC minted for the taker to mint spUSDC it returns
+
+    mapping (address user => uint256) public depositedUsdc;
+
+    // spUSDC level
+    uint256 public takerOutstandingSpUsdc; // spUSDC taken by TAKER_ROLE and not yet returned
+    uint256 public takerReturnedSpUsdc;
+
+    // spPRIME share provenance per user (invariant J)
+    mapping (address user => uint256) public ghostMinted;
+    mapping (address user => uint256) public ghostTransferIn;
+    mapping (address user => uint256) public ghostTransferOut;
+    mapping (address user => uint256) public ghostEscrowed;    // requestRedeem, fee included
+    mapping (address user => uint256) public ghostRefunded;    // cancelRedeemRequest
+
+    // Capacity / chi / fills
+    bool    public mintedAboveCapacity;    // invariant F
+    uint256 public lastChi;                // invariant G
+    uint256 public depositFills;           // entries touched by a deposit fill (incl. partial)
+    uint256 public redeemFills;            // entries touched by a redeem fill (incl. partial)
+    uint256 public zeroShareFills;         // F-4: spUSDC consumed, 0 shares minted
+    bool    public rateOrderBroken;        // spUSDC VSR < spPRIME VSR at some point (invariant H)
+    bool    public vaultDonations;         // spPRIME transferred to the vault itself (never set)
+
+    // Queue ghosts
+    uint256 public depositQueueLength;     // only the handler pushes entries
+    uint256 public redeemQueueLength;
+    uint256 public ghostDepositEntries;    // F-5: zero-amount deposit requests
+    uint256 public ghostRedeemEntries;     // F-5: redeem requests fully eaten by the fee
+    uint256 public cancelDepositBlockedF2; // cancels skipped because spUSDC backing was spent
+
+    // Revert observations (the handler wraps calls the contract itself may make revert)
+    uint256 public redeemProcessReverts;       // "SparkVault/insufficient-balance"
+    uint256 public redeemProcessRevertsOther;  // anything else (must stay 0)
+    string  public lastRedeemProcessRevert;
+
+    // Call counts per handler function
+    mapping (string fn => uint256) public calls;
+
+    string[] public callNames;
+
+    /**********************************************************************************************/
+    /*** Setup                                                                                  ***/
+    /**********************************************************************************************/
+
+    constructor(address vault_) {
+        vault  = SparkPrimeVault(vault_);
+        spUsdc = SparkVault(vault.savings());
+        usdc   = MockUSDC(spUsdc.asset());
+
+        admin       = vault.getRoleMember(DEFAULT_ADMIN_ROLE, 0);
+        guardian    = vault.getRoleMember(GUARDIAN_ROLE,      0);
+        rebalancer  = vault.getRoleMember(REBALANCER_ROLE,    0);
+        riskManager = vault.getRoleMember(RISK_MANAGER_ROLE,  0);
+        setter      = vault.getRoleMember(SETTER_ROLE,        0);
+        taker       = vault.getRoleMember(TAKER_ROLE,         0);
+
+        spSetter = spUsdc.getRoleMember(SETTER_ROLE, 0);
+        spTaker  = spUsdc.getRoleMember(TAKER_ROLE,  0);
+
+        for (uint256 i = 0; i < N; i++) {
+            users[i] = makeAddr(string(abi.encodePacked("user", vm.toString(i))));
+        }
+
+        lastChi = vault.nowChi();
+    }
+
+    /**********************************************************************************************/
+    /*** Shared helpers                                                                         ***/
+    /**********************************************************************************************/
+
+    modifier counted(string memory name_) {
+        if (calls[name_] == 0) callNames.push(name_);
+        calls[name_]++;
+        _;
+        _chiCheck();
+    }
+
+    function _chiCheck() internal {
+        uint256 nowChi_ = vault.nowChi();
+        assertGe(nowChi_, lastChi, "handler: chi decreased");
+        lastChi = nowChi_;
+    }
+
+    function getRandomUser(uint256 userIndex) internal view returns (address user) {
+        return users[_bound(userIndex, 0, N - 1)];
+    }
+
+    function callNamesLength() external view returns (uint256) {
+        return callNames.length;
+    }
+
+    // Snapshot of every user's share balance, used to attribute mints (invariant J).
+    function _balances() internal view returns (uint256[N] memory bals) {
+        for (uint256 i = 0; i < N; i++) bals[i] = vault.balanceOf(users[i]);
+    }
+
+    function _attributeMints(uint256[N] memory before) internal {
+        for (uint256 i = 0; i < N; i++) {
+            uint256 after_ = vault.balanceOf(users[i]);
+            assertGe(after_, before[i], "handler: balance fell during a mint-only action");
+            ghostMinted[users[i]] += after_ - before[i];
+        }
+    }
+
+    // Records whether a mint-only action pushed totalSupply above maxCapacity (invariant F).
+    function _capacityCheck(uint256 supplyBefore) internal {
+        uint256 supplyAfter = vault.totalSupply();
+        if (supplyAfter > supplyBefore && supplyAfter > vault.maxCapacity()) {
+            mintedAboveCapacity = true;
+        }
+    }
+
+    /**********************************************************************************************/
+    /*** Queue snapshots (fill counting)                                                        ***/
+    /**********************************************************************************************/
+
+    function _snapshotDepositQueue(uint256 head) internal view returns (uint256[] memory shares) {
+        shares = new uint256[](depositQueueLength - head);
+        for (uint256 i = head; i < depositQueueLength; i++) {
+            (, , shares[i - head]) = vault.depositQueue(i);
+        }
+    }
+
+    function _snapshotRedeemQueue(uint256 head) internal view returns (uint256[] memory shares) {
+        shares = new uint256[](redeemQueueLength - head);
+        for (uint256 i = head; i < redeemQueueLength; i++) {
+            (, , shares[i - head]) = vault.redeemQueue(i);
+        }
+    }
+
+    // Counts deposit-queue entries whose `shares` shrank, and zero-share fills (F-4). Only entries
+    // in `sharesBefore` (those that existed at the snapshot) are compared.
+    function _countDepositFills(
+        uint256 head,
+        uint256[] memory sharesBefore,
+        uint256 supplyBefore
+    ) internal {
+        uint256 minted = vault.totalSupply() - supplyBefore;
+        uint256 consumed;
+        uint256 lastConsumed;
+        for (uint256 i = 0; i < sharesBefore.length; i++) {
+            (, , uint256 s) = vault.depositQueue(head + i);
+            if (s < sharesBefore[i]) {
+                depositFills++;
+                lastConsumed = sharesBefore[i] - s;
+                consumed    += lastConsumed;
+            }
+        }
+        if (consumed == 0) return;
+        if (minted == 0) { zeroShareFills++; return; }
+        // Only the last touched entry can be a dust fill (remaining_ is exhausted on it).
+        if (vault.convertToShares(spUsdc.convertToAssets(lastConsumed)) == 0) zeroShareFills++;
+    }
+
+    function _countRedeemFills(uint256 head, uint256[] memory sharesBefore) internal {
+        for (uint256 i = 0; i < sharesBefore.length; i++) {
+            (, , uint256 s) = vault.redeemQueue(head + i);
+            if (s < sharesBefore[i]) redeemFills++;
+        }
+    }
+
+}
