@@ -62,6 +62,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     event Transfer(address indexed from, address indexed to, uint256 value);
 
+    event TotalAssetsAdjusted(uint192 chi, int256 deltaTotalAssets);
+
     event DepositRequest(
         address indexed owner,
         address indexed recipient,
@@ -114,10 +116,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     event Referral(uint16 indexed referral, address indexed recipient, uint256 assets);
 
     event CapacitySet(uint256 capacity);
-
-    event GainRealized(uint192 chi, uint256 gain);
-
-    event LossRealized(uint192 chi, uint256 loss);
 
     event Drip(uint192 chi, uint256 diff);
 
@@ -264,6 +262,25 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     /*** Admin external functions                                                               ***/
     /**********************************************************************************************/
 
+    function adjustTotalAssets(int256 deltaTotalAssets_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(paused,                 "SparkPrimeVault/not-paused");
+        require(deltaTotalAssets_ != 0, "SparkPrimeVault/delta-total-assets-zero");
+
+        drip();
+
+        int256 totalAssets_ = int256(totalAssets()) + deltaTotalAssets_;
+
+        require(totalAssets_ > 0, "SparkPrimeVault/loss-too-high");
+
+        // NOTE: Assuming totalSupply is not zero
+        uint256 updatedChi_ = uint256(totalAssets_) * RAY / totalSupply;
+
+        require(updatedChi_ != 0,                 "SparkPrimeVault/chi-too-low");
+        require(updatedChi_ <= type(uint192).max, "SparkPrimeVault/chi-too-high");
+
+        emit TotalAssetsAdjusted(chi = uint192(updatedChi_), deltaTotalAssets_);
+    }
+
     function setCapacity(uint256 capacity_) external onlyRole(DEFAULT_ADMIN_ROLE) {
         emit CapacitySet(maxCapacity = capacity_);
     }
@@ -287,23 +304,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         require(minVSR_ <= maxVSR_, "SparkPrimeVault/min-vsr-gt-max-vsr");
 
         emit VSRBoundsSet(minVSR = minVSR_, maxVSR = maxVSR_);
-    }
-
-    // TODO: This is front-runnable since the spell is the admin and the spell payload is deployed
-    //       (and is therefore public) before the guardian has a chance to pause. And even then,
-    //       the pause window would be unreasonably long.
-    function realizeGain(uint256 gain_) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(gain_ > 0, "SparkPrimeVault/invalid-gain");
-
-        drip();
-
-        uint256 totalSupply_ = totalSupply;
-
-        require(totalSupply_ != 0, "SparkPrimeVault/no-shares");
-
-        uint192 chi_ = uint192(((totalAssets() + gain_) * RAY) / totalSupply_);
-
-        emit GainRealized(chi = chi_, gain_);
     }
 
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -362,24 +362,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     function setRedeemFeeRate(uint256 feeRate_) external onlyRole(RISK_MANAGER_ROLE) {
         require(feeRate_ <= maxRedeemFeeRate, "SparkPrimeVault/fee-too-high");
         emit RedeemFeeRateSet(redeemFeeRate = feeRate_);
-    }
-
-    function realizeLoss(uint256 loss_) external onlyRole(RISK_MANAGER_ROLE) {
-        require(paused, "SparkPrimeVault/not-paused");
-
-        drip();
-
-        uint256 totalAssets_ = totalAssets();
-
-        require(loss_ > 0 && loss_ < totalAssets_, "SparkPrimeVault/invalid-loss");
-
-        uint256 totalSupply_ = totalSupply;
-
-        require(totalSupply_ != 0, "SparkPrimeVault/no-shares");
-
-        uint192 chi_ = uint192(((totalAssets_ - loss_) * RAY) / totalSupply_);
-
-        emit LossRealized(chi = chi_, loss_);
     }
 
     function pause() external onlyRole(GUARDIAN_ROLE) {
