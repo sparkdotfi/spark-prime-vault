@@ -45,7 +45,6 @@ interface IERC4626Like {
 
 }
 
-// TODO: _processDepositQueue and _processRedeemQueue should take in a variable that allows netting withdrawals against deposits (there should be a third function)
 // TODO: Clean up roles
 // TODO: Add more validation to setters
 // TODO: Should processDepositQueue and processRedeemQueue both be permissioned, if so, should we make all withdrawals async?
@@ -317,6 +316,23 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         whenNotPaused
     {
         _processRedeemQueue(maxShares_, maxRequests_);
+    }
+
+    // Nets the two queues against each other in one transaction. Redeems are processed first:
+    // they are paid out of the spUSDC the queued depositors already hold in this contract, and
+    // burning their shares frees exactly the capacity the queued deposits then fill. Running
+    // the loops in the other order would stall on capacity before any redeem is paid.
+    function processQueues(
+        uint256 maxShares_,
+        uint256 maxRedeemRequests_,
+        uint256 maxDepositRequests_
+    )
+        external
+        onlyRole(REBALANCER_ROLE)
+        whenNotPaused
+    {
+        _processRedeemQueue(maxShares_, maxRedeemRequests_);
+        _processDepositQueue(type(uint256).max, maxDepositRequests_);
     }
 
     function setRedeemFee(uint256 fee_) external onlyRole(RISK_MANAGER_ROLE) {
