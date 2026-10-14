@@ -1,3 +1,51 @@
+# Round 3 (ff828d2)
+
+Worker: QUEUES. File: `test/DepositQueue.t.sol` (`DepositQueueTest is LocalTestBase`), branch `campaign-v3/queues`, source `src/SparkPrimeVault.sol` at upstream `refactor/more-simplifying` `ff828d2`.
+Result: 58 tests, 58 pass (55 unit, 3 fuzz at 5000 runs). `test/QueueAudit.t.sol` (8 upstream tests) passes. The four `test_BUG_*` tests still pass by asserting the buggy behaviour. Harness indexes and reference conversions are unchanged from round 2.
+
+Line remap (round-2 numbers in the sections below -> ff828d2): `_requestDeposit` 373-398 -> 706-736 (head walk 728-730, instant decision 733-735); `cancelDepositRequest` 428-463 unchanged (push :450, head walk :455-460); `updateDepositRecipient` -> 416-425; `updateCancelledDepositRecipient` -> 465-477; `_processDepositQueue` 696-737 -> 738-779 (capacity conversion :742-745, loop :752, `continue` :757, fill math :762-763, mint :769, partial `break` :773, `delete` :775); `_processCancelledDepositQueue` 739-773 -> 781-815 (budget :784, `redeem` :805); `realizeLoss` -> 369-385; `realizeGain` (new) 297-309; natspec return note -> 396-398.
+
+## Fixed since round 2
+
+- `updateDepositRecipient` (`src/SparkPrimeVault.sol:416-425`) is now owner-only on a live entry with a non-zero recipient (NEWSURFACE's round-2 finding; the order is recipient check :417, `no-request` :421, `not-authorized` :422). `updateCancelledDepositRecipient` (`:465-477`) got the same guards, which closes the second write path of DQ-7's `recipient` field. Tests: `test_updateDepositRecipient_ownerRedirectsQueuedFill` (unchanged), `test_updateDepositRecipient_revertsNotOwner` (carol, the recipient bob and the guardian all revert `not-authorized`; owner to `address(0)` reverts `invalid-recipient`; entry untouched), `test_updateDepositRecipient_revertsDeadEntryAndOutOfRange` (filled and cancelled entries revert `no-request` for the former owner too; `id + 1` panics 0x32; the cancelled copy is owner-only and the owner's repoint to carol pays carol `99_999_999_999`).
+- C-14 (settlement reverts when spUSDC lacks USDC) is gone: the refund budget is `spUSDC.maxRedeem(vault)` (`:784`) = `min(balanceOf(vault), floor(usdcLiquidity * RAY / chi_s))`. `test_cancelDepositRequest_refundsWithSpUsdcYield` rewritten with exact amounts: after a year at 5% spUSDC holds the `1_000_000e6` principal, the cancelled entry carries `954_532_691_143` shares worth `1_049_999_999_998`; the budget is `909_078_753_470` shares, the first pass pays `999_999_999_999` USDC, leaves 1 wei in spUSDC, `45_453_937_673` shares at the cancelled head (`cancelledDepositHead` unchanged, `pendingCancelledDepositSavingsShares == 45_453_937_673`); a second pass is a silent no-op (1 wei converts to 0 shares); after `_returnSpUsdcLiquidity(60_000e6)` the remainder pays `49_999_999_999`, total `1_049_999_999_998`, the same as a single payout.
+
+## Persisting (re-confirmed at ff828d2)
+
+- DQ-7 · High · guardian cancel pays whoever the guardian names: `src/SparkPrimeVault.sol:450` still pushes `recipient_` for a guardian caller (`:441-444`); settlement pays `request_.recipient` (`:805`). `test_BUG_guardianCancelRefundsToArbitraryRecipient` passes unchanged (guardian receives `999_999_999_999`, alice and bob 0). The owner-only `updateCancelledDepositRecipient` does not help the owner here because the guardian-written entry has `owner = alice`, so alice can repoint it back before settlement, but only if she notices before the planner runs.
+- DQ-8 · Low · unbounded head walk in cancel (`:455-460`, planner loop skipped at `:752` when `remaining_ == 0`); ghosts still creatable (`:711`, `minDeposit == 0`). `test_cancelDepositRequest_headWalkGasGrowsWithGhosts`, `test_requestDeposit_zeroAssetsCreatesGhostEntry`.
+- DQ-1 · Low · exact-fit capacity leaves a 1-share dust head (`:742-745` double floor, `:728` walk stops on it, `:773` keeps it). `test_BUG_exactFitCapacityLeavesDustThatBlocksInstantFills`, `test_BUG_twoWeiDepositAtFullCapacityJamsInstantPath`.
+- DQ-2 · Low (F-4) · `_fillOf(1) = (1, 0)`: 2-wei instant deposit at capacity 2 mints 0 and is deleted (`:759-775`). `test_BUG_dustFillMintsZeroShares`, `test_requestDeposit_instantFillCapacityBoundary`.
+- DQ-3 · Info · cancelled entries behind a live head consume `maxRequests_` (`:750`, `:757`). `test_processDepositQueue_cancelledEntriesConsumeMaxRequests`.
+- DQ-4 · Low · `recipient_ == address(vault)` shares are stuck (`:710` only rejects zero, `:769`). `test_requestDeposit_recipientIsVaultSharesAreStuck`.
+- DQ-5 · Medium (F-2) · fills mint against backing that left (`:738-779` never reads the spUSDC balance); refunds after a `take()` are paid from others' spUSDC or deferred. The silent partial settlement now has two causes: the vault's spUSDC balance and spUSDC's USDC liquidity, both folded into `maxRedeem` (`:784`); neither emits anything for the unpaid part. `test_processDepositQueue_fillsAfterTakeRemovedBacking`, `test_processDepositQueue_partialTakeStillFillsFully`, `test_cancelDepositRequest_earlyCancelAfterTakeStrandsLaterDepositor`, `test_processCancelledDepositQueue_partialRefundWhenBackingShort`, `test_cancelDepositRequest_refundsWithSpUsdcYield`.
+- DQ-6 · Info · chunked fills cost up to `2*(k-1)` shares (`:762-763`). Fuzz bound holds at 5000 runs.
+- Note: `requestDeposit` natspec (`:396-398`) still says `type(uint256).max` when nothing was queued; the code returns the index.
+
+## New gain/loss observations
+
+- DQ-9 · Info · A queued depositor does not share in a `realizeGain` (`src/SparkPrimeVault.sol:297-309`, DEFAULT_ADMIN, callable while unpaused). `totalAssets()` (`:675-677`) counts minted shares only, so `chi = (totalAssets + gain) * RAY / totalSupply` spreads the gain over holders; the queued spUSDC is filled later at the higher chi (`:763`). `test_processDepositQueue_queuedDepositorDoesNotShareRealizedGain`: alice and carol filled instantly (`99_040_518_410` each, carol one block before the gain), bob queued `95_453_269_114` spUSDC; `realizeGain(10_000e6)` sets chi `1.060172156650366224592543507e27`, alice and carol `104_999_999_998` each (+`5_000_000_000`), bob's entry untouched; bob's fill mints `94_324_303_248` (`4_716_215_162` fewer than alice) worth `99_999_999_998`. `totalAssets` ends `309_999_999_995` against `299_999_999_998` USDC of spUSDC: the gain is a claim on backing that has not arrived (same notional-index gap as RQ-5). The instant-before-gain sandwich is ADVERSARIAL's.
+- `realizeLoss` (`:369-385`) now requires `paused`, `0 < loss < totalAssets` and non-zero supply, so the `loss == totalAssets` brick and the zero-supply division from the round-2 unsettled list are closed. No deposit-queue test uses it; queued spUSDC is outside `totalAssets`, so a loss while queued does not touch the entry either (mirror of DQ-9, not separately tested).
+- `realizeGain` has no upper bound and no pause requirement; a gain realised with a live deposit queue immediately raises the share price every queued fill pays. Factual only; the ordering risk is ADVERSARIAL's.
+
+## Properties held (round 3)
+
+Properties 1-13 of the round-2 section below re-held unchanged on ff828d2 (same tests, same exact values, 5000 fuzz runs). New:
+
+14. `updateDepositRecipient` and `updateCancelledDepositRecipient` are owner-only, reject dead entries and `address(0)`, and the owner's repoint drives both the `Deposit` event and the refund payee. `test_updateDepositRecipient_ownerRedirectsQueuedFill`, `test_updateDepositRecipient_revertsNotOwner`, `test_updateDepositRecipient_revertsDeadEntryAndOutOfRange`.
+15. Cancelled-queue settlement under spUSDC liquidity pays exactly `floor(maxRedeem * chi_s / RAY)`, keeps the head on the partial entry, is a no-op at 1 wei of liquidity, and the two-step total equals the one-step total. `test_cancelDepositRequest_refundsWithSpUsdcYield`.
+16. A realised gain changes neither a queued entry's spUSDC shares nor the spUSDC held; it changes only the spPRIME minted at fill, and the filled depositor's `assetsOf` equals the fill's asset value. `test_processDepositQueue_queuedDepositorDoesNotShareRealizedGain`.
+
+## Unsettled
+
+- DQ-7 is still open at ff828d2; the `test_BUG_` test will start failing once `:450` uses `request_.owner` for non-owner callers.
+- DQ-8 cost model (30M gas, cold slots, `minDeposit == 0`) unchanged.
+- Fuzz 2 never calls `take()` or drains spUSDC, so the `maxRedeem` partial-settlement path is covered by unit tests only.
+- `realizeGain` while a cancelled entry is unsettled: the cancelled entry is in spUSDC shares and is unaffected; not separately tested.
+- spPRIME VSR > RAY while queued still untested on the deposit side.
+
+---
+
 # Deposit-queue campaign report (round 2)
 
 Worker: DEPOSIT-QUEUE. File: `test/DepositQueue.t.sol` (`DepositQueueTest is LocalTestBase`), branch `campaign-v2/deposit-queue`, source `src/SparkPrimeVault.sol` on `refactor/more-simplifying`.
