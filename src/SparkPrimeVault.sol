@@ -380,38 +380,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     /*** Request functions                                                                      ***/
     /**********************************************************************************************/
 
-    function _requestDeposit(uint256 assets_, address recipient_)
-        internal
-        returns (uint256 requestId_)
-    {
-        require(recipient_ != address(0), "SparkPrimeVault/invalid-recipient");
-        require(assets_ >= minDeposit,    "SparkPrimeVault/below-minimum");
-
-        drip();
-
-        SafeERC20.safeTransferFrom(IERC20OZ(asset), msg.sender, address(this), assets_);
-
-        uint256 savingsShares_ = IERC4626Like(savings).deposit(assets_, address(this));
-
-        requestId_ = depositQueue.length;
-
-        depositQueue.push(Request(msg.sender, recipient_, savingsShares_));
-
-        pendingDepositSavingsShares += savingsShares_;
-
-        emit DepositRequest(msg.sender, recipient_, requestId_, assets_, savingsShares_);
-
-        // Advance head past any cancelled/dead requests.
-        while (depositHead < requestId_ && depositQueue[depositHead].shares == 0) {
-            unchecked { ++depositHead; }
-        }
-
-        // Fill this request, only while nobody is queued ahead.
-        if (depositHead == requestId_) {
-            _processDepositQueue(type(uint256).max, 1);
-        }
-    }
-
     // Mints shares to `recipient_` for as much of `assets_` as the capacity allows, the rest waits
     // in the deposit queue as savings shares. Returns the queue index, or `type(uint256).max`
     // when nothing was queued.
@@ -706,6 +674,38 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     /**********************************************************************************************/
     /*** Request internal helper functions                                                      ***/
     /**********************************************************************************************/
+
+    function _requestDeposit(uint256 assets_, address recipient_)
+        internal
+        returns (uint256 requestId_)
+    {
+        require(recipient_ != address(0), "SparkPrimeVault/invalid-recipient");
+        require(assets_ >= minDeposit,    "SparkPrimeVault/below-minimum");
+
+        drip();
+
+        SafeERC20.safeTransferFrom(IERC20OZ(asset), msg.sender, address(this), assets_);
+
+        uint256 savingsShares_ = IERC4626Like(savings).deposit(assets_, address(this));
+
+        requestId_ = depositQueue.length;
+
+        depositQueue.push(Request(msg.sender, recipient_, savingsShares_));
+
+        pendingDepositSavingsShares += savingsShares_;
+
+        emit DepositRequest(msg.sender, recipient_, requestId_, assets_, savingsShares_);
+
+        // Advance head past any cancelled/dead requests.
+        while (depositHead < requestId_ && depositQueue[depositHead].shares == 0) {
+            unchecked { ++depositHead; }
+        }
+
+        // Fill this request, only while nobody is queued ahead.
+        if (depositHead == requestId_) {
+            _processDepositQueue(type(uint256).max, 1);
+        }
+    }
 
     function _processDepositQueue(uint256 maxSavingsShares_, uint256 maxRequests_) internal {
         drip();
