@@ -424,10 +424,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         require(requestSavingsShares_ != 0, "SparkPrimeVault/no-request");
 
-        require(
-            msg.sender == request_.owner || hasRole(GUARDIAN_ROLE, msg.sender),
-            "SparkPrimeVault/not-authorized"
-        );
+        if (msg.sender != request_.owner) {
+            require(hasRole(GUARDIAN_ROLE, msg.sender), "SparkPrimeVault/not-authorized");
+            require(recipient_ == request_.owner,       "SparkPrimeVault/invalid-recipient");
+        }
 
         delete _depositRequests[requestId_];
 
@@ -479,41 +479,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         pendingRedeemShares += queuedShares_;
 
         emit RedeemRequest(msg.sender, recipient_, requestId_, shares_, fee_);
-    }
-
-    /**********************************************************************************************/
-    /*** Request cancel functions                                                               ***/
-    /**********************************************************************************************/
-
-    function cancelRedeemRequest(uint256 requestId_, address recipient_) whenNotPaused external {
-        require(recipient_ != address(0), "SparkPrimeVault/invalid-recipient");
-
-        Request memory request_ = _redeemRequests[requestId_];
-
-        require(request_.shares != 0, "SparkPrimeVault/no-request");
-
-        require(
-            msg.sender == request_.owner || hasRole(GUARDIAN_ROLE, msg.sender),
-            "SparkPrimeVault/not-authorized"
-        );
-
-        delete _redeemRequests[requestId_];
-
-        _transfer(address(this), recipient_, request_.shares);
-
-        pendingRedeemShares -= request_.shares;
-
-        if (requestId_ == firstPendingRedeemId) {
-            // Advance head past any cancelled/dead requests.
-            while (
-                firstPendingRedeemId < _redeemRequests.length &&
-                _redeemRequests[firstPendingRedeemId].shares == 0
-            ) {
-                unchecked { ++firstPendingRedeemId; }
-            }
-        }
-
-        emit CancelRedeemRequest(requestId_, request_.shares);
     }
 
     /**********************************************************************************************/
@@ -668,62 +633,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     /**********************************************************************************************/
-    /*** External view functions                                                                ***/
+    /*** Request getter functions                                                               ***/
     /**********************************************************************************************/
-
-    function DOMAIN_SEPARATOR() external view returns (bytes32) {
-        return _calculateDomainSeparator(block.chainid);
-    }
-
-    function assetsOf(address owner_) external view returns (uint256) {
-        return convertToAssets(balanceOf[owner_]);
-    }
-
-    function availableCapacity() public view returns (uint256) {
-        return maxCapacity > totalSupply ? maxCapacity - totalSupply : 0;
-    }
-
-    function availableLiquidAssets() public view returns (uint256) {
-        return IERC4626Like(savings).maxWithdraw(address(this));
-    }
-
-    function convertToAssets(uint256 shares_) public view returns (uint256) {
-        return (shares_ * nowChi()) / RAY;
-    }
-
-    function convertToShares(uint256 assets_) public view returns (uint256) {
-        return (assets_ * RAY) / nowChi();
-    }
-
-    function implementation() external view returns (address) {
-        return ERC1967Utils.getImplementation();
-    }
-
-    function nowChi() public view returns (uint192) {
-        return
-            block.timestamp > rho
-                ? uint192((_rpow(vsr, block.timestamp - rho) * chi) / RAY)
-                : chi;
-    }
-
-    function totalAssets() public view returns (uint256) {
-        return convertToAssets(totalSupply);
-    }
-
-    function getPendingDepositRequest(uint256 requestId_)
-        external
-        view
-        returns (address owner_, address recipient_, uint256 shares_)
-    {
-        require(
-            requestId_ >= firstPendingDepositId && requestId_ < _depositRequests.length,
-            "SparkPrimeVault/invalid-request-id"
-        );
-
-        Request storage request_ = _depositRequests[requestId_];
-
-        return (request_.owner, request_.recipient, request_.shares);
-    }
 
     function getPendingDepositRequests() external view returns (Request[] memory requests_) {
         uint256 pendingLength_ = _depositRequests.length;
@@ -833,6 +744,49 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         for (uint256 i_ = startId_; i_ < endId_; ++i_) {
             requests_[i_ - startId_] = _redeemRequests[i_];
         }
+    }
+
+    /**********************************************************************************************/
+    /*** External view functions                                                                ***/
+    /**********************************************************************************************/
+
+    function assetsOf(address owner_) external view returns (uint256) {
+        return convertToAssets(balanceOf[owner_]);
+    }
+
+    function availableCapacity() public view returns (uint256) {
+        return maxCapacity > totalSupply ? maxCapacity - totalSupply : 0;
+    }
+
+    function availableLiquidAssets() public view returns (uint256) {
+        return IERC4626Like(savings).maxWithdraw(address(this));
+    }
+
+    function convertToAssets(uint256 shares_) public view returns (uint256) {
+        return (shares_ * nowChi()) / RAY;
+    }
+
+    function convertToShares(uint256 assets_) public view returns (uint256) {
+        return (assets_ * RAY) / nowChi();
+    }
+
+    function DOMAIN_SEPARATOR() external view returns (bytes32) {
+        return _calculateDomainSeparator(block.chainid);
+    }
+
+    function implementation() external view returns (address) {
+        return ERC1967Utils.getImplementation();
+    }
+
+    function nowChi() public view returns (uint192) {
+        return
+            block.timestamp > rho
+                ? uint192((_rpow(vsr, block.timestamp - rho) * chi) / RAY)
+                : chi;
+    }
+
+    function totalAssets() public view returns (uint256) {
+        return convertToAssets(totalSupply);
     }
 
     /**********************************************************************************************/
