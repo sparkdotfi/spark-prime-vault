@@ -52,7 +52,7 @@ contract TestBase is Test {
                 address(new SparkPrimeVault()),
                 abi.encodeCall(
                     SparkPrimeVault.initialize,
-                    (address(usdc), address(spUsdc), "Spark Prime USDC", "spPRIME", admin)
+                    (address(spUsdc), "Spark Prime USDC", "spPRIME", admin)
                 )
             ))
         );
