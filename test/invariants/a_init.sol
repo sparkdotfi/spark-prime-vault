@@ -8,14 +8,17 @@ import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
 
 import { MockUSDC } from "../LocalTestBase.t.sol";
 
-// Handler base for the spPRIME invariant campaign. Holds the actors (read from the roles granted
-// by `LocalTestBase`), N users, and the ghost bookkeeping every invariant reads.
+// Handler base for the spPRIME invariant campaign (round 2, `refactor/more-simplifying`). Holds
+// the actors (read from the roles granted by `LocalTestBase`), N users, and the ghost bookkeeping
+// every invariant reads.
 //
 // Conventions shared by every handler flow:
 //   - every input is bounded and every action that would revert is skipped (fail_on_revert=true);
 //   - `vm.startPrank`/`vm.stopPrank` only, never `vm.prank`;
 //   - users are never the vault, the takers or any role holder;
-//   - transfers never target the vault (invariant B relies on it; `vaultDonations` flags it).
+//   - transfers never target the vault (invariant B relies on it; `vaultDonations` flags it);
+//   - every recipient the handler passes (requests, cancels, recipient updates) is a user, so
+//     every USDC payout and every share refund lands in the user set the invariants sum over.
 contract Init is Test {
 
     uint256 constant RAY = 1e27;
@@ -71,6 +74,10 @@ contract Init is Test {
     uint256 public spUsdcYieldMinted;      // USDC minted straight into spUSDC (returned liquidity)
     uint256 public takerInjectedUsdc;      // USDC minted for the taker to mint spUSDC it returns
 
+    // USDC paid to users, by source (invariant I). Users never hold USDC otherwise.
+    uint256 public usersRedeemedUsdc;      // paid by processRedeemQueue fills
+    uint256 public usersRefundedUsdc;      // paid by processCancelledDepositQueue fills
+
     mapping (address user => uint256) public depositedUsdc;
 
     // spUSDC level
@@ -87,23 +94,36 @@ contract Init is Test {
     // Capacity / chi / fills
     bool    public mintedAboveCapacity;    // invariant F
     uint256 public lastChi;                // invariant G
+    bool    public chiDecreasedOutsideLoss;// invariant G: chi fell in a non-realizeLoss action
+    uint256 public lossRealizations;       // realizeLoss calls
+    uint256 public realizedLossUsdc;       // sum of every `loss_` passed to realizeLoss (H)
     uint256 public depositFills;           // entries touched by a deposit fill (incl. partial)
+    uint256 public cancelledFills;         // entries touched by a cancelled-deposit fill
     uint256 public redeemFills;            // entries touched by a redeem fill (incl. partial)
     uint256 public zeroShareFills;         // F-4: spUSDC consumed, 0 shares minted
     bool    public rateOrderBroken;        // spUSDC VSR < spPRIME VSR at some point (invariant H)
     bool    public vaultDonations;         // spPRIME transferred to the vault itself (never set)
 
-    // Queue ghosts
-    uint256 public depositQueueLength;     // only the handler pushes entries
+    // Queue ghosts (only the handler pushes entries)
+    uint256 public depositQueueLength;
+    uint256 public cancelledQueueLength;
     uint256 public redeemQueueLength;
     uint256 public ghostDepositEntries;    // F-5: zero-amount deposit requests
-    uint256 public ghostRedeemEntries;     // F-5: redeem requests fully eaten by the fee
-    uint256 public cancelDepositBlockedF2; // cancels skipped because spUSDC backing was spent
+    uint256 public ghostRedeemEntries;     // F-5: zero-share or fee-eaten redeem requests
+
+    // Recipient updates (invariant R)
+    uint256 public recipientUpdates;
+    uint256 public recipientUpdatesByStranger;  // caller is not the entry owner
+    bool    public recipientUpdateChangedState; // anything but the recipient field moved
 
     // Revert observations (the handler wraps calls the contract itself may make revert)
     uint256 public redeemProcessReverts;       // "SparkVault/insufficient-balance"
     uint256 public redeemProcessRevertsOther;  // anything else (must stay 0)
     string  public lastRedeemProcessRevert;
+
+    uint256 public cancelProcessReverts;       // "SparkVault/insufficient-liquidity"
+    uint256 public cancelProcessRevertsOther;  // anything else (must stay 0)
+    string  public lastCancelProcessRevert;
 
     // Call counts per handler function
     mapping (string fn => uint256) public calls;
@@ -147,9 +167,10 @@ contract Init is Test {
         _chiCheck();
     }
 
+    // chi may only fall inside the realizeLoss handler, which resets `lastChi` itself.
     function _chiCheck() internal {
         uint256 nowChi_ = vault.nowChi();
-        assertGe(nowChi_, lastChi, "handler: chi decreased");
+        if (nowChi_ < lastChi) chiDecreasedOutsideLoss = true;
         lastChi = nowChi_;
     }
 
@@ -166,6 +187,12 @@ contract Init is Test {
         for (uint256 i = 0; i < N; i++) bals[i] = vault.balanceOf(users[i]);
     }
 
+    function _usersUsdc() internal view returns (uint256 sum) {
+        for (uint256 i = 0; i < N; i++) sum += usdc.balanceOf(users[i]);
+    }
+
+    // Mints land on whatever `recipient` each entry carries at fill time (anyone can repoint it
+    // via updateDepositRecipient), so provenance is attributed by balance diff, not by request.
     function _attributeMints(uint256[N] memory before) internal {
         for (uint256 i = 0; i < N; i++) {
             uint256 after_ = vault.balanceOf(users[i]);
@@ -190,6 +217,13 @@ contract Init is Test {
         shares = new uint256[](depositQueueLength - head);
         for (uint256 i = head; i < depositQueueLength; i++) {
             (, , shares[i - head]) = vault.depositQueue(i);
+        }
+    }
+
+    function _snapshotCancelledQueue(uint256 head) internal view returns (uint256[] memory shares) {
+        shares = new uint256[](cancelledQueueLength - head);
+        for (uint256 i = head; i < cancelledQueueLength; i++) {
+            (, , shares[i - head]) = vault.cancelledDepositQueue(i);
         }
     }
 
@@ -224,10 +258,59 @@ contract Init is Test {
         if (vault.convertToShares(spUsdc.convertToAssets(lastConsumed)) == 0) zeroShareFills++;
     }
 
+    function _countCancelledFills(uint256 head, uint256[] memory sharesBefore) internal {
+        for (uint256 i = 0; i < sharesBefore.length; i++) {
+            (, , uint256 s) = vault.cancelledDepositQueue(head + i);
+            if (s < sharesBefore[i]) cancelledFills++;
+        }
+    }
+
     function _countRedeemFills(uint256 head, uint256[] memory sharesBefore) internal {
         for (uint256 i = 0; i < sharesBefore.length; i++) {
             (, , uint256 s) = vault.redeemQueue(head + i);
             if (s < sharesBefore[i]) redeemFills++;
+        }
+    }
+
+    /**********************************************************************************************/
+    /*** State digest (invariant R)                                                             ***/
+    /**********************************************************************************************/
+
+    // Hash of everything a recipient update must leave alone: totals, pendings, heads, every
+    // share and USDC balance in the campaign, the vault's spUSDC, and the owner/shares of every
+    // queue entry (recipients excluded on purpose).
+    function _stateDigest() internal view returns (bytes32 digest) {
+        digest = keccak256(abi.encode(
+            vault.totalSupply(),
+            vault.pendingDepositSavingsShares(),
+            vault.pendingCancelledDepositSavingsShares(),
+            vault.pendingRedeemShares(),
+            vault.depositHead(),
+            vault.cancelledDepositHead(),
+            vault.redeemHead(),
+            vault.chi(),
+            vault.rho(),
+            vault.balanceOf(address(vault)),
+            spUsdc.balanceOf(address(vault)),
+            spUsdc.totalSupply(),
+            usdc.balanceOf(address(spUsdc))
+        ));
+        for (uint256 i = 0; i < N; i++) {
+            digest = keccak256(abi.encode(
+                digest, vault.balanceOf(users[i]), usdc.balanceOf(users[i])
+            ));
+        }
+        for (uint256 i = 0; i < depositQueueLength; i++) {
+            (address owner, , uint256 shares) = vault.depositQueue(i);
+            digest = keccak256(abi.encode(digest, owner, shares));
+        }
+        for (uint256 i = 0; i < cancelledQueueLength; i++) {
+            (address owner, , uint256 shares) = vault.cancelledDepositQueue(i);
+            digest = keccak256(abi.encode(digest, owner, shares));
+        }
+        for (uint256 i = 0; i < redeemQueueLength; i++) {
+            (address owner, , uint256 shares) = vault.redeemQueue(i);
+            digest = keccak256(abi.encode(digest, owner, shares));
         }
     }
 

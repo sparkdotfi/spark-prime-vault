@@ -3,8 +3,8 @@ pragma solidity ^0.8.34;
 
 import "./b_flows_user.sol";
 
-// Admin / role / environment flows: capacity, fee, minimums, both VSRs, pause/unpause, queue
-// processing, take/return, spUSDC liquidity drains and returns, time.
+// Admin / role / environment flows: capacity, fee, minimums, both VSRs, pause/unpause, loss
+// realisation, the three queue processors, take/return, spUSDC liquidity drains and returns, time.
 contract FlowsAdmin is FlowsUser {
 
     constructor(address vault_) FlowsUser(vault_) {}
@@ -13,6 +13,8 @@ contract FlowsAdmin is FlowsUser {
     /*** Parameters                                                                             ***/
     /**********************************************************************************************/
 
+    // `setCapacity` no longer bounds the value; the handler keeps it <= uint128.max because a
+    // larger capacity overflows `convertToAssets(availableCapacity())` and bricks deposits.
     function setCapacity(uint256 capacity, uint256 seed) public counted("setCapacity") {
         uint256 supply = vault.totalSupply();
         uint256 kind   = seed % 10;
@@ -34,15 +36,21 @@ contract FlowsAdmin is FlowsUser {
         vm.stopPrank();
     }
 
-    // Half of the calls clear the minimums so zero-amount and one-wei requests stay reachable.
-    function setMinimums(uint256 minDeposit, uint256 minWithdraw, uint256 seed)
-        public counted("setMinimums")
-    {
-        minDeposit  = seed % 2 == 0 ? 0 : _bound(minDeposit,  1, 10e6);
-        minWithdraw = seed % 2 == 0 ? 0 : _bound(minWithdraw, 1, 10e6);
+    // Half of the calls clear the minimum so zero-amount requests stay reachable.
+    function setMinDeposit(uint256 minDeposit, uint256 seed) public counted("setMinDeposit") {
+        minDeposit = seed % 2 == 0 ? 0 : _bound(minDeposit, 1, 10e6);
 
         vm.startPrank(admin);
-        vault.setMinimums(minDeposit, minWithdraw);
+        vault.setMinDeposit(minDeposit);
+        vm.stopPrank();
+    }
+
+    // `minRedeem` is denominated in shares.
+    function setMinRedeem(uint256 minRedeem, uint256 seed) public counted("setMinRedeem") {
+        minRedeem = seed % 2 == 0 ? 0 : _bound(minRedeem, 1, 10e6);
+
+        vm.startPrank(admin);
+        vault.setMinRedeem(minRedeem);
         vm.stopPrank();
     }
 
@@ -75,22 +83,63 @@ contract FlowsAdmin is FlowsUser {
     }
 
     /**********************************************************************************************/
-    /*** Pause                                                                                  ***/
+    /*** Pause and losses                                                                       ***/
     /**********************************************************************************************/
 
-    // Pauses in ~1 of 4 calls so the vault is not paused half of the time.
+    // Pauses in ~1 of 4 calls so the vault is not paused half of the time. `pause()` is held by
+    // GUARDIAN_ROLE upstream (`review/poc-tests-v2`); the admin fallback covers the intermediate
+    // revision where it sat on DEFAULT_ADMIN_ROLE.
     function pause(uint256 seed) public counted("pause") {
         if (seed % 4 != 0) return;
 
         vm.startPrank(guardian);
-        vault.pause();
-        vm.stopPrank();
+        try vault.pause() {
+            vm.stopPrank();
+        } catch {
+            vm.stopPrank();
+            vm.startPrank(admin);
+            vault.pause();
+            vm.stopPrank();
+        }
     }
 
     function unpause() public counted("unpause") {
         vm.startPrank(admin);
         vault.unpause();
         vm.stopPrank();
+    }
+
+    // Small losses (<= totalAssets / 10), only while paused with a live supply, and only when the
+    // resulting chi stays positive (chi == 0 would brick every conversion). The handler asserts
+    // the contract's floor: totalAssets after the call plus the loss never exceeds totalAssets
+    // before it, which is what invariant H relies on.
+    function realizeLoss(uint256 loss) public counted("realizeLoss") {
+        if (!vault.paused()) return;
+
+        uint256 supply = vault.totalSupply();
+        if (supply == 0) return;
+
+        uint256 assetsBefore = vault.totalAssets();
+        if (assetsBefore < 10) return;
+
+        loss = _bound(loss, 1, assetsBefore / 10);
+
+        if (((assetsBefore - loss) * RAY) / supply == 0) return;
+
+        uint256 chiBefore = vault.nowChi();
+
+        vm.startPrank(riskManager);
+        vault.realizeLoss(loss);
+        vm.stopPrank();
+
+        assertLt(vault.nowChi(), chiBefore, "handler: realizeLoss did not lower chi");
+        assertGt(vault.nowChi(), 0,         "handler: realizeLoss zeroed chi");
+        assertLe(vault.totalAssets() + loss, assetsBefore, "handler: loss under-applied");
+
+        lossRealizations++;
+        realizedLossUsdc += loss;
+
+        lastChi = vault.nowChi();  // the only sanctioned chi decrease (invariant G)
     }
 
     /**********************************************************************************************/
@@ -122,6 +171,43 @@ contract FlowsAdmin is FlowsUser {
         _capacityCheck(supplyBefore);
     }
 
+    // Pays cancelled deposits by spUSDC `redeem` with a budget of min(max, spUSDC balance). The
+    // budget ignores spUSDC's USDC liquidity, so the call reverts inside spUSDC with
+    // `SparkVault/insufficient-liquidity` when the liquidity is drained. Observed, not asserted;
+    // any other reason fails invariant P.
+    function processCancelledDepositQueue(uint256 maxSavingsShares, uint256 maxRequests, uint256 seed)
+        public counted("processCancelledDepositQueue")
+    {
+        if (vault.paused()) return;
+
+        uint256 kind = seed % 4;
+        if (kind == 0) maxSavingsShares = type(uint256).max;
+        else           maxSavingsShares = _bound(maxSavingsShares, 0, vault.pendingCancelledDepositSavingsShares() + 1e12);
+
+        maxRequests = kind == 1 ? type(uint256).max : _bound(maxRequests, 0, 8);
+
+        uint256          head            = vault.cancelledDepositHead();
+        uint256[] memory sharesBefore    = _snapshotCancelledQueue(head);
+        uint256          usersUsdcBefore = _usersUsdc();
+        uint256          supplyBefore    = vault.totalSupply();
+
+        vm.startPrank(rebalancer);
+        try vault.processCancelledDepositQueue(maxSavingsShares, maxRequests) {
+            vm.stopPrank();
+            _countCancelledFills(head, sharesBefore);
+            usersRefundedUsdc += _usersUsdc() - usersUsdcBefore;
+            assertEq(vault.totalSupply(), supplyBefore, "handler: refund changed totalSupply");
+        } catch Error(string memory reason) {
+            vm.stopPrank();
+            lastCancelProcessRevert = reason;
+            if (keccak256(bytes(reason)) == keccak256("SparkVault/insufficient-liquidity")) {
+                cancelProcessReverts++;
+            } else {
+                cancelProcessRevertsOther++;
+            }
+        }
+    }
+
     function processRedeemQueue(uint256 maxShares, uint256 maxRequests, uint256 seed)
         public counted("processRedeemQueue")
     {
@@ -133,8 +219,9 @@ contract FlowsAdmin is FlowsUser {
 
         maxRequests = kind == 1 ? type(uint256).max : _bound(maxRequests, 0, 8);
 
-        uint256          head         = vault.redeemHead();
-        uint256[] memory sharesBefore = _snapshotRedeemQueue(head);
+        uint256          head            = vault.redeemHead();
+        uint256[] memory sharesBefore    = _snapshotRedeemQueue(head);
+        uint256          usersUsdcBefore = _usersUsdc();
 
         // The call is wrapped: spUSDC's `withdraw` burns ceil(assets*RAY/chi_s) shares per fill,
         // so a multi-entry fill bounded by the vault's spUSDC *balance* (not spUSDC liquidity) can
@@ -143,6 +230,7 @@ contract FlowsAdmin is FlowsUser {
         try vault.processRedeemQueue(maxShares, maxRequests) {
             vm.stopPrank();
             _countRedeemFills(head, sharesBefore);
+            usersRedeemedUsdc += _usersUsdc() - usersUsdcBefore;
         } catch Error(string memory reason) {
             vm.stopPrank();
             lastRedeemProcessRevert = reason;
