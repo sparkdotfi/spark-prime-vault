@@ -155,11 +155,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     uint256 public constant MAX_REDEEM_FEE = 0.01e18;  // 1% [wad]
 
-    bytes32 public constant GUARDIAN_ROLE     = keccak256("GUARDIAN_ROLE");
-    bytes32 public constant REBALANCER_ROLE   = keccak256("REBALANCER_ROLE");
-    bytes32 public constant RISK_MANAGER_ROLE = keccak256("RISK_MANAGER_ROLE");
-    bytes32 public constant SETTER_ROLE       = keccak256("SETTER_ROLE");
-    bytes32 public constant TAKER_ROLE        = keccak256("TAKER_ROLE");
+    bytes32 public constant GUARDIAN_ROLE          = keccak256("GUARDIAN_ROLE");
+    bytes32 public constant REBALANCER_ROLE        = keccak256("REBALANCER_ROLE");
+    bytes32 public constant REDEEM_FEE_SETTER_ROLE = keccak256("REDEEM_FEE_SETTER_ROLE");
+    bytes32 public constant TAKER_ROLE             = keccak256("TAKER_ROLE");
+    bytes32 public constant VSR_SETTER_ROLE        = keccak256("VSR_SETTER_ROLE");
 
     bytes32 public constant PERMIT_TYPEHASH = keccak256(
         "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
@@ -315,7 +315,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     /*** Role-based external functions                                                          ***/
     /**********************************************************************************************/
 
-    function setVSR(uint256 vsr_) external onlyRole(SETTER_ROLE) {
+    function setVSR(uint256 vsr_) external onlyRole(VSR_SETTER_ROLE) {
         require(vsr_ >= minVSR, "SparkPrimeVault/vsr-too-low");
         require(vsr_ <= maxVSR, "SparkPrimeVault/vsr-too-high");
 
@@ -359,7 +359,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         _processPendingDepositCancellations(maxSavingsShares_, maxRequests_);
     }
 
-    function setRedeemFeeRate(uint256 feeRate_) external onlyRole(RISK_MANAGER_ROLE) {
+    function setRedeemFeeRate(uint256 feeRate_) external onlyRole(REDEEM_FEE_SETTER_ROLE) {
         require(feeRate_ <= maxRedeemFeeRate, "SparkPrimeVault/fee-too-high");
         emit RedeemFeeRateSet(redeemFeeRate = feeRate_);
     }

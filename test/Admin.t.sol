@@ -25,15 +25,15 @@ contract AdjustTotalAssetsTests is TestBase {
 
         vm.startPrank(admin);
 
-        vault.grantRole(GUARDIAN_ROLE, guardian);
-        vault.grantRole(SETTER_ROLE,   setter);
+        vault.grantRole(GUARDIAN_ROLE,   guardian);
+        vault.grantRole(VSR_SETTER_ROLE, vsrSetter);
 
         vault.setCapacity(VAULT_CAPACITY);
         vault.setVSRBounds(RAY, vault.MAX_VSR());
 
         vm.stopPrank();
 
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vault.setVSR(FIVE_PCT);
     }
 
@@ -77,6 +77,9 @@ contract AdjustTotalAssetsTests is TestBase {
     }
 
     function test_adjustTotalAssets_zeroDeltaTotalAssets() public {
+        vm.prank(guardian);
+        vault.pause();
+
         vm.expectRevert("SparkPrimeVault/delta-total-assets-zero");
         vm.prank(admin);
         vault.adjustTotalAssets(0);
