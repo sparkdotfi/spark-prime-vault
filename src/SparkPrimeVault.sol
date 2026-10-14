@@ -290,11 +290,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         emit VSRBoundsSet(minVSR = minVSR_, maxVSR = maxVSR_);
     }
 
-    function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
-        paused = true;
-        emit Paused();
-    }
-
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         paused = false;
         emit Unpaused();
@@ -359,7 +354,14 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         drip();
 
-        emit LossRealized(chi -= uint192(_divUp(loss_ * RAY, totalSupply)), loss_);
+        uint192 chi_ = uint192(((totalAssets() - loss_) * RAY) / totalSupply);
+
+        emit LossRealized(chi = chi_, loss_);
+    }
+
+    function pause() external onlyRole(GUARDIAN_ROLE) {
+        paused = true;
+        emit Paused();
     }
 
     /**********************************************************************************************/
@@ -662,7 +664,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         return (assets_ * RAY) / nowChi();
     }
 
-    function totalAssets() external view returns (uint256) {
+    function totalAssets() public view returns (uint256) {
         return convertToAssets(totalSupply);
     }
 
