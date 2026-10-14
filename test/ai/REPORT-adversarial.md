@@ -1,5 +1,162 @@
 # spPRIME adversarial campaign
 
+## Round 4 (bf93b0d)
+
+Worker: adversarial. File: `test/ai/Adversarial.t.sol` (contracts `AdversarialTest`, 87 tests, and
+new `AdversarialRound4Test`, 15 tests), all passing at 1000 and 5000 fuzz runs. Line numbers refer
+to `src/SparkPrimeVault.sol` at upstream `fix/update-guardian-transfer` @ bf93b0d. Every round-1
+to round-3 property is re-pinned under the new API.
+
+### Fixed or removed upstream
+
+| Item | Change at bf93b0d | Effect on this suite |
+|---|---|---|
+| `cancelRedeemRequest` | removed; a redeem request is final, `updateRedeemRecipient` (`:508-517`, owner-only) is the only user action; event `CancelRedeemRequest` (`:101`) is declared and never emitted (Info, dead code) | six usages ported: the random-ops fuzz drops the cancel action and gains a guardian-cancel action; the redeem-side head-walk measurement moved to the planner; `test_updateRedeemRecipient_filledEntryRevertsNoRequest` proves the selector is gone |
+| F-1 deposit side | guardian cancel must name the owner (`:424` `invalid-recipient`) | `testFuzz_queueInvariants_randomOps` asserts the revert on every non-owner recipient and cancels to the owner (5000 runs); REDEEM-CANCEL-FEES owns the regression tests |
+| Guardian unblock of a blacklisted redeem | gone with the cancel | `test_BUG_blacklistedRecipientBlocksRedeemQueue` and `test_updateRecipient_strangerCannotBlacklistBlockQueue_ownerStillCan` now prove guardian, rebalancer and admin all get `not-authorized`, pause does not help, only the owner repoints |
+
+### Re-pinned attacks
+
+#### R4-1 (REDEEM-CANCEL-FEES owns the High): blacklisted redeem recipient, attacker's cost and the missing tools
+`requestRedeem` `:451-477` accepts any recipient; `_processPendingRedeems` `:883-917` is strict
+FIFO and `:909` ends in `usdc.transfer(recipient)`. With no cancel the only unblock is the owner's
+`updateRedeemRecipient` `:514`.
+`test_BUG_blacklistedRedeemRecipient_costIsFeeOnMinRedeemOnly` at launch-like parameters
+(`minRedeem = 100e6` shares, fee 1%): attacker holds 200 USDC, queues exactly `minRedeem` to a
+blacklisted address, alice's 1_000_000 USDC redeem is behind him.
+- Cost: fee `divUp(100e6 * 1e16, 1e18) = 1_000_000` shares = 1_009_687 USDC wei, burned once;
+  gas 144_881 to jam, 3_816 to unblock; the queued 99e6 shares are paid back in full
+  (99_959_089 wei) when he repoints; net loss after the cycle 1_009_690 wei (fee plus three
+  floors). At `minRedeem = 0`, fee 0 the cost is 1 share (`test_BUG_blacklistedRecipientBlocksRedeemQueue`).
+- Tools: `updateRedeemRecipient` reverts `not-authorized` for guardian, rebalancer, admin and
+  risk manager; `cancelRedeemRequest` selector reverts; `processPendingRedeems(1, 1)` reverts the
+  same way (no chunking escapes the head); pause turns the revert into `paused` and after the
+  unpause the head is still the blacklisted entry; a week later alice is still at 0. The only
+  on-chain exit that does not depend on the attacker is an upgrade.
+- Victim side (`test_blacklistedOwner_recoversByRepointingWhileBlacklisted`): an honest redeemer
+  blacklisted after queueing recovers alone, because `updateRedeemRecipient` moves nothing:
+  repoint to a clean address, planner pays it 999_999_999_998, bob behind her is paid.
+- Self-harm only (`test_escrow_redeemRecipientVaultStrandsAndSpUsdcDonates`): recipient == vault
+  strands 99_999_999_998 USDC in the vault (`take` moves spUSDC only, `takeAll` leaves it);
+  recipient == spUSDC pays out and back in, spUSDC's index-based `totalAssets` drops by the
+  payout, the 100_000_000_000 excess is spUSDC's taker's to pull. Strangers cannot cause either
+  (`not-authorized`).
+
+#### R4-2 High (unchanged R3-1): `realizeGain` sandwich
+`realizeGain` `:293-305`; upstream's TODO `:290-292` states the admin is a spell whose payload is
+deployed and public before execution, so the front-run needs no mempool race: the attacker
+deposits at any time before the spell executes and the result is deterministic. The exit always
+went through the redeem queue, so removing cancel changed none of the numbers
+(`test_BUG_realizeGain_sandwichUnchangedWithoutCancel`, plus the five round-3 tests): 1M TVL, 1M
+capital, 50_000 gain, fee 0: attacker out 1_024_999_999_998, profit 24_999_999_998, alice loses
+25_000_000_000; fee 1%: profit 14_749_999_997; take = gain * c / (TVL + c). Pause before the
+gain or a full deposit queue kills it. The attacker's commitment to the queue is one planner
+turnaround, which an honest planner provides.
+
+#### R4-3 Info (downgraded from C-10 Low): capacity hog is a commitment
+`test_capacityHog_isACommitmentUntilPlannerPays`: the hog's escrowed shares cannot be transferred
+(balance 0), cancelled (gone) or released by repointing; his capital is illiquid until the
+planner pays; the first `processPendingRedeems` releases him FIFO, frees the capacity, and his
+re-hog queues behind the victim. One hog buys one planner call of delay for the attacker's whole
+position locked.
+
+#### R4-4 Low (unchanged R2-5 / R2-6, numbers re-pinned)
+- `requestRedeem(0)` ghosts are free and now permanent (no cancel ever removed them; the updater
+  says `no-request`): 89_139 gas each, planner skip 518 (`test_griefing_zeroRedeemGhostsAreFree`).
+- `requestDeposit(0)` ghosts 74_732 gas each, planner skip 493, 60_851 per 30M block
+  (`test_griefing_ghostDepositEntriesGasPerSkip`); head walk charged to the next depositor 798
+  gas per ghost warm, 10_721 ghosts to push one deposit past 30M, 804M gas of attacker spend
+  (`test_griefing_headWalkChargedToNextDepositorAfterPlannerClosesHead`); an owner cancelling at
+  the head pays 994_082 gas over 1000 ghosts; the redeem queue has no owner walk left, the
+  planner pays 559_066 for one fill plus 1000 skips (`test_griefing_ownerCancelAtHeadPaysWalkOverGhosts`).
+- Dust cancel bloat: 250_108 gas per 2-wei deposit + cancel, 17_839 planner gas per entry,
+  1_681 per block (`test_cancelQueue_dustCancelsGasPerEntry`).
+- `minDeposit >= 1e6` and `minRedeem >= 100` (at a 1% fee cap, see R4-8) remove all of them.
+
+#### R4-5 Medium (trust model, unchanged): compromised roles
+- RISK_MANAGER `realizeLoss(totalAssets - 1)` wipes every holder; `realizeGain` is the only
+  repair (`test_compromised_riskManager_realizeLossWipesHolders`).
+- SETTER at MAX_VSR over-credits 1_900.837678 USDC per day on 1M (unchanged tests).
+- REBALANCER lock-in is now total (`test_compromised_rebalancer_starvedUsersAreLockedInAllThreeQueues`):
+  with the planner absent, 999_999_999_998 USDC in the redeem queue and 99_999_999_999 in the
+  cancel queue are unreachable; the redeemer cannot transfer, cancel or be released by any role
+  (guardian, admin, risk manager, setter all revert on the process calls and the updaters);
+  pause/unpause and a year of time change nothing; the admin's lever is granting
+  REBALANCER_ROLE to a new address, which pays everything out in two calls. The rebalancer still
+  cannot extract value in any order or chunking (`test_compromised_rebalancer_cannotExtractValue`).
+- GUARDIAN honest (`test_guardian_toolsAreCancelToOwnerAndPauseOnly`): a deposit cancel to any
+  address but the owner reverts `invalid-recipient`; no guardian action exists on redeems
+  (`not-authorized`); cancel and pause exclude each other (`:410` `whenNotPaused`), so a paused
+  vault cannot be cleaned up by the guardian.
+- TAKER honest: unchanged.
+
+### New attacks
+
+#### R4-6 Medium: the cancellation queue can be blocked at zero fee with a blacklisted refund address
+`requestDepositCancellation` `:409-449` lets the owner name any `recipient_`;
+`_processPendingDepositCancellations` `:842-879` is strict FIFO and `:869`
+`spUSDC.redeem(shares, recipient, vault)` ends in `usdc.transfer(recipient)`;
+`updateDepositCancellationRecipient` `:500` is owner-only. This is the redeem-queue block (C-2)
+moved to the refund queue, where no fee is charged.
+`test_BUG_blacklistedCancelRecipientBlocksCancellationQueue_zeroFee`: capacity full, attacker
+queues `minDeposit` (1 USDC), the victim queues 1_000_000 USDC behind him; attacker cancels to a
+blacklisted address (119_494 gas), the victim cancels to himself.
+- Every `processPendingDepositCancellations` reverts `Blacklistable: account is blacklisted`,
+  including `(1, 1)`; guardian, rebalancer and admin get `not-authorized` on the updater; pause
+  gives `paused` and the unpause restores the block; a week later the victim has 0.
+- The attacker repoints to himself when he likes and is refunded 999_999 of 1_000_000 (one
+  floor, no fee); he re-jams immediately with the same dollar. Cost: gas only.
+- Precondition: the deposit must be queued (instant fills delete the entry), which is the state
+  whenever the cancellation queue is in use at all.
+Impact: every pending refund is hostage to one dollar; no third party can clear it. Fix: pay
+`request_.owner` on a failed transfer or skip/park the entry; or reject recipients for which
+`USDC.isBlacklisted()` holds at request time; the same fix as C-2.
+
+#### R4-7 Info: `transfer(address(vault))` is accepted and parks shares outside the escrow
+`transfer` `:531-537` only rejects `address(0)` (spUSDC also rejects itself).
+`test_transfer_toVaultCreatesPhantomSharesOutsideEscrow`: the shares count in `totalSupply` and
+capacity, `pendingRedeemShares` does not see them, no path burns them, nobody can claim them
+(`transferFrom` from the vault has no allowance). Another holder's redeem burns exactly its
+entry. Owner's loss only; same shape as the round-1 `recipient == vault` self-harm.
+
+#### R4-8 Info: `requestRedeem(1)` at any non-zero fee is a 100% fee and a ghost
+`:464` rounds the fee up. `test_requestRedeem_oneShareAtNonZeroFeeIsAllFeeGhost`: at 1%
+`requestRedeem(1)` burns the share, queues 0 (planner skips it), emits `RedeemRequest(.., 1, 1)`;
+99 shares pay 1 share of fee (1.01%), 100 pay exactly 1. `minRedeem >= 100` removes it at the 1%
+cap.
+
+#### R4-9 Info: `Referral` is spoofable for any recipient
+`:405` emits `Referral(referral_, recipient_, assets_)` for a caller-chosen recipient before the
+deposit. `test_referral_eventSpoofableForAnyRecipient`: any address can be attributed to any code
+for `minDeposit`, which is gifted to it as shares. The recipient gets no control over a queued
+entry (`not-authorized` on updater and cancel) and cannot be harmed by it; the attacker can
+cancel back to himself (999_999 of 1_000_000).
+
+### Attacks that failed, as properties
+
+| Property | Test |
+|---|---|
+| `transferFrom` self-transfer edges: `from == to` leaves the balance unchanged, a spender's self-transfer only burns allowance, max allowance never decrements, over-balance and over-allowance revert | `test_transferFrom_selfTransferEdges` |
+| A recipient contract with no receive/fallback is minted on the instant path, on a queued fill and after `updateDepositRecipient` right before the fill (mint `:930-935` has no hook) | `test_requestDeposit_recipientContractWithoutHooksIsMinted` |
+| An ERC-1271 signer reached from `permit` (`:989` staticcall) cannot `requestRedeem`, repoint its open entry or nest a `permit`; every attempt fails `invalid-permit`, nonce, allowances and queue untouched; the honest signer still works | `test_reentrancy_erc1271SignerCannotTouchQueuesOrPermit` |
+| Fills never push `totalSupply` above `maxCapacity` on the instant or planner path, random caps, indexes and sizes (5000 runs) | `testFuzz_processDeposits_supplyNeverExceedsCapacity` |
+| Guardian cancel always refunds the owner; random 24-step sequences with guardian cancels, owner repoints and the three planners keep all queue invariants (5000 runs) | `testFuzz_queueInvariants_randomOps` |
+| Everything in the round-3 and round-2 tables | same tests, ported |
+
+### Unsettled
+1. R4-6: decide the failed-transfer policy for both queues (pay owner, skip, or reject at
+   request time). Until then one blacklisted dollar blocks all refunds and one fee blocks all
+   redeems.
+2. R4-2: `realizeGain` under a spell is a guaranteed transfer to whoever holds at that block;
+   require `paused` or stream it.
+3. REBALANCER is now the single point of exit for all three queues; a permissionless
+   `processPending*` fallback after a delay, or a user-side cancel for redeems, would bound R4-5.
+4. Launch parameters: `minDeposit >= 1e6`, `minRedeem >= 100` (R4-8), fee > 0.
+5. Dead event `CancelRedeemRequest` `:101`.
+6. Not tested: real-USDC behaviour on a fork (blacklist cases use `vm.mockCallRevert`).
+
+---
+
 ## Round 3 (ff828d2)
 
 Worker: adversarial. File: `test/Adversarial.t.sol` (contract `AdversarialTest is LocalTestBase`),

@@ -522,23 +522,30 @@ contract CancelledDepositQueueTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** 8. Guardian cancel (F-1 persists; owned by CANCEL-FEES)                                ***/
+    /*** 8. Guardian cancel (F-1 fixed at bf93b0d: refund goes to the owner; CANCEL-FEES owns)  ***/
     /**********************************************************************************************/
 
-    function test_requestDepositCancellation_guardianChoosesRecipient() public {
+    function test_requestDepositCancellation_guardianMustRefundOwner() public {
         uint256 id = _deposit(alice, ONE_M);
 
         vm.prank(guardian);
-        uint256 cid = vault.requestDepositCancellation(id, guardian);
+        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vault.requestDepositCancellation(id, guardian);
+        vm.prank(guardian);
+        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vault.requestDepositCancellation(id, bob);
+
+        vm.prank(guardian);
+        uint256 cid = vault.requestDepositCancellation(id, alice);
 
         ( address owner, address recipient, uint256 shares ) = _cancelledDepositRequest(cid);
         assertEq(owner,     alice);
-        assertEq(recipient, guardian);
+        assertEq(recipient, alice);
         assertEq(shares,    S_1M);
 
         _processCancelledDeposits(type(uint256).max, type(uint256).max);
-        assertEq(usdc.balanceOf(guardian), A_1M);
-        assertEq(usdc.balanceOf(alice),    0);
+        assertEq(usdc.balanceOf(guardian), 0);
+        assertEq(usdc.balanceOf(alice),    A_1M);
     }
 
     /**********************************************************************************************/
@@ -603,14 +610,20 @@ contract CancelledDepositQueueTest is LocalTestBase {
                 // queue a deposit (capacity is 0, nothing fills)
                 _deposit(u, bound(amt, 1, 1_000_000e6));
             } else if (a == 1) {
-                // cancel a random open deposit entry owned by anyone (guardian path)
+                // cancel a random open deposit entry owned by anyone (guardian path): the
+                // refund must go to the entry's owner (bf93b0d)
                 uint256 len = _depositLength();
                 if (len == 0) continue;
                 uint256 id = amt % len;
-                ( ,, uint256 s ) = _depositRequest(id);
+                ( address o,, uint256 s ) = _depositRequest(id);
                 if (s == 0) continue;
+                if (o != u) {
+                    vm.prank(guardian);
+                    vm.expectRevert("SparkPrimeVault/invalid-recipient");
+                    vault.requestDepositCancellation(id, u);
+                }
                 vm.prank(guardian);
-                vault.requestDepositCancellation(id, u);
+                vault.requestDepositCancellation(id, o);
             } else if (a == 2) {
                 _processCancelledDeposits(bound(amt, 0, 2_000_000e6), amt % 4);
             } else if (a == 3) {

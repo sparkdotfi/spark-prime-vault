@@ -255,7 +255,9 @@ contract NewSurfaceTest is NewSurfaceBase {
         assertEq(usdc.balanceOf(mallory), 0);
     }
 
-    function test_updateRedeemRecipient_filledAndCancelledEntriesRevertNoRequest() public {
+    // bf93b0d removed `cancelRedeemRequest`: a redeem entry is open until the planner fills it,
+    // and the filled (deleted) slot rejects the updater.
+    function test_updateRedeemRecipient_filledEntryRevertsNoRequest() public {
         _deposit(alice, ONE_M);
         uint256 filled = _requestRedeem(alice, SH_100K);
         _processRedeems(type(uint256).max, type(uint256).max);
@@ -266,13 +268,16 @@ contract NewSurfaceTest is NewSurfaceBase {
         vm.expectRevert("SparkPrimeVault/no-request");
         vault.updateRedeemRecipient(filled, bob);
 
-        uint256 cancelled = _requestRedeem(alice, SH_100K);
-        vm.prank(alice);
-        vault.cancelRedeemRequest(cancelled, alice);
-
-        vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/no-request");
-        vault.updateRedeemRecipient(cancelled, bob);
+        // The selector is gone from the contract: a call to the old function is a plain revert
+        // (no fallback), and the owner's shares stay escrowed until the planner pays.
+        uint256 open = _requestRedeem(alice, SH_100K);
+        (bool ok, ) = address(vault).call(
+            abi.encodeWithSignature("cancelRedeemRequest(uint256,address)", open, alice)
+        );
+        assertFalse(ok);
+        ( ,, s ) = _redeemRequest(open);
+        assertEq(s, SH_100K);
+        assertEq(vault.balanceOf(address(vault)), SH_100K);
     }
 
     // `updateDepositCancellationRecipient` (lines 465-477): same shape, for the USDC refund.
@@ -311,28 +316,33 @@ contract NewSurfaceTest is NewSurfaceBase {
         vault.updateDepositCancellationRecipient(cid, alice);
     }
 
-    // The cancelled entry keeps the depositor as `owner` even when the GUARDIAN cancelled and
-    // named itself as recipient (F-1), so the depositor can re-point the refund to themselves
-    // before settlement. This is the first user-side mitigation of F-1.
-    function test_updateDepositCancellationRecipient_ownerReclaimsGuardianChosenRecipient() public {
+    // bf93b0d (F-1 deposit side fixed): the GUARDIAN can only cancel to the entry's owner
+    // (`:424` `invalid-recipient` otherwise); the cancelled entry keeps the depositor as owner, so
+    // only the depositor can repoint the refund afterwards.
+    function test_updateDepositCancellationRecipient_guardianCancelRefundsOwnerOnly() public {
         _setCapacity(0);
         uint256 id = _deposit(alice, ONE_M);
 
         vm.prank(guardian);
-        uint256 cid = vault.requestDepositCancellation(id, guardian);
+        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vault.requestDepositCancellation(id, guardian);
+
+        vm.prank(guardian);
+        uint256 cid = vault.requestDepositCancellation(id, alice);
         ( address owner, address recipient, ) = _cancelledDepositRequest(cid);
         assertEq(owner,     alice);
-        assertEq(recipient, guardian);
+        assertEq(recipient, alice);
 
         vm.prank(guardian);
         vm.expectRevert("SparkPrimeVault/not-authorized");
         vault.updateDepositCancellationRecipient(cid, guardian);
 
         vm.prank(alice);
-        vault.updateDepositCancellationRecipient(cid, alice);
+        vault.updateDepositCancellationRecipient(cid, bob);
 
         _processCancelledDeposits(type(uint256).max, type(uint256).max);
-        assertEq(usdc.balanceOf(alice),    A_1M);
+        assertEq(usdc.balanceOf(bob),      A_1M);
+        assertEq(usdc.balanceOf(alice),    0);
         assertEq(usdc.balanceOf(guardian), 0);
     }
 
@@ -1014,9 +1024,10 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         assertEq(shares,    0);
         assertEq(vault.pendingRedeemShares(), 0);
 
+        // Permanent: no cancel exists and the updater rejects the 0-share slot.
         vm.prank(mallory);
         vm.expectRevert("SparkPrimeVault/no-request");
-        vault.cancelRedeemRequest(id, mallory);
+        vault.updateRedeemRecipient(id, mallory);
     }
 
     // Ghost entries ahead of a real one consume `maxRequests` (C-12 persists).
@@ -1240,6 +1251,33 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         vm.expectEmit(address(vault));
         emit Deposit(alice, alice, A_1M, SH_1M);
         vault.requestDeposit(ONE_M, alice);
+    }
+
+    // Round 4: every `uint192` cast in the contract. `initialize` (:248) casts RAY; `drip` (:620)
+    // and `nowChi` (:748) cast a quotient that is <= maxUint256 / RAY < 2^192 whenever the
+    // multiplication did not already revert; `realizeLoss` (:378) only ever lowers chi (fuzzed in
+    // `testFuzz_realizeLoss_newChiNeverExceedsOld`); `realizeGain` (:302) is the one cast that can
+    // wrap (G-2). Pinned here: the drip bound sits 5.4e7 times below 2^192, so a chi that drips at
+    // all can never be a wrapped value.
+    function test_uint192Casts_onlyRealizeGainCanWrap() public {
+        uint256 dripBound = type(uint256).max / RAY;
+        assertLt(dripBound, 2 ** 192);
+        assertEq(2 ** 192 / dripBound, 54_210_108);
+
+        _deposit(alice, ONE_M);
+        _pause();
+        _realizeLoss(1);
+        assertLe(uint256(vault.chi()), CHI_P);                      // never up, never wraps
+
+        // A gain whose quotient lands exactly at 2^192 wraps to 0 (chi == 0) in one call.
+        uint256 supply = vault.totalSupply();
+        uint256 ta     = vault.totalAssets();
+        uint256 gain   = (2 ** 192) * supply / RAY + 1 - ta;
+        vm.prank(admin);
+        vault.realizeGain(gain);
+        assertEq(uint256(vault.chi()), 458_233_707_431_279);         // quotient - 2^192 (G-2 value)
+        assertLt(uint256(vault.chi()), RAY / supply + 1);            // below one gain step
+        assertEq(vault.totalAssets(), 0);
     }
 
     function test_events_redeemOrderIsOwnerRecipientSharesAssets() public {

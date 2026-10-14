@@ -126,4 +126,59 @@ contract ViewsTest is LocalTestBase {
         for (uint256 i; i < cancelled.length; ++i) csum += cancelled[i].shares;
         assertEq(csum, vault.pendingCancelledDepositSavingsShares());
     }
+
+    // Round 4: a range read of a deleted head entry in each of the three queues returns the
+    // zeroed struct, the head-to-end view excludes it, and the range `(head - 1, head)` is a
+    // legal, one-element, all-zero read. Reading the deleted slot never reverts and never
+    // confuses it with an open entry.
+    function test_getPendingRequests_rangeReadOfDeletedHeadEntry() public {
+        // Deposit queue: id 0 filled instantly and deleted; id 1 queued.
+        _deposit(alice, 100e6);
+        _setCapacity(vault.totalSupply());
+        _deposit(bob, 50e6);
+        assertEq(vault.firstPendingDepositId(), 1);
+
+        SparkPrimeVault.Request[] memory d = vault.getPendingDepositRequests(0, 1);
+        assertEq(d.length,       1);
+        assertEq(d[0].owner,     address(0));
+        assertEq(d[0].recipient, address(0));
+        assertEq(d[0].shares,    0);
+        assertEq(vault.getPendingDepositRequests().length, 1);
+        assertEq(vault.getPendingDepositRequests()[0].owner, bob);
+
+        // Cancellation queue: bob cancels, planner settles, slot 0 is deleted and the head is 1.
+        vm.prank(bob);
+        vault.requestDepositCancellation(1, bob);
+        _processCancelledDeposits(type(uint256).max, 1);
+        assertEq(vault.firstPendingDepositCancellationId(), 1);
+        SparkPrimeVault.Request[] memory c = vault.getPendingDepositCancellationRequests(0, 1);
+        assertEq(c[0].owner,     address(0));
+        assertEq(c[0].recipient, address(0));
+        assertEq(c[0].shares,    0);
+        assertEq(vault.getPendingDepositCancellationRequests().length, 0);
+        assertEq(vault.getPendingDepositCancellationRequests(1, 1).length, 0);
+
+        // Redeem queue: alice's redeem is paid in full and deleted; carol's stays open behind it.
+        _setCapacity(type(uint128).max);
+        _deposit(carol, 10e6);
+        _requestRedeem(alice, vault.balanceOf(alice));
+        _requestRedeem(carol, vault.balanceOf(carol));
+        _processRedeems(type(uint256).max, 1);
+        assertEq(vault.firstPendingRedeemId(), 1);
+
+        SparkPrimeVault.Request[] memory r = vault.getPendingRedeemRequests(0, 2);
+        assertEq(r.length,       2);
+        assertEq(r[0].owner,     address(0));
+        assertEq(r[0].recipient, address(0));
+        assertEq(r[0].shares,    0);
+        assertEq(r[1].owner,     carol);
+        assertEq(r[1].shares,    vault.pendingRedeemShares());
+        assertEq(vault.getPendingRedeemRequests().length, 1);
+        assertEq(vault.getPendingRedeemRequests()[0].owner, carol);
+
+        // Past the end is still rejected, exactly at the end is an empty read.
+        vm.expectRevert("SparkPrimeVault/invalid-range");
+        vault.getPendingRedeemRequests(0, 3);
+        assertEq(vault.getPendingRedeemRequests(2, 2).length, 0);
+    }
 }
