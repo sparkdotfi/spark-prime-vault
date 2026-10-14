@@ -293,7 +293,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     function realizeGain(uint256 gain_) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(paused,    "SparkPrimeVault/not-paused");
         require(gain_ > 0, "SparkPrimeVault/invalid-loss");
 
         drip();
