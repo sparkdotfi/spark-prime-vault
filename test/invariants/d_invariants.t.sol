@@ -5,7 +5,7 @@ import "./c_flows_admin.sol";
 
 import { LocalTestBase } from "../LocalTestBase.t.sol";
 
-// Invariant campaign for `SparkPrimeVault` over the local harness (real spUSDC code, 6-decimal
+// Invariant campaign (round 3, ff828d2) for `SparkPrimeVault` over the local harness (real spUSDC code, 6-decimal
 // mock USDC). Run with:
 //   FOUNDRY_INVARIANT_RUNS=100 FOUNDRY_INVARIANT_DEPTH=500 \
 //     forge test --match-path 'test/invariants/*.t.sol' -vv
@@ -122,12 +122,14 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
         assertFalse(handler.mintedAboveCapacity(), "F: mint exceeded capacity");
     }
 
-    // G. chi only decreases via realizeLoss, and drip() lands exactly on nowChi().
+    // G. chi only moves in the sanctioned places (down in realizeLoss, up in warp and realizeGain;
+    //    the handler flags any other change), is never zero, and drip() lands exactly on nowChi().
     function invariant_G_chiMonotonicAndDripConsistent() public {
-        assertFalse(handler.chiDecreasedOutsideLoss(), "G: chi decreased outside realizeLoss");
+        assertFalse(handler.chiDecreasedOutsideLoss(),  "G: chi decreased outside realizeLoss");
+        assertFalse(handler.chiRoseOutsideWarpOrGain(), "G: chi rose outside warp / realizeGain");
 
         uint256 nowChi_ = vault.nowChi();
-        assertGe(nowChi_, handler.lastChi(), "G: chi decreased");
+        assertEq(nowChi_, handler.lastChi(), "G: chi moved since the last handler call");
         assertGe(nowChi_, vault.chi(),       "G: nowChi below stored chi");
         assertGt(nowChi_, 0,                 "G: chi is zero");
 
@@ -151,10 +153,16 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
 
     // H. Solvency: while spUSDC's VSR has never been below spPRIME's and the taker holds nothing,
     //    the spUSDC value held by the vault net of what is owed to queued depositors and to
-    //    queued cancels covers the notional totalAssets() plus every loss realised so far, up to
-    //    a rounding epsilon. (Losses realised in the campaign are fictitious: the backing never
-    //    left, so each realizeLoss only widens the gap by at least `loss`, see the handler's
-    //    `totalAssets() + loss <= totalAssets before` assertion.)
+    //    queued cancels covers the notional totalAssets() minus the deficit the fictitious
+    //    realizeGain / realizeLoss calls created, up to a rounding epsilon.
+    //
+    //    Deficit ledger (handler `ghostDeficitUsdc`, an upper bound on totalAssets() - backing):
+    //    +gain on realizeGain, -loss on realizeLoss (both move totalAssets() by exactly the
+    //    amount, see T, and no backing moves). Between events, with N = notional, B = backing,
+    //    D = N - B, r_s >= r_p: if D > 0 then D grows at most at r_s (N grows at r_p <= r_s and
+    //    -B grows at most at r_s whatever B's sign), if D < 0 then B > N >= 0 and D grows at most
+    //    at r_p. The warp handler scales the ledger by the matching index, rounding towards the
+    //    bound. Every other action moves N and B together up to the rounding below.
     //
     //    Epsilon: deposit fills round in the vault's favour (double floor) and totalAssets() is a
     //    single floor, so the deposit side contributes at most 1 wei in total. Each redeem fill
@@ -179,9 +187,9 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
         uint256 chiS    = spUsdc.nowChi();
         uint256 epsilon = handler.redeemFills() * ((chiS + RAY - 1) / RAY) + 2;
 
-        int256 notional = int256(vault.totalAssets()) + int256(handler.realizedLossUsdc());
+        int256 notional = int256(vault.totalAssets()) - handler.ghostDeficitUsdc();
 
-        assertGe(backing + int256(epsilon), notional, "H: notional exceeds real backing");
+        assertGe(backing + int256(epsilon), notional, "H: notional exceeds real backing + deficit ledger");
     }
 
     // I. Users never extract more USDC than they deposited plus the USDC that entered spUSDC as
@@ -236,11 +244,12 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
         assertEq(handler.redeemProcessRevertsOther(), 0, "O: unexpected processRedeemQueue revert");
     }
 
-    // P. processCancelledDepositQueue only ever reverted with spUSDC's insufficient-liquidity
-    //    (its budget is the vault's spUSDC balance, which ignores spUSDC's USDC liquidity).
-    function invariant_P_processCancelledDepositQueueRevertsOnlyOnKnownReasons() public view {
+    // P. processCancelledDepositQueue never reverts: its budget is spUSDC.maxRedeem(vault), which
+    //    caps at both the vault's spUSDC balance and spUSDC's USDC liquidity (fixed at ff828d2).
+    function invariant_P_processCancelledDepositQueueNeverReverts() public view {
         assertEq(
-            handler.cancelProcessRevertsOther(), 0, "P: unexpected processCancelledDepositQueue revert"
+            handler.cancelProcessReverts(), 0,
+            string.concat("P: processCancelledDepositQueue reverted: ", handler.lastCancelProcessRevert())
         );
     }
 
@@ -248,6 +257,23 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
     //    owner/shares are byte-identical before and after; only future fills are redirected.
     function invariant_R_recipientUpdatesNeverChangeTotals() public view {
         assertFalse(handler.recipientUpdateChangedState(), "R: recipient update moved state");
+    }
+
+    // S. Every recipient update attempted by someone who is not the entry's owner reverted, with
+    //    exactly `SparkPrimeVault/not-authorized` (owner-only since ff828d2).
+    function invariant_S_recipientUpdateByNonOwnerAlwaysReverts() public view {
+        assertEq(
+            handler.recipientUpdateStrangerReverts(),
+            handler.recipientUpdateStrangerAttempts(),
+            string.concat("S: non-owner recipient update did not revert as expected: ", handler.lastStrangerUpdateRevert())
+        );
+    }
+
+    // T. realizeGain / realizeLoss move totalAssets() by exactly the amount, within 1 wei (the
+    //    new chi is a single floor; totalSupply * frac(chi) / RAY < 1 wei at any sane supply).
+    function invariant_T_gainAndLossAccounting() public view {
+        assertEq(handler.gainLossOutOfBound(), 0, "T: gain/loss moved totalAssets by more than amount +/- 1");
+        assertLe(handler.maxGainLossError(),   1, "T: gain/loss accounting error above 1 wei");
     }
 
     /**********************************************************************************************/
@@ -291,14 +317,12 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
         assertEq(vault.pendingRedeemShares(), 11);
     }
 
-    // N-2 (round 2, known). `_processCancelledDepositQueue` sizes `remaining_` by the vault's
-    // spUSDC balance only; spUSDC's `redeem` then requires USDC liquidity for the whole payout, so
-    // the batch reverts with `SparkVault/insufficient-liquidity` instead of paying what spUSDC can
-    // cover (or nothing). `processRedeemQueue` does not have this problem because its budget goes
-    // through `maxWithdraw`, which caps at spUSDC's liquidity.
-    //
-    // This test PASSES by asserting the revert; it is a proof, not a regression.
-    function test_BUG_processCancelledDepositQueueRevertsWhenSpUsdcIlliquid() public {
+    // N-2 (round 2) is FIXED at ff828d2: `_processCancelledDepositQueue` sizes `remaining_` by
+    // `spUSDC.maxRedeem(vault)`, which caps at spUSDC's USDC liquidity, so with 150 USDC of
+    // liquidity and two 100 USDC refunds queued the batch pays alice in full, bob partially, and
+    // stops; the rest is paid once liquidity is back. The second call with no liquidity left is a
+    // no-op instead of a revert.
+    function test_processCancelledDepositQueuePaysUpToSpUsdcLiquidity() public {
         address alice = makeAddr("alice");
         address bob   = makeAddr("bob");
 
@@ -311,30 +335,35 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
         vm.prank(bob);
         vault.cancelDepositRequest(idB, bob);
 
-        assertEq(vault.pendingCancelledDepositSavingsShares(), _vaultSpUsdc());
+        uint256 queued = vault.pendingCancelledDepositSavingsShares();
+        assertEq(queued, _vaultSpUsdc());
 
         // Leave 150 USDC of liquidity in spUSDC: enough for alice's refund, not for both.
         _drainSpUsdcLiquidity(usdc.balanceOf(address(spUsdc)) - 150e6);
 
-        vm.prank(rebalancer);
-        vm.expectRevert("SparkVault/insufficient-liquidity");
-        vault.processCancelledDepositQueue(type(uint256).max, 2);
+        uint256 budget = spUsdc.maxRedeem(address(vault));
+        assertLt(budget, queued);
 
-        // One at a time pays alice (minus the 1-wei deposit/redeem floor round trip); the second
-        // call reverts rather than paying nothing.
+        _processCancelledDeposits(type(uint256).max, 2);
+
+        assertEq(usdc.balanceOf(alice), 100e6 - 1);  // 1-wei deposit/redeem floor round trip
+        assertEq(usdc.balanceOf(bob),   49_999_999);
+        assertEq(usdc.balanceOf(address(spUsdc)), 150e6 - (100e6 - 1) - 49_999_999);
+        assertEq(vault.cancelledDepositHead(), 1);  // bob's partial entry stays at the head
+        assertEq(vault.pendingCancelledDepositSavingsShares(), queued - budget);
+
+        // Nothing left in spUSDC: the call is a no-op, no revert.
+        _drainAllSpUsdcLiquidity();
         _processCancelledDeposits(type(uint256).max, 1);
-        assertEq(usdc.balanceOf(alice), 100e6 - 1);
+        assertEq(usdc.balanceOf(bob), 49_999_999);
         assertEq(vault.cancelledDepositHead(), 1);
 
-        vm.prank(rebalancer);
-        vm.expectRevert("SparkVault/insufficient-liquidity");
-        vault.processCancelledDepositQueue(type(uint256).max, 1);
-
-        // Once liquidity is back the refund goes through, with the spUSDC yield (none here).
+        // Once liquidity is back the remainder goes through.
         _returnSpUsdcLiquidity(100e6);
         _processCancelledDeposits(type(uint256).max, 1);
-        assertEq(usdc.balanceOf(bob), 100e6 - 1);
+        assertEq(usdc.balanceOf(bob), 99_999_999);
         assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
+        assertEq(vault.cancelledDepositHead(), 2);
     }
 
     /**********************************************************************************************/
@@ -358,11 +387,16 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
         console.log("ghostDepositEntries (F-5)  ", handler.ghostDepositEntries());
         console.log("ghostRedeemEntries (F-5)   ", handler.ghostRedeemEntries());
         console.log("recipientUpdates           ", handler.recipientUpdates());
-        console.log("recipientUpdatesByStranger ", handler.recipientUpdatesByStranger());
+        console.log("strangerUpdateAttempts     ", handler.recipientUpdateStrangerAttempts());
+        console.log("strangerUpdateReverts      ", handler.recipientUpdateStrangerReverts());
         console.log("lossRealizations           ", handler.lossRealizations());
         console.log("realizedLossUsdc           ", handler.realizedLossUsdc());
+        console.log("gainRealizations           ", handler.gainRealizations());
+        console.log("realizedGainUsdc           ", handler.realizedGainUsdc());
+        console.log("maxGainLossError (T)       ", handler.maxGainLossError());
+        console.log("ghostDeficitUsdc (H)       ", handler.ghostDeficitUsdc());
         console.log("redeemProcessReverts (N-1) ", handler.redeemProcessReverts());
-        console.log("cancelProcessReverts (N-2) ", handler.cancelProcessReverts());
+        console.log("cancelProcessReverts (P)   ", handler.cancelProcessReverts());
         console.log("usersRedeemedUsdc          ", handler.usersRedeemedUsdc());
         console.log("usersRefundedUsdc          ", handler.usersRefundedUsdc());
         console.log("rateOrderBroken            ", handler.rateOrderBroken());

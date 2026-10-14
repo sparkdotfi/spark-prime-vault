@@ -3,8 +3,9 @@ pragma solidity ^0.8.34;
 
 import "./b_flows_user.sol";
 
-// Admin / role / environment flows: capacity, fee, minimums, both VSRs, pause/unpause, loss
-// realisation, the three queue processors, take/return, spUSDC liquidity drains and returns, time.
+// Admin / role / environment flows: capacity, fee, minimums, both VSRs, pause/unpause, loss and
+// gain realisation, the three queue processors, take/return, spUSDC liquidity drains and returns,
+// time.
 contract FlowsAdmin is FlowsUser {
 
     constructor(address vault_) FlowsUser(vault_) {}
@@ -86,21 +87,13 @@ contract FlowsAdmin is FlowsUser {
     /*** Pause and losses                                                                       ***/
     /**********************************************************************************************/
 
-    // Pauses in ~1 of 4 calls so the vault is not paused half of the time. `pause()` is held by
-    // GUARDIAN_ROLE upstream (`review/poc-tests-v2`); the admin fallback covers the intermediate
-    // revision where it sat on DEFAULT_ADMIN_ROLE.
+    // Pauses in ~1 of 4 calls so the vault is not paused half of the time (GUARDIAN_ROLE).
     function pause(uint256 seed) public counted("pause") {
         if (seed % 4 != 0) return;
 
         vm.startPrank(guardian);
-        try vault.pause() {
-            vm.stopPrank();
-        } catch {
-            vm.stopPrank();
-            vm.startPrank(admin);
-            vault.pause();
-            vm.stopPrank();
-        }
+        vault.pause();
+        vm.stopPrank();
     }
 
     function unpause() public counted("unpause") {
@@ -109,10 +102,11 @@ contract FlowsAdmin is FlowsUser {
         vm.stopPrank();
     }
 
-    // Small losses (<= totalAssets / 10), only while paused with a live supply, and only when the
-    // resulting chi stays positive (chi == 0 would brick every conversion). The handler asserts
-    // the contract's floor: totalAssets after the call plus the loss never exceeds totalAssets
-    // before it, which is what invariant H relies on.
+    // Small losses (`1 <= loss <= totalAssets / 10`, so `0 < loss < totalAssets` always holds),
+    // only while paused with a live supply, and only when the resulting chi stays positive. The
+    // handler asserts the contract's floor (`totalAssets after + loss <= totalAssets before`),
+    // records the per-call accounting error (invariant T) and lowers the deficit ledger by the
+    // loss (invariant H).
     function realizeLoss(uint256 loss) public counted("realizeLoss") {
         if (!vault.paused()) return;
 
@@ -132,14 +126,54 @@ contract FlowsAdmin is FlowsUser {
         vault.realizeLoss(loss);
         vm.stopPrank();
 
+        uint256 assetsAfter = vault.totalAssets();
+
         assertLt(vault.nowChi(), chiBefore, "handler: realizeLoss did not lower chi");
         assertGt(vault.nowChi(), 0,         "handler: realizeLoss zeroed chi");
-        assertLe(vault.totalAssets() + loss, assetsBefore, "handler: loss under-applied");
+        assertLe(assetsAfter + loss, assetsBefore, "handler: loss under-applied");
+
+        _recordGainLossError(assetsBefore, assetsAfter, loss, false);
 
         lossRealizations++;
         realizedLossUsdc += loss;
+        ghostDeficitUsdc -= int256(loss);
 
-        lastChi = vault.nowChi();  // the only sanctioned chi decrease (invariant G)
+        lastChi = vault.nowChi();  // sanctioned chi decrease (invariant G)
+    }
+
+    // Small gains (`1 <= gain <= totalAssets / 10`), admin only, in any pause state, only with a
+    // live supply, and skipped when the resulting chi would pass 1e30 (keeps every conversion far
+    // from overflow). No backing arrives in the harness, so the gain raises the deficit ledger
+    // (invariant H) and the per-call accounting error is recorded (invariant T).
+    function realizeGain(uint256 gain) public counted("realizeGain") {
+        uint256 supply = vault.totalSupply();
+        if (supply == 0) return;
+
+        uint256 assetsBefore = vault.totalAssets();
+        if (assetsBefore < 10) return;
+
+        gain = _bound(gain, 1, assetsBefore / 10);
+
+        if (((assetsBefore + gain) * RAY) / supply > 1e30) return;
+
+        uint256 chiBefore = vault.nowChi();
+
+        vm.startPrank(admin);
+        vault.realizeGain(gain);
+        vm.stopPrank();
+
+        uint256 assetsAfter = vault.totalAssets();
+
+        assertGe(vault.nowChi(), chiBefore,     "handler: realizeGain lowered chi");
+        assertLe(assetsAfter, assetsBefore + gain, "handler: gain over-applied");
+
+        _recordGainLossError(assetsBefore, assetsAfter, gain, true);
+
+        gainRealizations++;
+        realizedGainUsdc += gain;
+        ghostDeficitUsdc += int256(gain);
+
+        lastChi = vault.nowChi();  // sanctioned chi increase outside warp (invariant G)
     }
 
     /**********************************************************************************************/
@@ -171,10 +205,9 @@ contract FlowsAdmin is FlowsUser {
         _capacityCheck(supplyBefore);
     }
 
-    // Pays cancelled deposits by spUSDC `redeem` with a budget of min(max, spUSDC balance). The
-    // budget ignores spUSDC's USDC liquidity, so the call reverts inside spUSDC with
-    // `SparkVault/insufficient-liquidity` when the liquidity is drained. Observed, not asserted;
-    // any other reason fails invariant P.
+    // Pays cancelled deposits by spUSDC `redeem` with a budget of min(max, spUSDC.maxRedeem(vault)),
+    // which caps at both the vault's spUSDC balance and spUSDC's USDC liquidity, so since ff828d2
+    // the call must never revert. Any revert is counted and its reason kept (invariant P).
     function processCancelledDepositQueue(uint256 maxSavingsShares, uint256 maxRequests, uint256 seed)
         public counted("processCancelledDepositQueue")
     {
@@ -199,12 +232,12 @@ contract FlowsAdmin is FlowsUser {
             assertEq(vault.totalSupply(), supplyBefore, "handler: refund changed totalSupply");
         } catch Error(string memory reason) {
             vm.stopPrank();
+            cancelProcessReverts++;
             lastCancelProcessRevert = reason;
-            if (keccak256(bytes(reason)) == keccak256("SparkVault/insufficient-liquidity")) {
-                cancelProcessReverts++;
-            } else {
-                cancelProcessRevertsOther++;
-            }
+        } catch {
+            vm.stopPrank();
+            cancelProcessReverts++;
+            lastCancelProcessRevert = "<non-string revert>";
         }
     }
 
@@ -318,11 +351,27 @@ contract FlowsAdmin is FlowsUser {
     /*** Time                                                                                   ***/
     /**********************************************************************************************/
 
+    // The only handler that moves time. Scales the deficit ledger (invariant H) by the index the
+    // bound follows: spUSDC's while the ledger is positive, spPRIME's while it is negative.
     function warp(uint256 secs) public counted("warp") {
         secs = _bound(secs, 1, 30 days);
+
+        uint256 chiSBefore = spUsdc.nowChi();
+        uint256 chiPBefore = vault.nowChi();
+
         vm.warp(block.timestamp + secs);
         spUsdc.drip();
         vault.drip();
+
+        uint256 chiSAfter = spUsdc.nowChi();
+        uint256 chiPAfter = vault.nowChi();
+
+        assertGe(chiPAfter, chiPBefore, "handler: warp lowered chi");
+
+        if (ghostDeficitUsdc > 0) _scaleDeficit(chiSBefore, chiSAfter);
+        else                      _scaleDeficit(chiPBefore, chiPAfter);
+
+        lastChi = chiPAfter;  // sanctioned chi increase (invariant G)
     }
 
     /**********************************************************************************************/
