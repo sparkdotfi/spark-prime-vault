@@ -3,6 +3,12 @@
 Written 2026-10-14 00:05 UTC for a Claude session with zero context. Everything you need is in
 this repo; paths below are on Lucas's Mac mini unless marked (fork).
 
+> **Status 2026-10-14, round 3:** upstream now `refactor/more-simplifying` @ `9269fe0`. Suite on
+> `review/poc-tests-v2`: 597 tests, 596 pass, 1 deliberate failing proof. Fixed upstream: recipient
+> updaters (owner-only), full-loss brick, cancelled-queue liquidity revert. New High: `realizeGain`
+> sandwich. Still open: F-1 guardian redirect, `realizeLoss` floor, capacity bound, C-1, C-2.
+> Business Rules v3 drafted in Notion (private draft page, to be moved next to v2).
+
 > **Status 2026-10-14, round 2:** upstream moved to `refactor/more-simplifying` @ `0bc9288`. The whole
 > suite was ported and extended on branch `review/poc-tests-v2` (worktree `~/code/spprime-review-v2`,
 > worker worktrees `~/code/spprime-campaign-v2/<name>`): 520 tests, 519 pass, 1 deliberate failing
