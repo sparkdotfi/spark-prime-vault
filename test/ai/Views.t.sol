@@ -750,6 +750,47 @@ contract ViewsTest is LocalTestBase {
         assertEq(vault.balanceOf(alice), supply_ - 1);
     }
 
+    // The only non-upgrade recovery is in the SAME block: `drip()` short-circuits while
+    // `block.timestamp == rho`, so a second `adjustTotalAssets` in the same block can pull chi
+    // back below the bound. One second later the door is shut.
+    function test_BUG_adjustTotalAssets_chiBrickRecoverableOnlyInSameBlock() public {
+        _deposit(alice, 1_000_000e6);
+        uint256 supply_ = vault.totalSupply();
+        _pause();
+        vault.drip();
+        uint256 ta_     = vault.totalAssets();
+        uint256 needTa_ = ((CHI_RPOW_BOUND + 1) * supply_ + RAY - 1) / RAY;
+        int256  delta_  = int256(needTa_ - ta_);
+
+        vm.prank(admin);
+        vault.adjustTotalAssets(delta_);
+        assertGt(vault.chi(), CHI_RPOW_BOUND);
+
+        uint256 snap_ = vm.snapshotState();
+
+        // Same block: undo works and lands within 1 wei of chi of the original index.
+        vm.prank(admin);
+        vault.adjustTotalAssets(-delta_);
+        assertLe(vault.chi(), CHI_RPOW_BOUND);
+        assertEq(vault.totalAssets(), ta_ - 2);   // 2 wei lost to the two floors of the round trip
+
+        // Next block: the same undo panics inside drip().
+        vm.revertToState(snap_);
+        _warp(1);
+        vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSignature("Panic(uint256)", 0x11));
+        vault.adjustTotalAssets(-delta_);
+    }
+
+    // The `uint192(...)` casts in `drip` (`:637`) and `nowChi` (`:811`) can never truncate:
+    // the uint256 product is bounded by type(uint256).max, so the quotient by RAY is at most
+    // ~1.158e50 < type(uint192).max (~6.277e57). The comment at `:636` is accurate; the real
+    // ceiling on chi is the uint256 product, not the uint192 storage type.
+    function test_nowChi_uint192CastCannotTruncate() public pure {
+        assertLt(CHI_RPOW_BOUND, type(uint192).max);
+        assertEq(type(uint192).max / CHI_RPOW_BOUND, 54_210_108);   // ~5.4e7x headroom unused
+    }
+
     // The exact threshold: chi == bound reads fine after any delay, chi == bound + 1 panics.
     function test_BUG_nowChi_exactRpowOverflowThreshold() public {
         _deposit(alice, 100e6);
