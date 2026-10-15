@@ -19,10 +19,11 @@ interface ISpUsdc {
 }
 
 // Proof-of-concept tests for the review findings against mainnet spUSDC. Each test name carries
-// the finding id. Round 4 (bf93b0d): F-1 is fixed upstream (guardian cancel must refund the
-// owner; `cancelRedeemRequest` removed), so the F-1 test now asserts the fix. F-2 follows the
-// cancel semantics (cancel succeeds, settlement starves) and F-3 asserts the fixed loop. Not
-// executed in this environment (no RPC); compiled only.
+// the finding id. Round 5 (`master` @ 0ebb452): F-1 is fixed upstream (the guardian cancel path
+// is gone, `requestDepositCancellation` is owner-only, `cancelRedeemRequest` removed) and F-3 is
+// fixed (the walk honours `maxRequests`); both are `test_fixed_`. F-2 (queue backing not
+// ring-fenced from `take`), F-4 (dust fill mints zero shares) and F-5 (ghost entries) are still
+// open and keep `test_BUG_` names. Not executed in this environment (no RPC); compiled only.
 contract ReviewTest is TestBase {
 
     IERC20Full internal usdcT = IERC20Full(address(usdc));
@@ -68,26 +69,38 @@ contract ReviewTest is TestBase {
     }
 
     /*******************************************************************************************/
-    /*** F-1 (FIXED at bf93b0d): guardian cancel can only refund the request owner           ***/
+    /*** F-1 (FIXED at 0ebb452): only the request owner can cancel a deposit                  ***/
     /*******************************************************************************************/
 
-    function test_F1_guardianCancelDepositRefundsOwnerOnly() public {
+    function test_fixed_F1_guardianCannotCancelDeposit() public {
         _deposit(alice, 1_000_000e6);              // fills capacity exactly
         uint256 id = _deposit(bob, 100_000e6);     // queued (capacity full)
 
-        assertGt(vault.pendingDepositSavingsShares(), 0);
+        uint256 queued = vault.pendingDepositSavingsShares();
+        assertGt(queued, 0);
 
+        // Guardian and admin have no cancel path at all, whatever recipient they name.
         vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/zero-recipient");
+        vm.expectRevert("SparkPrimeVault/not-authorized");
         vault.requestDepositCancellation(id, thief);
-
         vm.prank(guardian);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vault.requestDepositCancellation(id, bob);
+        vm.prank(admin);
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vault.requestDepositCancellation(id, bob);
+
+        assertEq(vault.pendingDepositSavingsShares(), queued);
+        assertEq(vault.getPendingDepositCancellationRequests().length, 0);
+
+        // The owner cancels and chooses the refund recipient himself.
+        vm.prank(bob);
         uint256 cancelId = vault.requestDepositCancellation(id, bob);
 
         (address owner, address recipient, uint256 shares) = _cancelledDepositRequest(cancelId);
         assertEq(owner,     bob);
         assertEq(recipient, bob);
-        assertGt(shares,    0);
+        assertEq(shares,    queued);
 
         _settleCancels();
 
@@ -96,7 +109,7 @@ contract ReviewTest is TestBase {
     }
 
     // Redeems have no cancel entry point any more; the selector is not in the ABI.
-    function test_F1_cancelRedeemRequestRemoved() public {
+    function test_fixed_F1_cancelRedeemRequestRemoved() public {
         _deposit(alice, 500_000e6);
         uint256 shares = vault.balanceOf(alice);
 
@@ -116,7 +129,7 @@ contract ReviewTest is TestBase {
     /*** F-2: deposit-queue spUSDC is not ring-fenced from take() / processPendingRedeems        ***/
     /*******************************************************************************************/
 
-    function test_F2_takeSpendsQueuedDepositBacking() public {
+    function test_BUG_F2_takeSpendsQueuedDepositBacking() public {
         _deposit(alice, 1_000_000e6);
         uint256 id = _deposit(bob, 100_000e6);     // queued, backed by spUSDC
 
@@ -144,7 +157,7 @@ contract ReviewTest is TestBase {
         assertEq(usdcT.balanceOf(bob), 900_000e6);
     }
 
-    function test_F2_processPendingRedeemsPaysRedeemersWithQueuedDepositBacking() public {
+    function test_BUG_F2_processPendingRedeemsPaysRedeemersWithQueuedDepositBacking() public {
         _deposit(alice, 1_000_000e6);
         uint256 bobId = _deposit(bob, 100_000e6);  // queued
 
@@ -184,7 +197,7 @@ contract ReviewTest is TestBase {
     /*** F-3: _processPendingDeposits honours maxRequests (FIXED upstream)                       ***/
     /*******************************************************************************************/
 
-    function test_F3_processPendingDepositsFillsAllRequestsInOneCall() public {
+    function test_fixed_F3_processPendingDepositsFillsAllRequestsInOneCall() public {
         _deposit(alice, 1_000_000e6);              // capacity full
         _deposit(bob,   10_000e6);                 // queued
         _deposit(carol, 10_000e6);                 // queued
@@ -206,7 +219,7 @@ contract ReviewTest is TestBase {
     /*** F-4: dust fill mints zero shares while consuming the request's spUSDC                ***/
     /*******************************************************************************************/
 
-    function test_F4_dustFillMintsZeroShares() public {
+    function test_BUG_F4_dustFillMintsZeroShares() public {
         // Raise spPRIME's index above RAY so convertToShares(1 wei) == 0.
         uint256 maxVsr = vault.MAX_VSR();
         vm.prank(admin);
@@ -248,14 +261,14 @@ contract ReviewTest is TestBase {
     /*** F-5: zero / dust requests bloat the queues for free                                  ***/
     /*******************************************************************************************/
 
-    function test_F5_zeroDepositRequestsBloatQueue() public {
+    function test_BUG_F5_zeroDepositRequestsBloatQueue() public {
         for (uint256 i; i < 50; ++i) _deposit(alice, 0);
         assertEq(vault.firstPendingDepositId(), 50);
         (, , uint256 s) = _depositRequest(49);
         assertEq(s, 0);
     }
 
-    function test_F5_tinyRedeemRequestsBecomeGhostEntries() public {
+    function test_BUG_F5_tinyRedeemRequestsBecomeGhostEntries() public {
         vm.prank(redeemFeeSetter);
         vault.setRedeemFeeRate(0.01e18);
         _deposit(alice, 1_000e6);
