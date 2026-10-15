@@ -100,7 +100,6 @@ contract RequestDepositTests is SparkPrimeVaultTests {
             claimableAssets : 0
         });
 
-        // Holds the filled request 0 and the cancelled request 1, which waits to be refunded
         AccountBalances memory vaultBalances = AccountBalances({
             account         : address(spPrime),
             assets          : 0,
@@ -183,7 +182,6 @@ contract RequestDepositTests is SparkPrimeVaultTests {
             claimableAssets : 0
         });
 
-        // Holds the filled request 0 and the cancelled request 1, which waits to be refunded
         AccountBalances memory vaultBalances = AccountBalances({
             account         : address(spPrime),
             assets          : 0,
