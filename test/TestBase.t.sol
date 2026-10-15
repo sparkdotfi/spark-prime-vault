@@ -70,14 +70,14 @@ abstract contract TestBase is Test {
 
     address internal admin           = makeAddr("admin");
     address internal guardian        = makeAddr("guardian");
-    address internal rebalancer      = makeAddr("rebalancer");
+    address internal processor       = makeAddr("processor");
     address internal redeemFeeSetter = makeAddr("redeemFeeSetter");
     address internal taker           = makeAddr("taker");
     address internal vsrSetter       = makeAddr("vsrSetter");
 
     bytes32 internal DEFAULT_ADMIN_ROLE     = 0x00;
     bytes32 internal GUARDIAN_ROLE          = keccak256("GUARDIAN_ROLE");
-    bytes32 internal REBALANCER_ROLE        = keccak256("REBALANCER_ROLE");
+    bytes32 internal PROCESSOR_ROLE         = keccak256("PROCESSOR_ROLE");
     bytes32 internal REDEEM_FEE_SETTER_ROLE = keccak256("REDEEM_FEE_SETTER_ROLE");
     bytes32 internal TAKER_ROLE             = keccak256("TAKER_ROLE");
     bytes32 internal VSR_SETTER_ROLE        = keccak256("VSR_SETTER_ROLE");
@@ -105,7 +105,7 @@ abstract contract TestBase is Test {
         vm.startPrank(admin);
 
         spPrime.grantRole(GUARDIAN_ROLE,   guardian);
-        spPrime.grantRole(REBALANCER_ROLE, rebalancer);
+        spPrime.grantRole(PROCESSOR_ROLE,  processor);
         spPrime.grantRole(VSR_SETTER_ROLE, vsrSetter);
 
         spPrime.setCapacity(VAULT_CAPACITY);
@@ -148,15 +148,15 @@ abstract contract TestBase is Test {
             redeemRequests              : redeemRequests
         });
 
-        vm.label(address(spPrime), "spPrime");
-        vm.label(address(spUSDC), "spUSDC");
-        vm.label(address(usdc), "usdc");
-        vm.label(address(admin), "admin");
-        vm.label(address(guardian), "guardian");
-        vm.label(address(rebalancer), "rebalancer");
+        vm.label(address(admin),           "admin");
+        vm.label(address(guardian),        "guardian");
+        vm.label(address(processor),       "processor");
         vm.label(address(redeemFeeSetter), "redeemFeeSetter");
-        vm.label(address(taker), "taker");
-        vm.label(address(vsrSetter), "vsrSetter");
+        vm.label(address(spPrime),         "spPrime");
+        vm.label(address(spUSDC),          "spUSDC");
+        vm.label(address(taker),           "taker");
+        vm.label(address(usdc),            "usdc");
+        vm.label(address(vsrSetter),       "vsrSetter");
     }
 
     function _getBlock() internal pure returns (uint256) {
@@ -178,7 +178,7 @@ abstract contract TestBase is Test {
     }
 
     function _processPendingDeposits(uint256 maxSavingsShares, uint256 maxRequests) internal {
-        vm.prank(rebalancer);
+        vm.prank(processor);
         spPrime.processPendingDeposits(maxSavingsShares, maxRequests);
     }
 

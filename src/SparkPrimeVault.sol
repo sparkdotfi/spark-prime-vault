@@ -54,7 +54,6 @@ interface IBlacklistableLike {
 }
 
 // TODO: requestDepositWithPermit?
-// TODO: Get pendingOfReceiver()/getPendingOfOwner() even needed?
 
 /// @dev If the inheritance is updated, the functions in `initialize` must be updated as well.
 ///      Last updated for: `Initializable, UUPSUpgradeable, AccessControlEnumerableUpgradeable`.
@@ -177,7 +176,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     uint256 public constant MAX_REDEEM_FEE = 0.01e18;  // 1% [wad]
 
     bytes32 public constant GUARDIAN_ROLE          = keccak256("GUARDIAN_ROLE");
-    bytes32 public constant REBALANCER_ROLE        = keccak256("REBALANCER_ROLE");
+    bytes32 public constant PROCESSOR_ROLE         = keccak256("PROCESSOR_ROLE");
     bytes32 public constant REDEEM_FEE_SETTER_ROLE = keccak256("REDEEM_FEE_SETTER_ROLE");
     bytes32 public constant TAKER_ROLE             = keccak256("TAKER_ROLE");
     bytes32 public constant VSR_SETTER_ROLE        = keccak256("VSR_SETTER_ROLE");
@@ -335,7 +334,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     /**********************************************************************************************/
-    /*** Role-based external functions                                                          ***/
+    /*** VSR Setter external functions                                                          ***/
     /**********************************************************************************************/
 
     function setVSR(uint256 vsr_) external onlyRole(VSR_SETTER_ROLE) {
@@ -346,6 +345,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         emit VSRSet(vsr = vsr_);
     }
+
+    /**********************************************************************************************/
+    /*** Taker external functions                                                               ***/
+    /**********************************************************************************************/
 
     function take(uint256 savingsShares_) external onlyRole(TAKER_ROLE) {
         require(
@@ -358,9 +361,13 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         emit Take(savingsShares_);
     }
 
+    /**********************************************************************************************/
+    /*** Processor external functions                                                           ***/
+    /**********************************************************************************************/
+
     function processPendingDeposits(uint256 maxSavingsShares_, uint256 maxRequests_)
         external
-        onlyRole(REBALANCER_ROLE)
+        onlyRole(PROCESSOR_ROLE)
         whenNotPaused
     {
         _processPendingDeposits(maxSavingsShares_, maxRequests_);
@@ -368,7 +375,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     function processPendingDepositCancellations(uint256 maxSavingsShares_, uint256 maxRequests_)
         external
-        onlyRole(REBALANCER_ROLE)
+        onlyRole(PROCESSOR_ROLE)
         whenNotPaused
     {
         _processPendingDepositCancellations(maxSavingsShares_, maxRequests_);
@@ -376,16 +383,24 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     function processPendingRedeems(uint256 maxShares_, uint256 maxRequests_)
         external
-        onlyRole(REBALANCER_ROLE)
+        onlyRole(PROCESSOR_ROLE)
         whenNotPaused
     {
         _processPendingRedeems(maxShares_, maxRequests_);
     }
 
+    /**********************************************************************************************/
+    /*** Redeem Fee Setter external functions                                                   ***/
+    /**********************************************************************************************/
+
     function setRedeemFeeRate(uint256 feeRate_) external onlyRole(REDEEM_FEE_SETTER_ROLE) {
         require(feeRate_ <= maxRedeemFeeRate, "SparkPrimeVault/fee-too-high");
         emit RedeemFeeRateSet(redeemFeeRate = feeRate_);
     }
+
+    /**********************************************************************************************/
+    /*** Guardian external functions                                                            ***/
+    /**********************************************************************************************/
 
     function pause() external onlyRole(GUARDIAN_ROLE) {
         paused = true;

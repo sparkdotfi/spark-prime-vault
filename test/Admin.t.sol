@@ -219,7 +219,7 @@ contract AdjustTotalAssetsTests is TestBase {
         uint256 loss = 100_000e6;
 
         vm.prank(admin);
-        spPrime.grantRole(REBALANCER_ROLE, rebalancer);
+        spPrime.grantRole(PROCESSOR_ROLE, processor);
 
         _requestDeposit(user, 1_000_000e6);
         _pause();
@@ -265,7 +265,7 @@ contract AdjustTotalAssetsTests is TestBase {
         assertEq(spPrime.pendingRedeemShares(), supply);
         assertEq(usdc.balanceOf(user),          0);
 
-        vm.prank(rebalancer);
+        vm.prank(processor);
         spPrime.processPendingRedeems(type(uint256).max, 1);
 
         // User receives the post-loss value of their shares, not the 1M deposited.
