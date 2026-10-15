@@ -11,12 +11,17 @@ import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
 
 contract ERC20Tests is TokenFuzzChecks {
 
-    address internal admin = makeAddr("admin");
+    bytes32 internal VSR_SETTER_ROLE = keccak256("VSR_SETTER_ROLE");
 
-    SparkPrimeVault internal vault;
+    address internal admin     = makeAddr("admin");
+    address internal vsrSetter = makeAddr("vsrSetter");
 
-    function setUp() public override {
-        vault = SparkPrimeVault(
+    SparkPrimeVault internal spPRIME;
+
+    function setUp() public {
+        vm.createSelectFork(getChain("mainnet").rpcUrl, _getBlock());
+
+        spPRIME = SparkPrimeVault(
             address(new ERC1967Proxy(
                 address(new SparkPrimeVault()),
                 abi.encodeCall(
@@ -27,14 +32,18 @@ contract ERC20Tests is TokenFuzzChecks {
         );
 
         vm.startPrank(admin);
-        vault.grantRole(VSR_SETTER_ROLE, vsrSetter);
+        spPRIME.grantRole(VSR_SETTER_ROLE, vsrSetter);
 
-        vault.setVSRBounds(1e27, vault.MAX_VSR());
+        spPRIME.setVSRBounds(1e27, spPRIME.MAX_VSR());
         vm.stopPrank();
     }
 
+    function _getBlock() internal pure returns (uint256) {
+        return 26148600;
+    }
+
     function testERC20() public {
-        checkBulkERC20(address(vault), "SparkPrimeVault", "Spark Prime USDC", "spPRIME", "1", 6);
+        checkBulkERC20(address(spPRIME), "SparkPrimeVault", "Spark Prime USDC", "spPRIME", "1", 6);
     }
 
     function testERC20Fuzz(uint256 amount1, uint256 amount2, uint256 vsr, uint256 warpTime) public {
@@ -44,12 +53,12 @@ contract ERC20Tests is TokenFuzzChecks {
         warpTime = bound(warpTime, 0,    10 days);
 
         vm.prank(vsrSetter);
-        vault.setVSR(vsr);
+        spPRIME.setVSR(vsr);
 
         skip(warpTime);
 
         checkBulkERC20Fuzz({
-            _token        : address(vault),
+            _token        : address(spPRIME),
             _contractName : "SparkPrimeVault",
             from          : makeAddr("from"),
             to            : makeAddr("to"),
@@ -59,7 +68,7 @@ contract ERC20Tests is TokenFuzzChecks {
     }
 
     function testPermit() public {
-        checkBulkPermit(address(vault), "SparkPrimeVault");
+        checkBulkPermit(address(spPRIME), "SparkPrimeVault");
     }
 
     function testPermitFuzz(
@@ -75,7 +84,7 @@ contract ERC20Tests is TokenFuzzChecks {
         nonce      = bound(nonce,    0,               type(uint256).max);
 
         checkBulkPermitFuzz({
-            _token        : address(vault),
+            _token        : address(spPRIME),
             _contractName : "SparkPrimeVault",
             privKey       : privateKey,
             to            : makeAddr("to"),
