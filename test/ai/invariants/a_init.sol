@@ -8,17 +8,22 @@ import { SparkPrimeVault } from "../../../src/SparkPrimeVault.sol";
 
 import { MockUSDC } from "../LocalTestBase.t.sol";
 
-// Handler base for the spPRIME invariant campaign (round 4, `fix/update-guardian-transfer` @ bf93b0d).
-// Holds the actors (read from the roles granted by `LocalTestBase`), N users, and the ghost bookkeeping
-// every invariant reads.
+// Handler base for the spPRIME invariant campaign (round 5, `master` @ 0ebb452).
+// Holds the actors (read from the roles granted by `LocalTestBase`), N holders, and the ghost
+// bookkeeping every invariant reads.
 //
 // Conventions shared by every handler flow:
-//   - every input is bounded and every action that would revert is skipped (fail_on_revert=true);
+//   - every input is bounded; an action that would revert is either skipped or *probed* through
+//     try/catch against an explicit allow-list of expected revert reasons (fail_on_revert=true).
+//     Anything outside the allow-list lands in `unexpectedReverts` (invariant AB asserts 0);
 //   - `vm.startPrank`/`vm.stopPrank` only, never `vm.prank`;
-//   - users are never the vault, the takers or any role holder;
-//   - transfers never target the vault (invariant B relies on it; `vaultDonations` flags it);
-//   - every recipient the handler passes (requests, cancels, recipient updates) is a user, so
-//     every USDC payout and every share refund lands in the user set the invariants sum over.
+//   - holders are never the vault, the takers or any role holder;
+//   - `users[0..ACTIVE-1]` act (deposit, redeem, cancel, transfer, claim); `users[ACTIVE..N-1]`
+//     are "fresh" addresses that only ever appear as recipients (of requests and of
+//     `update*Recipient`), so every USDC payout, every claimable credit and every share mint
+//     lands in the holder set the invariants sum over;
+//   - any holder can be USDC-blacklisted / un-blacklisted at any time by the `setBlacklisted`
+//     flow; payouts to a blacklisted recipient stay in the vault as `claimableAssets`.
 contract Init is Test {
 
     uint256 constant RAY = 1e27;
@@ -31,15 +36,17 @@ contract Init is Test {
     uint256 constant FORTY_PCT_VSR = 1.000000010669464688489416886e27;
     uint256 constant MAX_VSR       = 1.000000021979553151239153027e27;
 
-    bytes32 constant DEFAULT_ADMIN_ROLE = 0x00;
-    bytes32 constant GUARDIAN_ROLE      = keccak256("GUARDIAN_ROLE");
-    bytes32 constant REBALANCER_ROLE    = keccak256("REBALANCER_ROLE");
+    bytes32 constant DEFAULT_ADMIN_ROLE     = 0x00;
+    bytes32 constant GUARDIAN_ROLE          = keccak256("GUARDIAN_ROLE");
+    bytes32 constant REBALANCER_ROLE        = keccak256("REBALANCER_ROLE");
     bytes32 constant REDEEM_FEE_SETTER_ROLE = keccak256("REDEEM_FEE_SETTER_ROLE");
     bytes32 constant VSR_SETTER_ROLE        = keccak256("VSR_SETTER_ROLE");
     bytes32 constant SETTER_ROLE            = keccak256("SETTER_ROLE");  // spUSDC
-    bytes32 constant TAKER_ROLE         = keccak256("TAKER_ROLE");
+    bytes32 constant TAKER_ROLE             = keccak256("TAKER_ROLE");
 
     uint256 constant MAX_DEPOSIT = 1_000_000_000e6;  // 1bn USDC per request
+
+    string constant BLACKLISTED = "Blacklistable: account is blacklisted";
 
     MockUSDC        public usdc;
     SparkVault      public spUsdc;
@@ -58,10 +65,11 @@ contract Init is Test {
     address public spTaker;
 
     /**********************************************************************************************/
-    /*** Users                                                                                  ***/
+    /*** Holders                                                                                ***/
     /**********************************************************************************************/
 
-    uint256 public constant N = 6;
+    uint256 public constant N      = 8;  // every holder the invariants sum over
+    uint256 public constant ACTIVE = 6;  // users[0..5] act, users[6..7] only ever receive
 
     address[N] public users;
 
@@ -75,17 +83,27 @@ contract Init is Test {
     uint256 public spUsdcYieldMinted;      // USDC minted straight into spUSDC (returned liquidity)
     uint256 public takerInjectedUsdc;      // USDC minted for the taker to mint spUSDC it returns
 
-    // USDC paid to users, by source (invariant I). Users never hold USDC otherwise.
+    // USDC paid out by fills, by source (invariant I). A fill pays the recipient directly or, when
+    // the recipient is blacklisted, parks the USDC in the vault as `claimableAssets`; both count.
     uint256 public usersRedeemedUsdc;      // paid by processPendingRedeems fills
     uint256 public usersRefundedUsdc;      // paid by processPendingDepositCancellations fills
+    uint256 public claimableCreditedUsdc;  // the part of the above that went to claimableAssets
+    uint256 public usersClaimedUsdc;       // moved vault -> recipient by claim()
 
     mapping (address user => uint256) public depositedUsdc;
 
     // spUSDC level
     uint256 public takerOutstandingSpUsdc; // spUSDC taken by TAKER_ROLE and not yet returned
     uint256 public takerReturnedSpUsdc;
+    bool    public takeCalled;             // invariant W: backing gap is only allowed after take()
+    uint256 public takes;
+    uint256 public maxBackingGapSpUsdc;    // max(pendingDeposit + pendingCancelled - held) seen
+    uint256 public gapOpenedByTake;        // calls in which `take` pushed held below the queues
+    uint256 public gapOpenedByRedeems;     // ... `processPendingRedeems` did (R5-1, not ring-fenced)
+    bool    public gapOpenedElsewhere;     // any other flow did (must stay false)
+    string  public gapOpenedIn;
 
-    // spPRIME share provenance per user (invariant J)
+    // spPRIME share provenance per holder (invariant J)
     mapping (address user => uint256) public ghostMinted;
     mapping (address user => uint256) public ghostTransferIn;
     mapping (address user => uint256) public ghostTransferOut;
@@ -97,19 +115,30 @@ contract Init is Test {
     string  public escrowFellIn;
     uint256 public escrowDecreases;        // processPendingRedeems calls that lowered the escrow
 
-    // Capacity / chi / fills
-    bool    public mintedAboveCapacity;    // invariant F
-    uint256 public lastChi;                // invariant G
-    bool    public chiDecreasedOutsideLoss;// invariant G: chi fell in a non-realizeLoss action
-    bool    public chiRoseOutsideWarpOrGain;// invariant G: chi rose in a non-warp, non-realizeGain action
-    uint256 public lossRealizations;       // realizeLoss calls
-    uint256 public realizedLossUsdc;       // sum of every `loss_` passed to realizeLoss
-    uint256 public gainRealizations;       // realizeGain calls
-    uint256 public realizedGainUsdc;       // sum of every `gain_` passed to realizeGain
+    // Invariant V: queue heads never move backwards (compared around every handler call).
+    bool    public headMovedBackwards;
+    string  public headMovedBackwardsIn;
 
-    // Invariant T: |delta totalAssets - amount| per realizeGain / realizeLoss call.
-    uint256 public maxGainLossError;       // largest error seen (must stay <= 1)
+    // Capacity (invariants F and X)
+    bool    public mintedAboveCapacity;          // F: a mint pushed totalSupply above maxCapacity
+    bool    public capacityLoweredBelowSupply;   // X: setCapacity(cap < totalSupply) happened
+    uint256 public capacityBelowSupplyEvents;
+
+    // chi (invariant G)
+    uint256 public lastChi;
+    bool    public chiDecreasedOutsideLoss;      // chi fell outside a negative adjustTotalAssets
+    bool    public chiRoseOutsideWarpOrGain;     // chi rose outside warp / positive adjustTotalAssets
+
+    // adjustTotalAssets (invariants T and H)
+    uint256 public adjustNegatives;        // adjustTotalAssets(delta < 0) calls
+    uint256 public adjustedLossUsdc;       // sum of |delta| over negative calls
+    uint256 public adjustPositives;        // adjustTotalAssets(delta > 0) calls
+    uint256 public adjustedGainUsdc;       // sum of delta over positive calls
+    uint256 public maxGainLossError;       // largest |delta totalAssets - amount| seen (<= 1)
     uint256 public gainLossOutOfBound;     // calls whose error exceeded 1 wei
+    uint256 public adjustNotPausedProbes;  // probes of the `not-paused` guard
+    uint256 public adjustZeroSupplyProbes; // probes of the totalSupply == 0 division
+    uint256 public adjustZeroSupplyPanics; // ... that panicked with 0x12 (division by zero)
 
     // Invariant H: upper bound (USDC) on the notional deficit `totalAssets() - real backing`
     // created by fictitious gains (+) and losses (-). Scaled on every warp: by spUSDC's index
@@ -123,6 +152,14 @@ contract Init is Test {
     bool    public rateOrderBroken;        // spUSDC VSR < spPRIME VSR at some point (invariant H)
     bool    public vaultDonations;         // spPRIME transferred to the vault itself (never set)
 
+    // Invariant Y: payouts are exactly the converted amounts. `paid` is users' USDC delta plus the
+    // vault's USDC delta (claimable credits) per processing call; `expected` is the per-entry
+    // floor conversion of the consumed shares, summed. The excess must be 0; the max is kept.
+    uint256 public redeemPayoutMaxExcess;
+    uint256 public redeemPayoutMismatches;   // calls where paid != expected
+    uint256 public cancelPayoutMaxExcess;
+    uint256 public cancelPayoutMismatches;
+
     // Queue ghosts (only the handler pushes entries)
     uint256 public depositQueueLength;
     uint256 public cancelledQueueLength;
@@ -132,24 +169,44 @@ contract Init is Test {
 
     // Recipient updates (invariants R and S)
     uint256 public recipientUpdates;                 // successful updates (always by the owner)
+    uint256 public recipientUpdatesToBlacklisted;    // deposit-queue updates to a blacklisted recipient (allowed)
+    uint256 public recipientUpdatesToFresh;          // updates to users[ACTIVE..N-1]
     bool    public recipientUpdateChangedState;      // anything but the recipient field moved
     uint256 public recipientUpdateStrangerAttempts;  // deliberate non-owner attempts
     uint256 public recipientUpdateStrangerReverts;   // ... that reverted with exactly not-authorized
     string  public lastStrangerUpdateRevert;
 
-    // Guardian deposit cancels to a non-owner recipient (must revert `invalid-recipient`, bf93b0d);
-    // asserted inline by the cancel handler, reported in afterInvariant().
-    uint256 public guardianCancelProbes;
-    uint256 public guardianCancelProbeReverts;
-    string  public lastGuardianCancelProbe;
+    // Blacklist (invariant AA and the recipient guards)
+    uint256 public blacklistSets;
+    uint256 public blacklistClears;
+    uint256 public blacklistRecipientProbes;         // request / update with a blacklisted recipient
+    uint256 public blacklistRecipientProbeReverts;   // ... that reverted `recipient-cannot-receive`
+    string  public lastBlacklistProbeRevert;
+    uint256 public skippedBlacklistedDepositors;     // requestDeposit skipped (USDC pull would revert)
+    uint256 public fillsToBlacklisted;               // fills whose USDC went to claimableAssets
+
+    // claim (invariant AA)
+    uint256 public claims;                           // successful claims
+    uint256 public claimNothingProbes;               // claim(x) with claimableAssets[x] == 0
+    uint256 public claimNothingProbeReverts;         // ... that reverted `nothing-to-claim`
+    uint256 public claimWhileBlacklistedAttempts;
+    uint256 public claimWhileBlacklistedReverts;     // ... that reverted in USDC with BLACKLISTED
+    bool    public claimPaidWhileBlacklisted;        // must stay false
+    bool    public claimChangedStateWhileBlacklisted;// must stay false
 
     // Revert observations (the handler wraps calls the contract itself may make revert)
-    uint256 public redeemProcessReverts;       // "SparkVault/insufficient-balance"
+    uint256 public redeemProcessReverts;       // "SparkVault/insufficient-balance" (C-1)
     uint256 public redeemProcessRevertsOther;  // anything else (must stay 0)
     string  public lastRedeemProcessRevert;
 
-    uint256 public cancelProcessReverts;       // any revert at all (must stay 0 since ff828d2)
+    uint256 public cancelProcessReverts;       // any revert at all (must stay 0)
     string  public lastCancelProcessRevert;
+
+    // Every revert the handler caught, by reason, plus the ones outside the allow-list (AB).
+    mapping (string reason => uint256) public revertsByReason;
+    string[] public revertReasons;
+    uint256  public unexpectedReverts;
+    string   public lastUnexpectedRevert;
 
     // Call counts per handler function
     mapping (string fn => uint256) public calls;
@@ -165,12 +222,12 @@ contract Init is Test {
         spUsdc = SparkVault(vault.savings());
         usdc   = MockUSDC(spUsdc.asset());
 
-        admin       = vault.getRoleMember(DEFAULT_ADMIN_ROLE, 0);
-        guardian    = vault.getRoleMember(GUARDIAN_ROLE,      0);
-        rebalancer  = vault.getRoleMember(REBALANCER_ROLE,    0);
-        redeemFeeSetter = vault.getRoleMember(REDEEM_FEE_SETTER_ROLE,  0);
-        vsrSetter      = vault.getRoleMember(VSR_SETTER_ROLE,        0);
-        taker       = vault.getRoleMember(TAKER_ROLE,         0);
+        admin           = vault.getRoleMember(DEFAULT_ADMIN_ROLE,     0);
+        guardian        = vault.getRoleMember(GUARDIAN_ROLE,          0);
+        rebalancer      = vault.getRoleMember(REBALANCER_ROLE,        0);
+        redeemFeeSetter = vault.getRoleMember(REDEEM_FEE_SETTER_ROLE, 0);
+        vsrSetter       = vault.getRoleMember(VSR_SETTER_ROLE,        0);
+        taker           = vault.getRoleMember(TAKER_ROLE,             0);
 
         spSetter = spUsdc.getRoleMember(SETTER_ROLE, 0);
         spTaker  = spUsdc.getRoleMember(TAKER_ROLE,  0);
@@ -189,10 +246,25 @@ contract Init is Test {
     modifier counted(string memory name_) {
         if (calls[name_] == 0) callNames.push(name_);
         calls[name_]++;
-        uint256 escrowBefore = vault.balanceOf(address(vault));
+        uint256[5] memory before = _snapshot();
         _;
+        _afterCall(name_, before);
+    }
+
+    // [escrow, deposit head, cancellation head, redeem head, backing gap]
+    function _snapshot() internal view returns (uint256[5] memory s) {
+        s[0] = vault.balanceOf(address(vault));
+        s[1] = vault.firstPendingDepositId();
+        s[2] = vault.firstPendingDepositCancellationId();
+        s[3] = vault.firstPendingRedeemId();
+        s[4] = _backingGap();
+    }
+
+    function _afterCall(string memory name_, uint256[5] memory before) internal {
         _chiCheck();
-        _escrowCheck(name_, escrowBefore);
+        _escrowCheck(name_, before[0]);
+        _headCheck(name_, [before[1], before[2], before[3]]);
+        _backingGapCheck(name_, before[4] != 0);
     }
 
     // Invariant U bookkeeping: `balanceOf(vault)` may only decrease inside processPendingRedeems
@@ -208,8 +280,38 @@ contract Init is Test {
         escrowFellIn                = name_;
     }
 
-    // No handler moves time except `warp`, so nowChi() may only change inside the warp (up),
-    // realizeGain (up) and realizeLoss (down) handlers, each of which resets `lastChi` itself.
+    // Invariant V bookkeeping: no head ever moves backwards.
+    function _headCheck(string memory name_, uint256[3] memory before) internal {
+        if (
+            vault.firstPendingDepositId()             < before[0] ||
+            vault.firstPendingDepositCancellationId() < before[1] ||
+            vault.firstPendingRedeemId()              < before[2]
+        ) {
+            headMovedBackwards   = true;
+            headMovedBackwardsIn = name_;
+        }
+    }
+
+    // Invariant W bookkeeping: the shortfall of the vault's spUSDC against what the two
+    // spUSDC-denominated queues are owed (0 when covered), the largest one observed, and which
+    // flow opened a gap that was not there before the call.
+    function _backingGap() internal view returns (uint256) {
+        uint256 owed = vault.pendingDepositSavingsShares() + vault.pendingCancelledDepositSavingsShares();
+        uint256 held = spUsdc.balanceOf(address(vault));
+        return owed > held ? owed - held : 0;
+    }
+
+    function _backingGapCheck(string memory name_, bool gapBefore) internal {
+        uint256 gap = _backingGap();
+        if (gap > maxBackingGapSpUsdc) maxBackingGapSpUsdc = gap;
+        if (gap == 0 || gapBefore) return;
+        if      (_eq(name_, "take"))                  gapOpenedByTake++;
+        else if (_eq(name_, "processPendingRedeems")) gapOpenedByRedeems++;
+        else { gapOpenedElsewhere = true; gapOpenedIn = name_; }
+    }
+
+    // No handler moves time except `warp`, so nowChi() may only change inside the warp (up) and
+    // adjustTotalAssets (up or down) handlers, each of which resets `lastChi` itself.
     function _chiCheck() internal {
         uint256 nowChi_ = vault.nowChi();
         if (nowChi_ < lastChi) chiDecreasedOutsideLoss  = true;
@@ -238,15 +340,40 @@ contract Init is Test {
         }
     }
 
+    // Revert classification: every caught revert is recorded by reason; the caller says whether
+    // the reason was on its allow-list. Returns true when it was.
+    function _recordRevert(string memory reason, bool expected) internal returns (bool) {
+        if (revertsByReason[reason] == 0) revertReasons.push(reason);
+        revertsByReason[reason]++;
+        if (!expected) {
+            unexpectedReverts++;
+            lastUnexpectedRevert = reason;
+        }
+        return expected;
+    }
+
+    function _eq(string memory a, string memory b) internal pure returns (bool) {
+        return keccak256(bytes(a)) == keccak256(bytes(b));
+    }
+
     function getRandomUser(uint256 userIndex) internal view returns (address user) {
-        return users[_bound(userIndex, 0, N - 1)];
+        return users[_bound(userIndex, 0, ACTIVE - 1)];
+    }
+
+    // Any holder, including the fresh ones.
+    function getRandomHolder(uint256 index) internal view returns (address holder) {
+        return users[_bound(index, 0, N - 1)];
     }
 
     function callNamesLength() external view returns (uint256) {
         return callNames.length;
     }
 
-    // Snapshot of every user's share balance, used to attribute mints (invariant J).
+    function revertReasonsLength() external view returns (uint256) {
+        return revertReasons.length;
+    }
+
+    // Snapshot of every holder's share balance, used to attribute mints (invariant J).
     function _balances() internal view returns (uint256[N] memory bals) {
         for (uint256 i = 0; i < N; i++) bals[i] = vault.balanceOf(users[i]);
     }
@@ -255,8 +382,12 @@ contract Init is Test {
         for (uint256 i = 0; i < N; i++) sum += usdc.balanceOf(users[i]);
     }
 
-    // Mints land on whatever `recipient` each entry carries at fill time (anyone can repoint it
-    // via updateDepositRecipient), so provenance is attributed by balance diff, not by request.
+    function _usersClaimable() internal view returns (uint256 sum) {
+        for (uint256 i = 0; i < N; i++) sum += vault.claimableAssets(users[i]);
+    }
+
+    // Mints land on whatever `recipient` each entry carries at fill time (the owner can repoint
+    // it), so provenance is attributed by balance diff, not by request.
     function _attributeMints(uint256[N] memory before) internal {
         for (uint256 i = 0; i < N; i++) {
             uint256 after_ = vault.balanceOf(users[i]);
@@ -322,17 +453,31 @@ contract Init is Test {
         if (vault.convertToShares(spUsdc.convertToAssets(lastConsumed)) == 0) zeroShareFills++;
     }
 
-    function _countCancelledFills(uint256 head, uint256[] memory sharesBefore) internal {
+    // Counts cancelled-deposit fills and returns the exact USDC the fills must have paid: each
+    // entry is paid `spUSDC.redeem(consumed)` = floor(consumed * chi_s / RAY).
+    function _countCancelledFills(uint256 head, uint256[] memory sharesBefore)
+        internal returns (uint256 expectedPaid)
+    {
         for (uint256 i = 0; i < sharesBefore.length; i++) {
             (, , uint256 s) = _cancelledDepositRequest(head + i);
-            if (s < sharesBefore[i]) cancelledFills++;
+            if (s < sharesBefore[i]) {
+                cancelledFills++;
+                expectedPaid += spUsdc.convertToAssets(sharesBefore[i] - s);
+            }
         }
     }
 
-    function _countRedeemFills(uint256 head, uint256[] memory sharesBefore) internal {
+    // Counts redeem fills and returns the exact USDC the fills must have paid: each entry is paid
+    // `convertToAssets(consumed)` = floor(consumed * chi / RAY).
+    function _countRedeemFills(uint256 head, uint256[] memory sharesBefore)
+        internal returns (uint256 expectedPaid)
+    {
         for (uint256 i = 0; i < sharesBefore.length; i++) {
             (, , uint256 s) = _redeemRequest(head + i);
-            if (s < sharesBefore[i]) redeemFills++;
+            if (s < sharesBefore[i]) {
+                redeemFills++;
+                expectedPaid += vault.convertToAssets(sharesBefore[i] - s);
+            }
         }
     }
 
@@ -341,8 +486,8 @@ contract Init is Test {
     /**********************************************************************************************/
 
     // Hash of everything a recipient update must leave alone: totals, pendings, heads, every
-    // share and USDC balance in the campaign, the vault's spUSDC, and the owner/shares of every
-    // queue entry (recipients excluded on purpose).
+    // share, USDC and claimable balance in the campaign, the vault's spUSDC and USDC, and the
+    // owner/shares of every queue entry (recipients excluded on purpose).
     function _stateDigest() internal view returns (bytes32 digest) {
         digest = keccak256(abi.encode(
             vault.totalSupply(),
@@ -356,12 +501,13 @@ contract Init is Test {
             vault.rho(),
             vault.balanceOf(address(vault)),
             spUsdc.balanceOf(address(vault)),
+            usdc.balanceOf(address(vault)),
             spUsdc.totalSupply(),
             usdc.balanceOf(address(spUsdc))
         ));
         for (uint256 i = 0; i < N; i++) {
             digest = keccak256(abi.encode(
-                digest, vault.balanceOf(users[i]), usdc.balanceOf(users[i])
+                digest, vault.balanceOf(users[i]), usdc.balanceOf(users[i]), vault.claimableAssets(users[i])
             ));
         }
         for (uint256 i = 0; i < depositQueueLength; i++) {
@@ -377,7 +523,6 @@ contract Init is Test {
             digest = keccak256(abi.encode(digest, owner, shares));
         }
     }
-
 
     function _depositRequest(uint256 id)
         internal view returns (address owner, address recipient, uint256 shares)
@@ -398,18 +543,6 @@ contract Init is Test {
     {
         SparkPrimeVault.Request[] memory r = vault.getPendingDepositCancellationRequests(id, id + 1);
         return (r[0].owner, r[0].recipient, r[0].shares);
-    }
-
-    function _depositQueueLength() internal view returns (uint256) {
-        return vault.firstPendingDepositId() + vault.getPendingDepositRequests().length;
-    }
-
-    function _redeemQueueLength() internal view returns (uint256) {
-        return vault.firstPendingRedeemId() + vault.getPendingRedeemRequests().length;
-    }
-
-    function _cancelledDepositQueueLength() internal view returns (uint256) {
-        return vault.firstPendingDepositCancellationId() + vault.getPendingDepositCancellationRequests().length;
     }
 
 }

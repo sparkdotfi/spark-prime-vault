@@ -1,5 +1,214 @@
 # spPRIME invariant campaign report
 
+## Round 5 (`master` @ `0ebb452`)
+
+Branch `campaign-v5/invariants`, files `test/ai/invariants/{a_init,b_flows_user,c_flows_admin}.sol`,
+`test/ai/invariants/d_invariants.t.sol`. Target: upstream `src/SparkPrimeVault.sol` from `master` @
+`0ebb452` (roles split into `DEFAULT_ADMIN / GUARDIAN / REBALANCER / REDEEM_FEE_SETTER / TAKER /
+VSR_SETTER`; `realizeGain`/`realizeLoss` replaced by `adjustTotalAssets(int256)` (admin, requires
+`paused`); guardian deposit cancels gone, `requestDepositCancellation` owner-only; 3-arg
+`requestDeposit(assets, recipient, referral)`; blacklist handling: `recipient-cannot-receive` guard
+at request / update time and a `claimableAssets` fallback at payout time with permissionless
+`claim`). Harness: `test/ai/LocalTestBase.t.sol` (real spUSDC code, 6-decimal mock USDC with a
+Circle-style blacklist, ugly starting indexes chi_s = 1.0476e27, chi_p = 1.0097e27). All line
+numbers below are on `0ebb452`.
+
+Final run: `FOUNDRY_OFFLINE=true FOUNDRY_INVARIANT_RUNS=1000 FOUNDRY_INVARIANT_DEPTH=500 forge
+test --match-path 'test/ai/invariants/d_invariants.t.sol' -vv` -> **31 passed, 0 failed** (28
+invariants x 1000 runs x 500 calls = **500,000 handler calls per invariant, 0 reverts**, plus 3
+unit proofs; 755 s wall, 11,537 s CPU). An earlier 200 x 500 run of the same suite (before Z was
+re-bounded for R5-1) also passed 30/30 in 117 s; the first 1000 x 500 run is the one that broke
+Z (see R5-1). Handler call counts summed over the 28 sampled last-runs of the final run (one per
+invariant, 14,000 calls; the selector draw is uniform over the 27 flows):
+
+| flow | calls | flow | calls | flow | calls |
+|---|---|---|---|---|---|
+| requestDeposit | 504 | requestDepositWithReferral | 595 | requestDepositCancellation | 488 |
+| requestRedeem | 544 | updateRecipient | 518 | transfer | 520 |
+| transferFrom | 531 | setBlacklisted | 481 | claim | 513 |
+| setCapacity | 539 | setMaxRedeemFeeRate | 482 | setRedeemFee | 547 |
+| setMinDeposit | 470 | setMinRedeem | 494 | setPrimeVsr | 518 |
+| setSpUsdcVsr | 551 | pause | 524 | unpause | 502 |
+| adjustTotalAssets | 527 | processPendingDeposits | 537 | processPendingDepositCancellations | 562 |
+| processPendingRedeems | 510 | take | 506 | returnToVault | 505 |
+| drainSpUsdcLiquidity | 499 | returnSpUsdcLiquidity | 521 | warp | 512 |
+
+Ghost counters over the same sample: `adjustTotalAssets` executed 182 negative and 178 positive
+deltas (sum |loss| 13,247,342,619,885,996 wei, sum gain 12,165,690,350,117,248 wei), 123
+`not-paused` probes (123 reverted `not-paused`), 39 zero-supply probes (39 panics 0x12); 327
+blacklist sets, 165 clears, 181 blacklisted-recipient probes (181 reverted
+`recipient-cannot-receive`); 53 fills paid into `claimableAssets` (5,795,457,648,531,718 wei
+credited), 35 successful `claim`s (3,870,373,927,249,058 wei), 26 `claim` attempts while
+blacklisted (26 reverted in USDC, state unchanged), 463 `nothing-to-claim` probes; 342 deposit
+fills, 51 cancellation fills, 145 redeem fills, 3 zero-share fills (F-4), 48 ghost deposit
+entries and 31 ghost redeem entries (F-5); 88 owner recipient updates (17 to a blacklisted
+holder on the deposit queue, 21 to a fresh address), 17 stranger attempts (17 reverted); 407
+`take`s, 55 backing gaps opened by `take`, 3 opened by `processPendingRedeems` (R5-1), 0 by any
+other flow; 90 `setCapacity` below `totalSupply`; the rate order broke in 26 of 28 sampled runs;
+0 C-1 reverts, 0 cancellation-processing reverts, 0 unexpected reverts, `maxGainLossError` 1 in
+every run, `redeemPayoutMaxExcess` / `cancelPayoutMaxExcess` 0 in every run.
+
+### (a) Violations and findings
+
+One new finding (R5-1), found by invariant Z at 1000 runs x depth 500 (shrunk to 9 calls) and
+pinned as a unit proof; everything else held.
+
+- **R5-1 (medium): redeem fills are paid out of the spUSDC that backs queued deposits and queued
+  cancellations.** `_processPendingRedeems` (`src/SparkPrimeVault.sol:900`) sets its budget to
+  `convertToShares(availableLiquidAssets())` (`:903`) and `availableLiquidAssets()` (`:788`-`:790`)
+  is `spUSDC.maxWithdraw(vault)`, i.e. the vault's whole spUSDC balance; nothing subtracts
+  `pendingDepositSavingsShares` or `pendingCancelledDepositSavingsShares`. Whenever the notional
+  `totalAssets()` exceeds the real backing, redeemers receive the cancellers' / depositors' spUSDC
+  and the cancellation queue can no longer be paid in full (it stalls at the head until new spUSDC
+  arrives, with no lever but `returnToVault`-style top-ups). The notional exceeds the backing
+  after any positive `adjustTotalAssets` (`:278`) whose USDC has not arrived, whenever the spPRIME
+  VSR is above the spUSDC VSR (the product's normal state while capital is deployed), and
+  whenever `take` (`:340`) moved capital out. Scenario (exact, harness indexes): alice deposits
+  1,000 USDC (990,405,183 shares, backing 954,532,691 spUSDC = 999,999,999 USDC); admin pauses
+  and calls `adjustTotalAssets(+100e6)` (totalAssets 1,099,999,997, no USDC arrives); alice queues
+  a redeem of all shares; capacity is set to `totalSupply`, so bob's 500 USDC deposit queues as
+  477,266,345 spUSDC and bob cancels it; `processPendingRedeems`: budget 1,350,552,523 shares
+  (`maxWithdraw` 1,499,999,999 USDC, bob's backing included), alice is paid 1,099,999,997 USDC,
+  the vault keeps 381,813,078 spUSDC against 477,266,345 owed; `processPendingDepositCancellations`
+  pays bob 400,000,001 USDC and stops: 95,453,267 spUSDC stay pending at head 0, bob is short
+  99,999,997 USDC, the vault holds 0 spUSDC. The fictitious gain was paid to alice from bob's
+  refund. Impact: cancellation refunds (and, symmetrically, queued deposits waiting for capacity)
+  are not senior to redeems; a canceller's principal becomes exit liquidity for redeemers whenever
+  the notional runs ahead of the backing. Fix shape: bound the redeem budget by
+  `held - pendingDepositSavingsShares - pendingCancelledDepositSavingsShares` (in assets) rather
+  than `maxWithdraw(vault)`. Proof: `test_BUG_processPendingRedeemsSpendsCancellationQueueBacking`
+  (passes by asserting the shortfall). Random-walk evidence: invariant Z's original form
+  ("cancellation queue drains after settling everything") failed at 1000 x 500 with 570,130,850
+  spUSDC left; the handler now records which flow opens a backing gap (`gapOpenedByRedeems`,
+  `gapOpenedByTake`, `gapOpenedElsewhere` must stay false; invariant W) and Z bounds the unpaid
+  remainder of the cancellation + redeem queues by the deficit ledger instead.
+
+Behaviour worth recording (no violation):
+
+- **C-3 (open, high, not re-measured here)**: `adjustTotalAssets` (`:278`-`:295`) only requires
+  `totalAssets_ > 0` and `updatedChi_ != 0`; the handler bounds |delta| to `totalAssets / 10`
+  and chi to [1, 1e30], so the campaign does not drive the wipe-out. The owning unit suite pins it.
+- **`adjustTotalAssets` at `totalSupply == 0` panics (low, open)**: `:289` divides by
+  `totalSupply` (NOTE at `:288` "Assuming totalSupply is not zero"). 39 of 39 probes in the sample
+  reverted with Panic(0x12). Harmless (nothing to adjust) but an unchecked division in an admin
+  path; asserted by `invariant_T_adjustTotalAssetsAccounting` (probes == panics).
+- **Deposit-queue backing is not ring-fenced against `take` either (F-2, open, by design)**:
+  `take` (`:340`) can move the spUSDC that backs queued deposits and queued cancels out of the
+  vault. Invariant W holds strictly (`spUSDC(vault) >= pendingDepositSavingsShares +
+  pendingCancelledDepositSavingsShares`) in every run in which neither `take` nor a redeem fill
+  (R5-1) opened the gap, and no other flow ever opened one. The queues simply wait until spUSDC
+  comes back; no accounting breaks.
+- **`totalSupply > maxCapacity` is reachable only through `setCapacity`** (V2-7 family, info):
+  90 capacity cuts below supply in the sample; invariant F (no mint ever exceeds the capacity in
+  force) and X (supply <= capacity unless the admin lowered it) both held.
+- **Blacklist fallback path is accounting-exact**: every fill to a blacklisted recipient
+  (`_redeemSavings` `:934`-`:945`, `_withdrawSavings` `:947`-`:958`) credits `claimableAssets`
+  by exactly the USDC that landed in the vault (asserted inline per processing call) and the
+  vault's USDC balance equals the sum of `claimableAssets` after every single handler call
+  (invariant K, exact). `claim` (`:524`-`:534`) zeroes the credit before the transfer; while the
+  recipient is still blacklisted the USDC transfer reverts and the credit, the recipient's balance
+  and the vault's balance are byte-identical afterwards (invariant AA). Un-blacklisting everyone
+  and claiming always empties the vault's USDC (invariant Z, checked from every reachable state).
+- **Stranger `update*Recipient` with a blacklisted recipient reverts `recipient-cannot-receive`,
+  not `not-authorized`** (info): the guard at `:493` / `:508` runs before the ownership check at
+  `:498` / `:513`, so a non-owner can learn whether an address is blacklisted through the vault.
+  No state impact. The handler accepts either reason for a stranger (invariant S).
+- **`requestDepositCancellation` with the owner as recipient while the owner is blacklisted**
+  reverts `recipient-cannot-receive` (`:425`): a blacklisted depositor cannot cancel to itself and
+  must name another recipient (or wait for the fill, which mints shares and is not
+  blacklist-gated). Observed, by design (`recipient` is free).
+
+### (b) Previously reported findings, status at 0ebb452 (as seen by this suite)
+
+- C-1 / N-1 (round 1): **open**. `_processPendingRedeems` (`:900`) bounds `remaining_` by
+  `convertToShares(availableLiquidAssets())` (`:903`) once and pays each entry with spUSDC
+  `withdraw(assets_)` (`:922` -> `:952`/`:955`), ceil-burning up to one spUSDC share per entry.
+  `test_BUG_processPendingRedeemsRevertsOnCeilBurnWhenBalanceBinds` unchanged and passing (100
+  spUSDC held, 110 one-share entries: batched call reverts `SparkVault/insufficient-balance`, one
+  entry per call pays 99 and strands 1 share, 11 shares stay pending). Not hit by the random walk
+  (0 of 510 sampled `processPendingRedeems` calls), as in rounds 2-4.
+- N-2 (round 2): **fixed, still**. `_processPendingDepositCancellations` (`:864`) budgets by
+  `spUSDC.maxRedeem(vault)` (`:870`); 0 reverts in 100,000 calls (invariant P),
+  `test_processPendingDepositCancellationsPaysUpToSpUsdcLiquidity` passing with the same wei
+  (alice 99,999,999; bob 49,999,999 then 99,999,999).
+- R4-A / R4-B (blacklisted recipient blocks a queue): **fixed** by the `claimableAssets` fallback;
+  53 sampled fills went to blacklisted recipients, the queues kept moving (heads advanced, invariant
+  V), escrow exact (B), USDC exact (K), later `claim` paid (35 sampled). Pinned by invariants AA, K,
+  Z and the inline asserts in `processPendingRedeems` / `processPendingDepositCancellations`.
+- R3-1 (`realizeGain` sandwich): **changed**. `adjustTotalAssets` requires `paused` (`:279`, 123
+  of 123 unpaused probes reverted `not-paused`); the handler pauses, adjusts and unpauses. The
+  window between a public payload and the guardian's `pause` is a unit-suite topic.
+- V2-1 (unauthenticated recipient updaters): **fixed**, 17 of 17 stranger attempts reverted
+  (invariant S); 88 owner updates moved only the recipient field (invariant R, the digest now
+  also covers USDC and claimable balances).
+- V2-2 / F-1 (guardian cancel): **fixed**, the path is gone; the guardian probe flow was deleted.
+- F-2 (`take` drains queue backing): **open**, see W above; R5-1 is the same missing ring-fence
+  seen from the redeem side.
+- T (round 4, gain/loss exactness): **holds for `adjustTotalAssets`**: `totalAssets()` moved by
+  exactly |delta| within 1 wei in all 360 sampled executions (`maxGainLossError` 1).
+- Removed behaviour: `realizeGain` / `realizeLoss` flows rewritten as `adjustTotalAssets`;
+  `cancelRedeemRequest`, the guardian cancel probe and `UNPAUSER_ROLE` references deleted.
+
+### (c) Invariants that held (1000 runs x depth 500, 500,000 calls each, 0 reverts)
+
+| Name | Claim |
+|---|---|
+| `invariant_A_sumOfBalancesEqualsTotalSupply` | sum of balances over 8 holders + vault escrow == totalSupply |
+| `invariant_B_vaultBalanceEqualsPendingRedeemShares` | balanceOf(vault) == pendingRedeemShares (escrow exact) |
+| `invariant_C_pendingDepositEqualsSumOfOpenDepositEntries` | pendingDepositSavingsShares == sum of open deposit entries |
+| `invariant_D_pendingRedeemEqualsSumOfOpenRedeemEntries` | pendingRedeemShares == sum of open redeem entries |
+| `invariant_Q_pendingCancelledEqualsSumOfOpenCancelledEntries` | pendingCancelledDepositSavingsShares == sum of open cancellation entries |
+| `invariant_E_headBookkeeping` | every entry before a head is closed; heads <= lengths; contract lengths == handler lengths |
+| `invariant_V_headsNeverMoveBackwards` | no `firstPending*Id` ever decreased across a handler call |
+| `invariant_F_totalSupplyNeverExceedsCapacityViaMint` | no mint pushed totalSupply above the maxCapacity in force |
+| `invariant_X_totalSupplyWithinCapacityUnlessLowered` | totalSupply <= maxCapacity unless setCapacity went below supply |
+| `invariant_G_chiMonotonicAndDripConsistent` | nowChi() changes only in warp (up), adjustTotalAssets (down for delta < 0, up for delta > 0); == last observation, >= chi, > 0; drip() == nowChi(), chi/rho updated |
+| `invariant_L_availableCapacityFormula` | availableCapacity() == max(0, maxCapacity - totalSupply) |
+| `invariant_H_solvencyWhenSpUsdcRateGePrimeRate` | spUSDC value held net of both spUSDC queues >= totalAssets() - deficit ledger - epsilon, while the rate order held and nothing is taken |
+| `invariant_I_usersNeverExtractMoreThanDepositsPlusYield` | holder USDC + claimable <= deposits + spUSDC yield + taker top-ups; == redeem fills + refunds; claimable == credited - claimed |
+| `invariant_K_backingExistsSomewhereAndVaultUsdcIsClaimable` | every USDC wei minted is in spUSDC / spTaker / vault / taker / holders; **vault USDC == sum of claimableAssets, exact** |
+| `invariant_N_spUsdcSharesHeldByVaultAndTaker` | vault + taker hold every spUSDC share; taker balance == ledger |
+| `invariant_W_spUsdcCoversQueuesUnlessTakenOrRedeemed` | vault spUSDC >= pending deposits + pending cancels unless `take` or a redeem fill (R5-1) opened the gap; no other flow ever opens one (max gap and opener recorded) |
+| `invariant_M_noMintOfZeroSharesExceptDust` | zero-share fills counted (3 sampled, dust only) |
+| `invariant_O_processPendingRedeemsRevertsOnlyOnCeilBurn` | processPendingRedeems reverts only with `SparkVault/insufficient-balance` (0 seen) |
+| `invariant_P_processPendingDepositCancellationsNeverReverts` | processPendingDepositCancellations never reverts |
+| `invariant_Y_payoutsExactlyConvertedShares` | each processing call paid (direct + claimable) exactly sum of floor conversions of consumed shares; nobody received more than convertToAssets(burned) (excess 0, so the "+1 wei per fill" bound holds with margin) |
+| `invariant_R_recipientUpdatesNeverChangeTotals` | owner recipient updates move nothing but the recipient field |
+| `invariant_S_recipientUpdateByNonOwnerAlwaysReverts` | stranger updates revert `not-authorized` (or `recipient-cannot-receive` when the blacklist guard runs first) |
+| `invariant_T_adjustTotalAssetsAccounting` | totalAssets() moves by exactly delta within 1 wei; zero-supply calls panic 0x12 |
+| `invariant_U_redeemEscrowOnlyLeavesThroughFills` | balanceOf(vault) never decreased outside processPendingRedeems |
+| `invariant_AA_claimNeverPaysWhileBlacklisted` | claim while blacklisted reverts in USDC and moves nothing; claim of 0 reverts `nothing-to-claim`; every blacklisted-recipient request/update reverted `recipient-cannot-receive` |
+| `invariant_AB_noUnexpectedReverts` | every revert the handler caught was on its allow-list (counts by reason printed per run) |
+| `invariant_Z_settleEverythingPaysEveryClaimable` | terminal: unpause, un-blacklist all, return taken spUSDC, make spUSDC liquid, open capacity, drain the three queues, claim for all -> deposit queue empty, every claimable paid, vault USDC == 0; while the rate order held: cancellation queue empty and redeem queue payable up to the C-1 strand bound when no fictitious gain exists, otherwise unpaid (cancel + redeem) <= deficit ledger + bound (evaluated from every reachable state on a non-committing call) |
+| `invariant_J_balanceProvenance` | each holder's balance == minted + in - out - escrowed |
+
+Harness changes vs round 4: 8 holders (6 active, 2 fresh recipient-only addresses); every
+blacklist guard is probed rather than avoided and classified by exact reason; `adjustTotalAssets`
+pauses itself when drawn unpaused (1 in 4 draws probes `not-paused` instead); `setBlacklisted`
+targets the recipient of an open redeem/cancel entry so fills land in `claimableAssets`, and
+clears prefer a holder with a claimable; `claim` retries after clearing the blacklist in half of
+the blacklisted attempts. The `counted` modifier now also snapshots the three heads (V) and the
+spUSDC backing gap (W) around every call.
+
+### (d) Unsettled
+
+- C-1 was not reproduced by the random walk (entries are large and uniform; the unit proof stands).
+- H and Z's queue bounds skip the states after the rate order broke (`setPrimeVsr` above the
+  spUSDC VSR in 1 of 8 draws; 26 of 28 sampled runs eventually break it, so their effective
+  coverage is the prefix before the first break); after a positive `adjustTotalAssets` Z only
+  bounds the unpaid remainder by the deficit ledger. The claimable / USDC / deposit-queue
+  assertions of Z are evaluated unconditionally.
+- R5-1 was hit by the random walk only 3 times in the 28 sampled final runs (the opener counter);
+  the exact-number proof is the unit test. Whether the rebalancer is expected to never process
+  redeems while cancellations are queued is a process question the contract does not enforce.
+- Overflow of `(totalAssets + delta) * RAY`, chi past 1e30 / `type(uint192).max` and the `drip`
+  `_rpow` overflow (G-1 / G-2) are deliberately outside the handler bounds.
+- Blacklisting the vault or spUSDC itself, USDC donations to the vault, and `permit` are not in
+  the handler (unit-suite topics).
+- `afterInvariant()` logs are printed once per invariant test (last run only), so ghost counters
+  are sampled, not totals; the per-invariant call counts are exact.
+
+---
 ## Round 4 (bf93b0d)
 
 Branch `campaign-v4/invariants`, files `test/ai/invariants/{a_init,b_flows_user,c_flows_admin}.sol`,
