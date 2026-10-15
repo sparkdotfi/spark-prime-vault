@@ -33,21 +33,21 @@ contract RoleBasedTests is TestBase {
     function test_grantRole_notAdmin() external {
         vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
         vm.prank(unauthorized);
-        spPrime.grantRole(REBALANCER_ROLE, rebalancer);
+        spPrime.grantRole(PROCESSOR_ROLE, processor);
     }
 
     function test_grantRole() external {
         address account = makeAddr("account");
 
-        assertEq(spPrime.hasRole(REBALANCER_ROLE, account), false);
+        assertEq(spPrime.hasRole(PROCESSOR_ROLE, account), false);
 
         vm.expectEmit(address(spPrime));
-        emit IAccessControl.RoleGranted(REBALANCER_ROLE, account, admin);
+        emit IAccessControl.RoleGranted(PROCESSOR_ROLE, account, admin);
 
         vm.prank(admin);
-        spPrime.grantRole(REBALANCER_ROLE, account);
+        spPrime.grantRole(PROCESSOR_ROLE, account);
 
-        assertEq(spPrime.hasRole(REBALANCER_ROLE, account), true);
+        assertEq(spPrime.hasRole(PROCESSOR_ROLE, account), true);
     }
 
     /**********************************************************************************************/
@@ -296,9 +296,6 @@ contract RoleBasedTests is TestBase {
     function test_adjustTotalAssets_redeemReflectsLoss() external {
         uint256 loss = 100_000e6;
 
-        vm.prank(admin);
-        spPrime.grantRole(REBALANCER_ROLE, rebalancer);
-
         _requestDeposit(user, 1_000_000e6);
         _pause();
 
@@ -329,22 +326,19 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.totalAssets(),  900_000e6 - 2);  // Rounding, 100k loss incurred
         assertEq(spPrime.assetsOf(user), 900_000e6 - 2);  // Rounding, 100k loss incurred
 
-        vm.prank(admin);
-        spPrime.unpause();
+        _unpause();
 
         assertEq(spPrime.balanceOf(user),       supply);
         assertEq(spPrime.pendingRedeemShares(), 0);
         assertEq(usdc.balanceOf(user),          0);
 
-        vm.prank(user);
-        spPrime.requestRedeem(supply, user);
+        _requestRedeem(user, supply);
 
         assertEq(spPrime.balanceOf(user),       0);
         assertEq(spPrime.pendingRedeemShares(), supply);
         assertEq(usdc.balanceOf(user),          0);
 
-        vm.prank(rebalancer);
-        spPrime.processPendingRedeems(type(uint256).max, 1);
+        _processPendingRedeems();
 
         // User receives the post-loss value of their shares, not the 1M deposited.
         assertEq(spPrime.balanceOf(user),       0);

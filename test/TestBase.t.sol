@@ -74,14 +74,14 @@ abstract contract TestBase is Test {
 
     address internal admin           = makeAddr("admin");
     address internal guardian        = makeAddr("guardian");
-    address internal rebalancer      = makeAddr("rebalancer");
+    address internal processor       = makeAddr("processor");
     address internal redeemFeeSetter = makeAddr("redeemFeeSetter");
     address internal taker           = makeAddr("taker");
     address internal vsrSetter       = makeAddr("vsrSetter");
 
     bytes32 internal DEFAULT_ADMIN_ROLE     = 0x00;
     bytes32 internal GUARDIAN_ROLE          = keccak256("GUARDIAN_ROLE");
-    bytes32 internal REBALANCER_ROLE        = keccak256("REBALANCER_ROLE");
+    bytes32 internal PROCESSOR_ROLE         = keccak256("PROCESSOR_ROLE");
     bytes32 internal REDEEM_FEE_SETTER_ROLE = keccak256("REDEEM_FEE_SETTER_ROLE");
     bytes32 internal TAKER_ROLE             = keccak256("TAKER_ROLE");
     bytes32 internal VSR_SETTER_ROLE        = keccak256("VSR_SETTER_ROLE");
@@ -109,7 +109,7 @@ abstract contract TestBase is Test {
         vm.startPrank(admin);
 
         spPrime.grantRole(GUARDIAN_ROLE,          guardian);
-        spPrime.grantRole(REBALANCER_ROLE,        rebalancer);
+        spPrime.grantRole(PROCESSOR_ROLE,         processor);
         spPrime.grantRole(REDEEM_FEE_SETTER_ROLE, redeemFeeSetter);
         spPrime.grantRole(TAKER_ROLE,             taker);
         spPrime.grantRole(VSR_SETTER_ROLE,        vsrSetter);
@@ -155,7 +155,7 @@ abstract contract TestBase is Test {
 
         vm.label(address(admin),           "admin");
         vm.label(address(guardian),        "guardian");
-        vm.label(address(rebalancer),      "rebalancer");
+        vm.label(address(processor),       "processor");
         vm.label(address(redeemFeeSetter), "redeemFeeSetter");
         vm.label(address(spPrime),         "spPrime");
         vm.label(address(spUSDC),          "spUSDC");
@@ -177,13 +177,18 @@ abstract contract TestBase is Test {
         spPrime.pause();
     }
 
+    function _unpause() internal {
+        vm.prank(admin);
+        spPrime.unpause();
+    }
+
     function _setCapacity(uint256 capacity) internal {
         vm.prank(admin);
         spPrime.setCapacity(capacity);
     }
 
     function _processPendingDeposits(uint256 maxSavingsShares, uint256 maxRequests) internal {
-        vm.prank(rebalancer);
+        vm.prank(processor);
         spPrime.processPendingDeposits(maxSavingsShares, maxRequests);
     }
 
@@ -211,6 +216,25 @@ abstract contract TestBase is Test {
 
     function _requestDepositCancellation(address account, uint256 requestId) internal returns (uint256 newRequestId) {
         return _requestDepositCancellation(account, requestId, account);
+    }
+
+    function _requestRedeem(address account, address recipient, uint256 shares) internal returns (uint256 requestId) {
+        vm.prank(account);
+        return spPrime.requestRedeem(shares, recipient);
+    }
+
+    function _requestRedeem(address account, uint256 shares) internal returns (uint256 requestId) {
+        return _requestRedeem(account, account, shares);
+    }
+
+    function _processPendingRedeems(uint256 maxAssets, uint256 maxRequests) internal {
+        vm.prank(processor);
+        spPrime.processPendingRedeems(maxAssets, maxRequests);
+    }
+
+    function _processPendingRedeems() internal {
+        vm.prank(processor);
+        spPrime.processPendingRedeems(type(uint256).max, type(uint256).max);
     }
 
     /**********************************************************************************************/
