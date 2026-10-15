@@ -430,25 +430,19 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         Request memory request_ = _depositRequests[requestId_];
 
-        uint256 requestSavingsShares_ = request_.shares;
-
-        require(requestSavingsShares_ != 0, "SparkPrimeVault/no-request");
-
-        if (msg.sender != request_.owner) {
-            require(hasRole(GUARDIAN_ROLE, msg.sender), "SparkPrimeVault/not-authorized");
-            require(recipient_ == request_.owner,       "SparkPrimeVault/invalid-recipient");
-        }
+        require(request_.shares != 0,         "SparkPrimeVault/no-request");
+        require(msg.sender != request_.owner, "SparkPrimeVault/not-authorized");
 
         delete _depositRequests[requestId_];
 
         newRequestId_ = _depositCancellationRequests.length;
 
         _depositCancellationRequests.push(
-            Request(request_.owner, recipient_, requestSavingsShares_)
+            Request(request_.owner, recipient_, request_.shares)
         );
 
-        pendingDepositSavingsShares          -= requestSavingsShares_;
-        pendingCancelledDepositSavingsShares += requestSavingsShares_;
+        pendingDepositSavingsShares          -= request_.shares;
+        pendingCancelledDepositSavingsShares += request_.shares;
 
         if (requestId_ == firstPendingDepositId) {
             // Advance head past any cancelled/dead requests.
@@ -897,11 +891,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         for (; i_ < end_ && remaining_ != 0; ++i_) {
             Request storage request_ = _depositRequests[i_];
 
-            uint256 requestSavingsShares_ = request_.shares;
+            if (request_.shares == 0) continue;  // Cancelled
 
-            if (requestSavingsShares_ == 0) continue;  // Cancelled
-
-            uint256 savingsShares_ = _min(requestSavingsShares_, remaining_);
+            uint256 savingsShares_ = _min(request_.shares, remaining_);
 
             // Convert processed savings shares into vault shares.
             uint256 assets_ = IERC4626Like(savings).convertToAssets(savingsShares_);
@@ -939,11 +931,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         for (; i_ < end_ && remaining_ != 0; ++i_) {
             Request storage request_ = _depositCancellationRequests[i_];
 
-            uint256 requestSavingsShares_ = request_.shares;
+            if (request_.shares == 0) continue;  // Cancelled
 
-            if (requestSavingsShares_ == 0) continue;  // Cancelled
-
-            uint256 savingsShares_ = _min(requestSavingsShares_, remaining_);
+            uint256 savingsShares_ = _min(request_.shares, remaining_);
 
             pendingCancelledDepositSavingsShares -= savingsShares_;
             request_.shares                      -= savingsShares_;
@@ -974,11 +964,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         for (; i_ < end_ && remaining_ != 0; ++i_) {
             Request storage request_ = _redeemRequests[i_];
 
-            uint256 requestShares_ = request_.shares;
+            if (request_.shares == 0) continue;  // Empty
 
-            if (requestShares_ == 0) continue;  // Empty
-
-            uint256 shares_ = _min(requestShares_, remaining_);
+            uint256 shares_ = _min(request_.shares, remaining_);
             uint256 assets_ = convertToAssets(shares_);
 
             pendingRedeemShares -= shares_;
