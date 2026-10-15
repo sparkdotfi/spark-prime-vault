@@ -418,3 +418,156 @@ contract SetMaxRedeemFeeTests is AuthorizationTestBase {
     }
 
 }
+
+contract SetMinDepositTests is AuthorizationTestBase {
+
+    function test_setMinDeposit_notAdmin() external {
+        vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
+        vm.prank(unauthorized);
+        vault.setMinDeposit(100e6);
+    }
+
+    function test_setMinDeposit() external {
+        assertEq(vault.minDeposit(), 0);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.MinDepositSet(100e6);
+
+        vm.prank(admin);
+        vault.setMinDeposit(100e6);
+
+        assertEq(vault.minDeposit(), 100e6);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.MinDepositSet(0);
+
+        vm.prank(admin);
+        vault.setMinDeposit(0);
+
+        assertEq(vault.minDeposit(), 0);
+    }
+
+}
+
+contract SetMinRedeemTests is AuthorizationTestBase {
+
+    function test_setMinRedeem_notAdmin() external {
+        vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
+        vm.prank(unauthorized);
+        vault.setMinRedeem(100e6);
+    }
+
+    function test_setMinRedeem() external {
+        assertEq(vault.minRedeem(), 0);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.MinRedeemSet(100e6);
+
+        vm.prank(admin);
+        vault.setMinRedeem(100e6);
+
+        assertEq(vault.minRedeem(), 100e6);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.MinRedeemSet(0);
+
+        vm.prank(admin);
+        vault.setMinRedeem(0);
+
+        assertEq(vault.minRedeem(), 0);
+    }
+
+}
+
+contract SetVSRBoundsTests is AuthorizationTestBase {
+
+    // Failure tests
+
+    function test_setVSRBounds_notAdmin() external {
+        vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
+        vm.prank(unauthorized);
+        vault.setVSRBounds({ minVSR_ : RAY, maxVSR_ : FOUR_PCT_VSR });
+    }
+
+    function test_setVSRBounds_vsrTooLowBoundary() external {
+        vm.expectRevert("SparkPrimeVault/vsr-too-low");
+        vm.prank(admin);
+        vault.setVSRBounds({ minVSR_ : RAY - 1, maxVSR_ : FOUR_PCT_VSR });
+
+        vm.prank(admin);
+        vault.setVSRBounds({ minVSR_ : RAY, maxVSR_ : FOUR_PCT_VSR });
+    }
+
+    function test_setVSRBounds_vsrTooHighBoundary() external {
+        uint256 maxVsr = vault.MAX_VSR();
+
+        vm.expectRevert("SparkPrimeVault/vsr-too-high");
+        vm.prank(admin);
+        vault.setVSRBounds({ minVSR_ : RAY, maxVSR_ : maxVsr + 1 });
+
+        vm.prank(admin);
+        vault.setVSRBounds({ minVSR_ : RAY, maxVSR_ : maxVsr });
+    }
+
+    function test_setVSRBounds_minVSRGtMaxVSRBoundary() external {
+        vm.expectRevert("SparkPrimeVault/min-vsr-gt-max-vsr");
+        vm.prank(admin);
+        vault.setVSRBounds({ minVSR_ : FOUR_PCT_VSR + 1, maxVSR_ : FOUR_PCT_VSR });
+
+        vm.prank(admin);
+        vault.setVSRBounds({ minVSR_ : FOUR_PCT_VSR, maxVSR_ : FOUR_PCT_VSR });
+    }
+
+    // Success tests
+
+    function test_setVSRBounds() external {
+        assertEq(vault.minVSR(), RAY);
+        assertEq(vault.maxVSR(), RAY);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.VSRBoundsSet(ONE_PCT_VSR, FOUR_PCT_VSR);
+
+        vm.prank(admin);
+        vault.setVSRBounds({ minVSR_ : ONE_PCT_VSR, maxVSR_ : FOUR_PCT_VSR });
+
+        assertEq(vault.minVSR(), ONE_PCT_VSR);
+        assertEq(vault.maxVSR(), FOUR_PCT_VSR);
+    }
+
+}
+
+contract UnpauseTests is AuthorizationTestBase {
+
+    // Failure tests
+
+    function test_unpause_notAuthorized() external {
+        vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
+        vm.prank(unauthorized);
+        vault.unpause();
+    }
+
+    function test_unpause_guardianCannotUnpause() external {
+        vm.expectRevert(_notAuthorized(guardian, DEFAULT_ADMIN_ROLE));
+        vm.prank(guardian);
+        vault.unpause();
+    }
+
+    // Success tests
+
+    function test_unpause() external {
+        vm.prank(guardian);
+        vault.pause();
+
+        assertEq(vault.paused(), true);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.Unpaused();
+
+        vm.prank(admin);
+        vault.unpause();
+
+        assertEq(vault.paused(), false);
+    }
+
+}
+
