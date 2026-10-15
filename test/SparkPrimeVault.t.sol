@@ -3,16 +3,12 @@ pragma solidity ^0.8.34;
 
 import { TestBase, SparkPrimeVault, ISparkVaultLike } from "./TestBase.t.sol";
 
-contract SparkPrimeVaultTests is TestBase {
+abstract contract SparkPrimeVaultTests is TestBase {
 
     uint16 internal constant REFERRAL = type(uint16).max;
 
-    address internal user = makeAddr("user");
-
-    function setUp() public override {
+    function setUp() public override virtual {
         super.setUp();
-
-        vm.label(address(user), "user");
 
         skip(365 days);
     }
@@ -20,6 +16,14 @@ contract SparkPrimeVaultTests is TestBase {
 }
 
 contract RequestDepositTests is SparkPrimeVaultTests {
+
+    address internal user = makeAddr("user");
+
+    function setUp() public override {
+        super.setUp();
+
+        vm.label(address(user), "user");
+    }
 
     // Failure tests
 
@@ -232,6 +236,259 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         _assertVaultState();
         _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+    }
+
+}
+
+contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
+
+    address internal alice   = makeAddr("alice");
+    address internal bob     = makeAddr("bob");
+    address internal charlie = makeAddr("charlie");
+
+    AccountBalances internal aliceBalances;
+    AccountBalances internal bobBalances;
+    AccountBalances internal charlieBalances;
+    AccountBalances internal vaultBalances;
+
+    function setUp() public override {
+        super.setUp();
+
+        vm.label(alice,   "alice");
+        vm.label(bob,     "bob");
+        vm.label(charlie, "charlie");
+
+        _setCapacity(0);
+
+        _requestDeposit(alice,   100_000e6);    // Will be cancelled
+        _requestDeposit(bob,     200_000e6);    // Will be cancelled
+        _requestDeposit(charlie, 300_000e6);    // Will be cancelled
+        _requestDeposit(alice,   400_000e6);    // Will be filled
+        _requestDeposit(bob,     500_000e6);    // Will be filled
+        _requestDeposit(charlie, 600_000e6);    // Will be cancelled
+        _requestDeposit(alice,   700_000e6);    // Will be filled
+        _requestDeposit(bob,     800_000e6);    // Will be filled
+        _requestDeposit(charlie, 900_000e6);    // Will be cancelled
+        _requestDeposit(alice,   1_000_000e6);  // Will be partially filled
+
+        _requestDepositCancellation(alice,   0);
+        _requestDepositCancellation(bob,     1);
+        _requestDepositCancellation(charlie, 2);
+        _requestDepositCancellation(charlie, 5);
+        _requestDepositCancellation(charlie, 8);
+
+        uint256 depositedAssets  = 5_500_000e6 - 5;  // All transfers in (net of rounding)
+
+        uint256 pendingDepositAssets = 400_000e6 + 500_000e6 + 700_000e6 + 800_000e6 + 1_000_000e6;
+
+        uint256 pendingDepositCancellationAssets = 100_000e6 + 200_000e6 + 300_000e6 + 600_000e6 + 900_000e6;
+
+        uint256 targetAssets = 400_000e6 + 500_000e6 + 700_000e6 + 800_000e6 + 200_000e6;  // Only 200k of the last 1MM deposit
+
+        _setCapacity(spPrime.convertToShares(targetAssets));
+
+        vaultState.rho                    = vm.getBlockTimestamp();
+        vaultState.chi                    = 1.049999999999999999961070145e27;
+        vaultState.totalAssets            = 0;
+        vaultState.availableCapacityValue = targetAssets - 1;
+        vaultState.availableLiquidAssets  = depositedAssets;
+
+        vaultState.depositRequests.pendingShareValue = pendingDepositAssets - 3;
+        vaultState.depositRequests.length            = 10;
+        vaultState.depositRequests.firstPendingId    = 0;
+
+        vaultState.depositCancellationRequests.pendingShareValue = pendingDepositCancellationAssets - 3;
+        vaultState.depositCancellationRequests.length            = 5;
+        vaultState.depositCancellationRequests.firstPendingId    = 0;
+
+        aliceBalances = AccountBalances({
+            account           : alice,
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        bobBalances = AccountBalances({
+            account           : bob,
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        charlieBalances = AccountBalances({
+            account           : charlie,
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        vaultBalances = AccountBalances({
+            account           : address(spPrime),
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 5_500_000e6 - 5,
+            claimableAssets   : 0
+        });
+
+        _assertVaultState();
+
+        _assertAccountBalances(aliceBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(charlieBalances);
+        _assertAccountBalances(vaultBalances);
+    }
+
+    function test_processPendingDeposits_infiniteMaxSavingsShares_infiniteMaxRequests() external {
+        // Deposit Request 3
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(0), alice, spPrime.convertToShares(400_000e6) - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Deposit(3, alice, alice, spUSDC.convertToShares(400_000e6), 400_000e6 - 1, spPrime.convertToShares(400_000e6) - 1);
+
+        // Deposit Request 4
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(0), bob, spPrime.convertToShares(500_000e6) - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Deposit(4, bob, bob, spUSDC.convertToShares(500_000e6), 500_000e6 - 1, spPrime.convertToShares(500_000e6) - 1);
+
+        // Deposit Request 6
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(0), alice, spPrime.convertToShares(700_000e6) - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Deposit(6, alice, alice, spUSDC.convertToShares(700_000e6), 700_000e6 - 1, spPrime.convertToShares(700_000e6) - 1);
+
+        // Deposit Request 7
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(0), bob, spPrime.convertToShares(800_000e6) - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Deposit(7, bob, bob, spUSDC.convertToShares(800_000e6), 800_000e6 - 1, spPrime.convertToShares(800_000e6) - 1);
+
+        // Deposit Request 9 (Partial)
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(0), alice, spPrime.convertToShares(200_000e6));
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Deposit(9, alice, alice, spUSDC.convertToShares(200_000e6) + 1, 200_000e6, spPrime.convertToShares(200_000e6));
+
+        vm.prank(processor);
+        spPrime.processPendingDeposits(type(uint256).max, type(uint256).max);
+
+        uint256 assetsDeposited = 400_000e6 + 500_000e6 + 700_000e6 + 800_000e6 + 200_000e6;  // Only ~200k of the last 1MM deposit
+
+        vaultState.totalAssets            += assetsDeposited - 7;
+        vaultState.availableCapacityValue -= assetsDeposited - 7;
+
+        vaultState.depositRequests.pendingShareValue -= assetsDeposited - 1;
+        vaultState.depositRequests.length             = 1;
+        vaultState.depositRequests.firstPendingId     = 9;
+
+        aliceBalances.shareValue += 400_000e6 + 700_000e6 + 200_000e6 - 4;
+        bobBalances.shareValue   += 500_000e6 + 800_000e6 - 4;
+
+        _assertVaultState();
+        _assertAccountBalances(aliceBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(charlieBalances);
+        _assertAccountBalances(vaultBalances);
+    }
+
+    function test_processPendingDeposits_infiniteMaxSavingsShares_limitedMaxRequests() external {
+        // Deposit Request 3
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(0), alice, spPrime.convertToShares(400_000e6) - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Deposit(3, alice, alice, spUSDC.convertToShares(400_000e6), 400_000e6 - 1, spPrime.convertToShares(400_000e6) - 1);
+
+        // Deposit Request 4
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(0), bob, spPrime.convertToShares(500_000e6) - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Deposit(4, bob, bob, spUSDC.convertToShares(500_000e6), 500_000e6 - 1, spPrime.convertToShares(500_000e6) - 1);
+
+        vm.prank(processor);
+        spPrime.processPendingDeposits(type(uint256).max, 6);
+
+        uint256 assetsDeposited = 400_000e6 + 500_000e6;  // Only first 2 uncancelled deposits
+
+        vaultState.totalAssets            += assetsDeposited - 4;
+        vaultState.availableCapacityValue -= assetsDeposited - 3;
+
+        vaultState.depositRequests.pendingShareValue -= assetsDeposited - 1;
+        vaultState.depositRequests.length             = 4;
+        vaultState.depositRequests.firstPendingId     = 6;
+
+        aliceBalances.shareValue += 400_000e6 - 2;
+        bobBalances.shareValue   += 500_000e6 - 2;
+
+        _assertVaultState();
+        _assertAccountBalances(aliceBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(charlieBalances);
+        _assertAccountBalances(vaultBalances);
+    }
+
+    function test_processPendingDeposits_limitedMaxSavingsShares_infiniteMaxRequests() external {
+        // Deposit Request 3
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(0), alice, spPrime.convertToShares(400_000e6) - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Deposit(3, alice, alice, spUSDC.convertToShares(400_000e6), 400_000e6 - 1, spPrime.convertToShares(400_000e6) - 1);
+
+        // Deposit Request 4
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(0), bob, spPrime.convertToShares(500_000e6) - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Deposit(4, bob, bob, spUSDC.convertToShares(500_000e6), 500_000e6 - 1, spPrime.convertToShares(500_000e6) - 1);
+
+        // Deposit Request 6 (Partial)
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(0), alice, spPrime.convertToShares(300_000e6));
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Deposit(6, alice, alice, spUSDC.convertToShares(300_000e6) + 1, 300_000e6, spPrime.convertToShares(300_000e6));
+
+        vm.startPrank(processor);
+        spPrime.processPendingDeposits(spUSDC.convertToShares(1_200_000e6), type(uint256).max);
+        vm.stopPrank();
+
+        uint256 assetsDeposited = 400_000e6 + 500_000e6 + 300_000e6;  // Only ~300k of the third uncancelled 700k deposit
+
+        vaultState.totalAssets            += assetsDeposited - 4;
+        vaultState.availableCapacityValue -= assetsDeposited - 3;
+
+        vaultState.depositRequests.pendingShareValue -= assetsDeposited - 1;
+        vaultState.depositRequests.length             = 4;
+        vaultState.depositRequests.firstPendingId     = 6;
+
+        aliceBalances.shareValue += 400_000e6 + 300_000e6 - 2;
+        bobBalances.shareValue   += 500_000e6 - 2;
+
+        _assertVaultState();
+        _assertAccountBalances(aliceBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(charlieBalances);
         _assertAccountBalances(vaultBalances);
     }
 

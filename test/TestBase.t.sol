@@ -35,6 +35,16 @@ interface ISparkVaultLike {
 
 }
 
+interface IUSDCLike {
+
+    function blacklist(address account) external;
+
+    function unblacklist(address account) external;
+
+    function blacklister() external view returns (address);
+
+}
+
 abstract contract TestBase is Test {
 
     struct PendingRequestsState {
@@ -237,11 +247,21 @@ abstract contract TestBase is Test {
         spPrime.processPendingRedeems(type(uint256).max, type(uint256).max);
     }
 
+    function _blacklist(address account) internal {
+        vm.prank(IUSDCLike(Ethereum.USDC).blacklister());
+        IUSDCLike(Ethereum.USDC).blacklist(account);
+    }
+
+    function _unblacklist(address account) internal {
+        vm.prank(IUSDCLike(Ethereum.USDC).blacklister());
+        IUSDCLike(Ethereum.USDC).unblacklist(account);
+    }
+
     /**********************************************************************************************/
     /*** Assertion helpers                                                                      ***/
     /**********************************************************************************************/
 
-    function _assertVaultState() internal view {
+    function _assertVaultState(uint256 tolerance) internal view {
         // General state variables
 
         assertEq(
@@ -250,35 +270,40 @@ abstract contract TestBase is Test {
             "vaultState.rho"
         );
 
-        assertEq(
+        assertApproxEqAbs(
             spPrime.chi(),
             vaultState.chi,
+            tolerance,
             "vaultState.chi"
         );
 
-        assertEq(
+        assertApproxEqAbs(
             spPrime.totalAssets(),
             vaultState.totalAssets,
+            tolerance,
             "vaultState.totalAssets"
         );
 
-        assertEq(
+        assertApproxEqAbs(
             spPrime.convertToAssets(spPrime.availableCapacity()),
             vaultState.availableCapacityValue,
+            tolerance,
             "vaultState.availableCapacityValue"
         );
 
-        assertEq(
+        assertApproxEqAbs(
             spPrime.availableLiquidAssets(),
             vaultState.availableLiquidAssets,
+            tolerance,
             "vaultState.availableLiquidAssets"
         );
 
         // Deposit Requests
 
-        assertEq(
+        assertApproxEqAbs(
             spUSDC.convertToAssets(spPrime.pendingDepositSavingsShares()),
             vaultState.depositRequests.pendingShareValue,
+            tolerance,
             "vaultState.depositRequests.pendingShareValue"
         );
 
@@ -296,9 +321,10 @@ abstract contract TestBase is Test {
 
         // Deposit Cancellation Requests
 
-        assertEq(
+        assertApproxEqAbs(
             spUSDC.convertToAssets(spPrime.pendingCancelledDepositSavingsShares()),
             vaultState.depositCancellationRequests.pendingShareValue,
+            tolerance,
             "vaultState.depositCancellationRequests.pendingShareValue"
         );
 
@@ -316,9 +342,10 @@ abstract contract TestBase is Test {
 
         // Redeem Requests
 
-        assertEq(
+        assertApproxEqAbs(
             spUSDC.convertToAssets(spPrime.pendingRedeemShares()),
             vaultState.redeemRequests.pendingShareValue,
+            tolerance,
             "vaultState.redeemRequests.pendingShareValue"
         );
 
@@ -336,30 +363,42 @@ abstract contract TestBase is Test {
 
     }
 
-    function _assertAccountBalances(AccountBalances memory accountState) internal view {
-        assertEq(
+    function _assertVaultState() internal view {
+        _assertVaultState(0);
+    }
+
+    function _assertAccountBalances(AccountBalances memory accountState, uint256 tolerance) internal view {
+        assertApproxEqAbs(
             usdc.balanceOf(accountState.account),
             accountState.assets,
+            tolerance,
             "accountState.assets"
         );
 
-        assertEq(
+        assertApproxEqAbs(
             spPrime.assetsOf(accountState.account),
             accountState.shareValue,
+            tolerance,
             "accountState.shareValue"
         );
 
-        assertEq(
+        assertApproxEqAbs(
             spUSDC.assetsOf(accountState.account),
             accountState.savingsShareValue,
+            tolerance,
             "accountState.savingsShareValue"
         );
 
-        assertEq(
+        assertApproxEqAbs(
             spPrime.claimableAssets(accountState.account),
             accountState.claimableAssets,
+            tolerance,
             "accountState.claimableAssets"
         );
+    }
+
+    function _assertAccountBalances(AccountBalances memory accountState) internal view {
+        _assertAccountBalances(accountState, 0);
     }
 
     function _assertDepositRequest(
