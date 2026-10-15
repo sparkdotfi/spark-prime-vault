@@ -32,7 +32,7 @@ contract FlowsAdmin is FlowsUser {
     function setRedeemFeeRate(uint256 fee) public counted("setRedeemFee") {
         fee = _bound(fee, 0, vault.maxRedeemFeeRate());
 
-        vm.startPrank(riskManager);
+        vm.startPrank(redeemFeeSetter);
         vault.setRedeemFeeRate(fee);
         vm.stopPrank();
     }
@@ -62,7 +62,7 @@ contract FlowsAdmin is FlowsUser {
         if (seed % 8 == 0) vsr_ = _bound(vsr_, vault.minVSR(), vault.maxVSR());
         else               vsr_ = _bound(vsr_, vault.minVSR(), _min(vault.maxVSR(), spVsr));
 
-        vm.startPrank(setter);
+        vm.startPrank(vsrSetter);
         vault.setVSR(vsr_);
         vm.stopPrank();
 
@@ -122,7 +122,7 @@ contract FlowsAdmin is FlowsUser {
 
         uint256 chiBefore = vault.nowChi();
 
-        vm.startPrank(riskManager);
+        vm.startPrank(redeemFeeSetter);
         vault.realizeLoss(loss);
         vm.stopPrank();
 

@@ -72,7 +72,7 @@ contract FlowsUser is Init {
         usdc.approve(address(vault), assets);
         uint256 id = referral
             ? vault.requestDeposit(assets, recipient, uint16(seed))
-            : vault.requestDeposit(assets, recipient);
+            : vault.requestDeposit(assets, recipient, 0);
         vm.stopPrank();
 
         assertEq(id, depositQueueLength, "handler: unexpected deposit request id");
@@ -167,7 +167,7 @@ contract FlowsUser is Init {
             lastGuardianCancelProbe = "<no revert>";
         } catch Error(string memory r) {
             lastGuardianCancelProbe = r;
-            if (keccak256(bytes(r)) == keccak256("SparkPrimeVault/invalid-recipient")) {
+            if (keccak256(bytes(r)) == keccak256("SparkPrimeVault/zero-recipient")) {
                 guardianCancelProbeReverts++;
             }
         } catch {

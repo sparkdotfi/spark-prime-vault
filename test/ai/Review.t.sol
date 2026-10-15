@@ -39,8 +39,8 @@ contract ReviewTest is TestBase {
         vm.startPrank(admin);
         vault.grantRole(GUARDIAN_ROLE,     guardian);
         vault.grantRole(REBALANCER_ROLE,   rebalancer);
-        vault.grantRole(RISK_MANAGER_ROLE, riskManager);
-        vault.grantRole(SETTER_ROLE,       setter);
+        vault.grantRole(REDEEM_FEE_SETTER_ROLE, redeemFeeSetter);
+        vault.grantRole(VSR_SETTER_ROLE,       vsrSetter);
         vault.grantRole(TAKER_ROLE,        taker);
         vault.setCapacity(1_000_000e6);
         vault.setMaxRedeemFeeRate(0.01e18);
@@ -59,7 +59,7 @@ contract ReviewTest is TestBase {
 
     function _deposit(address who, uint256 amt) internal returns (uint256 id) {
         vm.prank(who);
-        id = vault.requestDeposit(amt, who);
+        id = vault.requestDeposit(amt, who, 0);
     }
 
     function _settleCancels() internal {
@@ -78,7 +78,7 @@ contract ReviewTest is TestBase {
         assertGt(vault.pendingDepositSavingsShares(), 0);
 
         vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.requestDepositCancellation(id, thief);
 
         vm.prank(guardian);
@@ -211,7 +211,7 @@ contract ReviewTest is TestBase {
         uint256 maxVsr = vault.MAX_VSR();
         vm.prank(admin);
         vault.setVSRBounds(1e27, maxVsr);
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vault.setVSR(1.000000003022265980097387650e27);  // ~10% APY
         vm.warp(block.timestamp + 365 days);
         vault.drip();
@@ -256,7 +256,7 @@ contract ReviewTest is TestBase {
     }
 
     function test_F5_tinyRedeemRequestsBecomeGhostEntries() public {
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vault.setRedeemFeeRate(0.01e18);
         _deposit(alice, 1_000e6);
 
@@ -283,7 +283,7 @@ contract ReviewTest is TestBase {
     }
 
     function test_feeRoundsUp() public {
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vault.setRedeemFeeRate(0.01e18);
         _deposit(alice, 1_000e6);
         vm.prank(alice);

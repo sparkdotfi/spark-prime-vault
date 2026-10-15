@@ -18,8 +18,8 @@ contract UninitializedERC1967Proxy is ERC1967Proxy {
 
 }
 
-/// @dev Setter bounds (what each role can and cannot do once its key is compromised), setter
-///      validation gaps, setter events, `realizeLoss`, `realizeGain` (round 3), `take`,
+/// @dev Setter bounds (what each role can and cannot do once its key is compromised), vsrSetter
+///      validation gaps, vsrSetter events, `realizeLoss`, `realizeGain` (round 3), `take`,
 ///      `initialize`, and ERC20/permit basics, on `fix/update-guardian-transfer` @ bf93b0d.
 ///      Round 4 adds the request-event exactness checks and the `realizeGain` front-run note.
 contract AdminTest is LocalTestBase {
@@ -55,7 +55,7 @@ contract AdminTest is LocalTestBase {
     /*** setCapacity                                                                            ***/
     /**********************************************************************************************/
 
-    // Round 2: the `capacity_ <= uint128.max` bound was removed. The setter accepts anything;
+    // Round 2: the `capacity_ <= uint128.max` bound was removed. The vsrSetter accepts anything;
     // at `uint256.max` every deposit reverts by overflow in `convertToAssets(availableCapacity())`
     // (NEWSURFACE owns the brick finding; the acceptance is asserted here).
     function test_setCapacity_noUpperBound() public {
@@ -71,12 +71,12 @@ contract AdminTest is LocalTestBase {
         _fund(alice, 100e6);
         vm.prank(alice);
         vm.expectRevert(stdError.arithmeticError);
-        vault.requestDeposit(100e6, alice);
+        vault.requestDeposit(100e6, alice, 0);
 
         // Back inside the old bound the vault works again.
         _setCapacity(type(uint128).max);
         vm.prank(alice);
-        vault.requestDeposit(100e6, alice);
+        vault.requestDeposit(100e6, alice, 0);
         assertGt(vault.balanceOf(alice), 0);
     }
 
@@ -153,7 +153,7 @@ contract AdminTest is LocalTestBase {
         (, , uint256 queued_) = _redeemRequest(id_);
         assertEq(shares_ - queued_, (shares_ * 0.01e18 + WAD - 1) / WAD);  // 1% charged
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/fee-too-high");
         vault.setRedeemFeeRate(0.01e18);
 
@@ -214,7 +214,7 @@ contract AdminTest is LocalTestBase {
         _fund(alice, 1_000e6);
         vm.prank(alice);
         vm.expectRevert("SparkPrimeVault/below-minimum");
-        vault.requestDeposit(1_000e6, alice);
+        vault.requestDeposit(1_000e6, alice, 0);
     }
 
     // C-8: minDeposit may exceed the whole capacity; every deposit then partially fills and the
@@ -226,7 +226,7 @@ contract AdminTest is LocalTestBase {
         _fund(alice, 1_000e6);
         vm.prank(alice);
         vm.expectRevert("SparkPrimeVault/below-minimum");
-        vault.requestDeposit(999e6, alice);
+        vault.requestDeposit(999e6, alice, 0);
 
         uint256 id_ = _deposit(alice, 1_000e6);
         (, , uint256 queued_) = _depositRequest(id_);
@@ -244,8 +244,8 @@ contract AdminTest is LocalTestBase {
         _fund(alice, 1_000e6);
         vm.startPrank(alice);
         vm.expectRevert("SparkPrimeVault/below-minimum");
-        vault.requestDeposit(100e6 - 1, alice);
-        vault.requestDeposit(100e6, alice);
+        vault.requestDeposit(100e6 - 1, alice, 0);
+        vault.requestDeposit(100e6, alice, 0);
 
         vm.expectRevert("SparkPrimeVault/below-minimum");
         vault.requestRedeem(50e6 - 1, alice);
@@ -311,7 +311,7 @@ contract AdminTest is LocalTestBase {
     }
 
     // C-7: bounds may be set so the current vsr is outside them; drip keeps accruing at the old
-    // vsr until the setter moves it. Only the setter can bring it back into range.
+    // vsr until the vsrSetter moves it. Only the vsrSetter can bring it back into range.
     function test_setVSRBounds_currentVsrOutsideNewBounds() public {
         _deposit(alice, 1_000e6);
         _setPrimeVsr(TEN_PCT_VSR);
@@ -327,7 +327,7 @@ contract AdminTest is LocalTestBase {
         assertGt(assetsAfter_, assetsBefore_ * 109 / 100);
         assertLt(assetsAfter_, assetsBefore_ * 111 / 100);
 
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vm.expectRevert("SparkPrimeVault/vsr-too-high");
         vault.setVSR(TEN_PCT_VSR);
 
@@ -343,7 +343,7 @@ contract AdminTest is LocalTestBase {
         vm.prank(admin);
         vault.setVSRBounds(ONE_PCT_VSR, FOUR_PCT_VSR);
 
-        vm.startPrank(setter);
+        vm.startPrank(vsrSetter);
         vm.expectRevert("SparkPrimeVault/vsr-too-low");
         vault.setVSR(ONE_PCT_VSR - 1);
 
@@ -355,7 +355,7 @@ contract AdminTest is LocalTestBase {
         vm.prank(admin);
         vault.setVSRBounds(ONE_PCT_VSR, FOUR_PCT_VSR);
 
-        vm.startPrank(setter);
+        vm.startPrank(vsrSetter);
         vm.expectRevert("SparkPrimeVault/vsr-too-high");
         vault.setVSR(FOUR_PCT_VSR + 1);
 
@@ -363,12 +363,12 @@ contract AdminTest is LocalTestBase {
         assertEq(vault.vsr(), FOUR_PCT_VSR);
     }
 
-    // With bounds [RAY, RAY] (deploy default) a compromised setter cannot move the rate at all.
+    // With bounds [RAY, RAY] (deploy default) a compromised vsrSetter cannot move the rate at all.
     function test_setVSR_lockedWhenBoundsEqual() public {
         vm.prank(admin);
         vault.setVSRBounds(RAY, RAY);
 
-        vm.startPrank(setter);
+        vm.startPrank(vsrSetter);
         vm.expectRevert("SparkPrimeVault/vsr-too-high");
         vault.setVSR(RAY + 1);
         vm.expectRevert("SparkPrimeVault/vsr-too-low");
@@ -384,7 +384,7 @@ contract AdminTest is LocalTestBase {
         assertEq(nChi_, vault.chi());  // vsr is RAY: no accrual
         assertEq(vault.rho(), rhoBefore_);
 
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vm.expectEmit(address(vault));
         emit Drip(nChi_, 0);
         vm.expectEmit(address(vault));
@@ -409,7 +409,7 @@ contract AdminTest is LocalTestBase {
         uint256 supply_   = vault.totalSupply();
         uint256 diff_     = supply_ * nChi_ / RAY - supply_ * vault.chi() / RAY;
 
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vm.expectEmit(address(vault));
         emit Drip(nChi_, diff_);
         vault.setVSR(RAY);
@@ -419,14 +419,14 @@ contract AdminTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** setRedeemFee (RISK_MANAGER_ROLE, hot wallet)                                           ***/
+    /*** setRedeemFee (REDEEM_FEE_SETTER_ROLE, hot wallet)                                           ***/
     /**********************************************************************************************/
 
     function test_setRedeemFee_tooHighBoundary() public {
         vm.prank(admin);
         vault.setMaxRedeemFeeRate(0.005e18);
 
-        vm.startPrank(riskManager);
+        vm.startPrank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/fee-too-high");
         vault.setRedeemFeeRate(0.005e18 + 1);
 
@@ -438,14 +438,14 @@ contract AdminTest is LocalTestBase {
         vm.prank(admin);
         vault.setMaxRedeemFeeRate(0);
 
-        vm.startPrank(riskManager);
+        vm.startPrank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/fee-too-high");
         vault.setRedeemFeeRate(1);
         vault.setRedeemFeeRate(0);
     }
 
     function test_setRedeemFeeRate() public {
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectEmit(address(vault));
         emit RedeemFeeRateSet(0.001e18);
         vault.setRedeemFeeRate(0.001e18);
@@ -453,7 +453,7 @@ contract AdminTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** realizeLoss (RISK_MANAGER_ROLE, hot wallet)                                            ***/
+    /*** realizeLoss (REDEEM_FEE_SETTER_ROLE, hot wallet)                                            ***/
     /**********************************************************************************************/
 
     // As of ff828d2: chi = floor((totalAssets() - loss) * RAY / totalSupply) after a drip, with
@@ -461,7 +461,7 @@ contract AdminTest is LocalTestBase {
 
     function test_realizeLoss_notPaused() public {
         _deposit(alice, 1_000e6);
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/not-paused");
         vault.realizeLoss(1e6);
     }
@@ -469,7 +469,7 @@ contract AdminTest is LocalTestBase {
     function test_realizeLoss_zeroLoss() public {
         _deposit(alice, 1_000e6);
         _pause();
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(0);
     }
@@ -484,7 +484,7 @@ contract AdminTest is LocalTestBase {
         uint192 expected_    = uint192((totalAssets_ - 10e6) * RAY / supply_);
         assertLt(expected_, vault.chi());
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectEmit(address(vault));
         emit LossRealized(expected_, 10e6);
         vault.realizeLoss(10e6);
@@ -511,7 +511,7 @@ contract AdminTest is LocalTestBase {
         assertGt(dripped_, stored_);
         assertEq(totalAssets_, supply_ * dripped_ / RAY);
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vault.realizeLoss(1e6);
 
         assertEq(vault.chi(), uint192((totalAssets_ - 1e6) * RAY / supply_));
@@ -547,7 +547,7 @@ contract AdminTest is LocalTestBase {
         uint256 supply_      = vault.totalSupply();
         assertApproxEqAbs(totalAssets_, 1_000_000e6, 2);
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vault.realizeLoss(totalAssets_ - 1);
 
         assertEq(vault.chi(),           uint192(RAY / supply_));
@@ -572,7 +572,7 @@ contract AdminTest is LocalTestBase {
         uint256 totalAssets_ = vault.totalAssets();
         uint192 chi_         = vault.chi();
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(totalAssets_);
 
@@ -599,19 +599,19 @@ contract AdminTest is LocalTestBase {
         uint256 totalAssets_ = vault.totalAssets();
         uint256 supply_      = vault.totalSupply();
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(type(uint256).max);
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(totalAssets_ + 1);
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(totalAssets_);
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vault.realizeLoss(totalAssets_ - 1);
         assertEq(vault.chi(), uint192(RAY / supply_));
     }
@@ -625,11 +625,11 @@ contract AdminTest is LocalTestBase {
         assertEq(vault.totalAssets(), 0);
         _pause();
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(1);
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(type(uint256).max);
 
@@ -637,7 +637,7 @@ contract AdminTest is LocalTestBase {
         _setPrimeVsr(MAX_VSR);
         skip(365 days);
         assertEq(vault.totalAssets(), 0);
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(1);
     }
@@ -647,7 +647,7 @@ contract AdminTest is LocalTestBase {
     function testFuzz_realizeLoss_noSharesBranchUnreachable(uint256 loss_) public {
         _pause();
         assertEq(vault.totalSupply(), 0);
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(loss_);
     }
@@ -889,7 +889,7 @@ contract AdminTest is LocalTestBase {
         _fund(bob, 1e6);
         vm.prank(bob);
         vm.expectRevert(stdError.arithmeticError);
-        vault.requestDeposit(1e6, bob);
+        vault.requestDeposit(1e6, bob, 0);
 
         vm.prank(alice);
         vm.expectRevert(stdError.arithmeticError);
@@ -899,12 +899,12 @@ contract AdminTest is LocalTestBase {
         vm.expectRevert(stdError.arithmeticError);
         vault.processPendingRedeems(type(uint256).max, 1);
 
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vm.expectRevert(stdError.arithmeticError);
         vault.setVSR(RAY);
 
         _pause();
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert(stdError.arithmeticError);
         vault.realizeLoss(1);
 
@@ -1183,15 +1183,15 @@ contract AdminTest is LocalTestBase {
         SparkPrimeVault fresh_ = _freshProxy();
         fresh_.initialize(address(spUsdc), "Spark Prime USDC", "spPRIME", admin);
         vm.startPrank(admin);
-        fresh_.grantRole(SETTER_ROLE,       setter);
-        fresh_.grantRole(RISK_MANAGER_ROLE, riskManager);
+        fresh_.grantRole(SETTER_ROLE,       vsrSetter);
+        fresh_.grantRole(REDEEM_FEE_SETTER_ROLE, redeemFeeSetter);
         vm.stopPrank();
 
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vm.expectRevert("SparkPrimeVault/vsr-too-high");
         fresh_.setVSR(RAY + 1);
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/fee-too-high");
         fresh_.setRedeemFeeRate(1);
 

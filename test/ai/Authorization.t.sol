@@ -35,7 +35,7 @@ contract AuthorizationTest is LocalTestBase {
 
     // All actors that hold exactly one role, plus a stranger with none.
     function _actors() internal view returns (address[8] memory actors_) {
-        actors_ = [admin, guardian, rebalancer, riskManager, setter, taker, unpauser, stranger];
+        actors_ = [admin, guardian, rebalancer, redeemFeeSetter, vsrSetter, taker, unpauser, stranger];
     }
 
     function _expectUnauthorized(address caller_, bytes32 role_) internal {
@@ -227,7 +227,7 @@ contract AuthorizationTest is LocalTestBase {
 
     function test_grantRole_notAuthorized() public {
         bytes32[7] memory roles_ = [
-            DEFAULT_ADMIN_ROLE, GUARDIAN_ROLE, REBALANCER_ROLE, RISK_MANAGER_ROLE,
+            DEFAULT_ADMIN_ROLE, GUARDIAN_ROLE, REBALANCER_ROLE, REDEEM_FEE_SETTER_ROLE,
             SETTER_ROLE, TAKER_ROLE, UNPAUSER_ROLE
         ];
         address[8] memory actors_ = _actors();
@@ -243,7 +243,7 @@ contract AuthorizationTest is LocalTestBase {
 
     function test_grantRole_authorized() public {
         bytes32[7] memory roles_ = [
-            DEFAULT_ADMIN_ROLE, GUARDIAN_ROLE, REBALANCER_ROLE, RISK_MANAGER_ROLE,
+            DEFAULT_ADMIN_ROLE, GUARDIAN_ROLE, REBALANCER_ROLE, REDEEM_FEE_SETTER_ROLE,
             SETTER_ROLE, TAKER_ROLE, UNPAUSER_ROLE
         ];
         vm.startPrank(admin);
@@ -263,7 +263,7 @@ contract AuthorizationTest is LocalTestBase {
 
     function test_revokeRole_notAuthorized() public {
         bytes32[7] memory roles_ = [
-            DEFAULT_ADMIN_ROLE, GUARDIAN_ROLE, REBALANCER_ROLE, RISK_MANAGER_ROLE,
+            DEFAULT_ADMIN_ROLE, GUARDIAN_ROLE, REBALANCER_ROLE, REDEEM_FEE_SETTER_ROLE,
             SETTER_ROLE, TAKER_ROLE, UNPAUSER_ROLE
         ];
         address[8] memory actors_ = _actors();
@@ -279,10 +279,10 @@ contract AuthorizationTest is LocalTestBase {
 
     function test_revokeRole_authorized() public {
         bytes32[6]  memory roles_ = [
-            GUARDIAN_ROLE, REBALANCER_ROLE, RISK_MANAGER_ROLE, SETTER_ROLE, TAKER_ROLE,
+            GUARDIAN_ROLE, REBALANCER_ROLE, REDEEM_FEE_SETTER_ROLE, SETTER_ROLE, TAKER_ROLE,
             UNPAUSER_ROLE
         ];
-        address[6] memory holders_ = [guardian, rebalancer, riskManager, setter, taker, unpauser];
+        address[6] memory holders_ = [guardian, rebalancer, redeemFeeSetter, vsrSetter, taker, unpauser];
 
         vm.startPrank(admin);
         for (uint256 j; j < roles_.length; ++j) {
@@ -303,18 +303,18 @@ contract AuthorizationTest is LocalTestBase {
     function test_renounceRole_badConfirmation() public {
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlBadConfirmation.selector));
-        vault.renounceRole(SETTER_ROLE, setter);
+        vault.renounceRole(SETTER_ROLE, vsrSetter);
 
-        assertTrue(vault.hasRole(SETTER_ROLE, setter));
+        assertTrue(vault.hasRole(VSR_SETTER_ROLE, vsrSetter));
     }
 
     function test_renounceRole_self() public {
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vm.expectEmit(address(vault));
-        emit RoleRevoked(SETTER_ROLE, setter, setter);
-        vault.renounceRole(SETTER_ROLE, setter);
+        emit RoleRevoked(SETTER_ROLE, vsrSetter, vsrSetter);
+        vault.renounceRole(SETTER_ROLE, vsrSetter);
 
-        assertFalse(vault.hasRole(SETTER_ROLE, setter));
+        assertFalse(vault.hasRole(VSR_SETTER_ROLE, vsrSetter));
     }
 
     /**********************************************************************************************/
@@ -324,7 +324,7 @@ contract AuthorizationTest is LocalTestBase {
     function test_setVSR_notAuthorized() public {
         address[8] memory actors_ = _actors();
         for (uint256 i; i < actors_.length; ++i) {
-            if (actors_[i] == setter) continue;
+            if (actors_[i] == vsrSetter) continue;
             vm.prank(actors_[i]);
             _expectUnauthorized(actors_[i], SETTER_ROLE);
             vault.setVSR(FOUR_PCT_VSR);
@@ -332,7 +332,7 @@ contract AuthorizationTest is LocalTestBase {
     }
 
     function test_setVSR_authorized() public {
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vault.setVSR(FOUR_PCT_VSR);
         assertEq(vault.vsr(), FOUR_PCT_VSR);
     }
@@ -411,21 +411,21 @@ contract AuthorizationTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** RISK_MANAGER_ROLE                                                                      ***/
+    /*** REDEEM_FEE_SETTER_ROLE                                                                      ***/
     /**********************************************************************************************/
 
     function test_setRedeemFee_notAuthorized() public {
         address[8] memory actors_ = _actors();
         for (uint256 i; i < actors_.length; ++i) {
-            if (actors_[i] == riskManager) continue;
+            if (actors_[i] == redeemFeeSetter) continue;
             vm.prank(actors_[i]);
-            _expectUnauthorized(actors_[i], RISK_MANAGER_ROLE);
+            _expectUnauthorized(actors_[i], REDEEM_FEE_SETTER_ROLE);
             vault.setRedeemFeeRate(0.001e18);
         }
     }
 
     function test_setRedeemFee_authorized() public {
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vault.setRedeemFeeRate(0.001e18);
         assertEq(vault.redeemFeeRate(), 0.001e18);
     }
@@ -436,9 +436,9 @@ contract AuthorizationTest is LocalTestBase {
         uint192 chi_ = vault.chi();
         address[8] memory actors_ = _actors();
         for (uint256 i; i < actors_.length; ++i) {
-            if (actors_[i] == riskManager) continue;
+            if (actors_[i] == redeemFeeSetter) continue;
             vm.prank(actors_[i]);
-            _expectUnauthorized(actors_[i], RISK_MANAGER_ROLE);
+            _expectUnauthorized(actors_[i], REDEEM_FEE_SETTER_ROLE);
             vault.realizeLoss(1e6);
         }
         assertEq(vault.chi(), chi_);
@@ -448,7 +448,7 @@ contract AuthorizationTest is LocalTestBase {
         _deposit(alice, 1_000e6);
         _pause();
         uint192 chi_ = vault.chi();
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vault.realizeLoss(1e6);
         assertLt(vault.chi(), chi_);
     }
@@ -546,11 +546,11 @@ contract AuthorizationTest is LocalTestBase {
         (, , uint256 queued_) = _depositRequest(id_);
 
         vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.requestDepositCancellation(id_, guardian);
 
         vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.requestDepositCancellation(id_, bob);
 
         (, , uint256 shares_) = _depositRequest(id_);
@@ -592,11 +592,11 @@ contract AuthorizationTest is LocalTestBase {
         vault.requestDepositCancellation(id_, alice);
 
         vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.requestDepositCancellation(id_, address(0));
 
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.requestDepositCancellation(id_, address(0));
 
         // The owner may still name any recipient (its own choice).
@@ -655,7 +655,7 @@ contract AuthorizationTest is LocalTestBase {
         _fund(stranger, 200e6);
 
         vm.startPrank(stranger);
-        uint256 id0_ = vault.requestDeposit(100e6, stranger);
+        uint256 id0_ = vault.requestDeposit(100e6, stranger, 0);
         uint256 id1_ = vault.requestDeposit(100e6, stranger, 42);
         vm.stopPrank();
 
@@ -683,7 +683,7 @@ contract AuthorizationTest is LocalTestBase {
         _setCapacity(vault.totalSupply());
         usdc.mint(stranger, 50e6);
         vm.prank(stranger);
-        uint256 id2_ = vault.requestDeposit(50e6, stranger);
+        uint256 id2_ = vault.requestDeposit(50e6, stranger, 0);
         vm.prank(stranger);
         vault.requestDepositCancellation(id2_, stranger);
         (, , uint256 left_) = _depositRequest(id2_);
@@ -798,22 +798,22 @@ contract AuthorizationTest is LocalTestBase {
         uint256 cancelId_ = vault.requestDepositCancellation(dep2Id_, bob);
 
         vm.startPrank(stranger);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.updateDepositRecipient(depId_, address(0));
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.updateDepositCancellationRecipient(cancelId_, address(0));
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.updateRedeemRecipient(redId_, address(0));
         vm.stopPrank();
 
         vm.startPrank(bob);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.updateDepositRecipient(depId_, address(0));
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.updateDepositCancellationRecipient(cancelId_, address(0));
         vm.stopPrank();
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.updateRedeemRecipient(redId_, address(0));
     }
 
@@ -842,7 +842,7 @@ contract AuthorizationTest is LocalTestBase {
         _pausedFixture();
         vm.prank(alice);
         vm.expectRevert("SparkPrimeVault/paused");
-        vault.requestDeposit(1e6, alice);
+        vault.requestDeposit(1e6, alice, 0);
     }
 
     function test_pause_blocksRequestDepositWithReferral() public {
@@ -958,7 +958,7 @@ contract AuthorizationTest is LocalTestBase {
 
     function test_pause_doesNotBlockSetVSR() public {
         _pausedFixture();
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vault.setVSR(FOUR_PCT_VSR);
         assertEq(vault.vsr(), FOUR_PCT_VSR);
     }
@@ -967,7 +967,7 @@ contract AuthorizationTest is LocalTestBase {
         _pausedFixture();
         uint256 totalAssets_ = vault.totalAssets();
         uint256 supply_      = vault.totalSupply();
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vault.realizeLoss(1e6);
         assertEq(vault.chi(), (totalAssets_ - 1e6) * RAY / supply_);
     }
@@ -1018,10 +1018,10 @@ contract AuthorizationTest is LocalTestBase {
         vault.setMinDeposit(1);
         vault.setMinRedeem(2);
         vault.setVSRBounds(RAY, FOUR_PCT_VSR);
-        vault.grantRole(SETTER_ROLE, alice);
-        vault.revokeRole(SETTER_ROLE, alice);
+        vault.grantRole(VSR_SETTER_ROLE, alice);
+        vault.revokeRole(VSR_SETTER_ROLE, alice);
         vm.stopPrank();
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vault.setRedeemFeeRate(0.005e18);
 
         assertEq(vault.maxCapacity(),   5);

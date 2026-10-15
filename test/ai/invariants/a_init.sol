@@ -34,7 +34,7 @@ contract Init is Test {
     bytes32 constant DEFAULT_ADMIN_ROLE = 0x00;
     bytes32 constant GUARDIAN_ROLE      = keccak256("GUARDIAN_ROLE");
     bytes32 constant REBALANCER_ROLE    = keccak256("REBALANCER_ROLE");
-    bytes32 constant RISK_MANAGER_ROLE  = keccak256("RISK_MANAGER_ROLE");
+    bytes32 constant REDEEM_FEE_SETTER_ROLE  = keccak256("REDEEM_FEE_SETTER_ROLE");
     bytes32 constant SETTER_ROLE        = keccak256("SETTER_ROLE");
     bytes32 constant TAKER_ROLE         = keccak256("TAKER_ROLE");
 
@@ -48,8 +48,8 @@ contract Init is Test {
     address public admin;
     address public guardian;
     address public rebalancer;
-    address public riskManager;
-    address public setter;
+    address public redeemFeeSetter;
+    address public vsrSetter;
     address public taker;
 
     // spUSDC actors
@@ -167,8 +167,8 @@ contract Init is Test {
         admin       = vault.getRoleMember(DEFAULT_ADMIN_ROLE, 0);
         guardian    = vault.getRoleMember(GUARDIAN_ROLE,      0);
         rebalancer  = vault.getRoleMember(REBALANCER_ROLE,    0);
-        riskManager = vault.getRoleMember(RISK_MANAGER_ROLE,  0);
-        setter      = vault.getRoleMember(SETTER_ROLE,        0);
+        redeemFeeSetter = vault.getRoleMember(REDEEM_FEE_SETTER_ROLE,  0);
+        vsrSetter      = vault.getRoleMember(VSR_SETTER_ROLE,        0);
         taker       = vault.getRoleMember(TAKER_ROLE,         0);
 
         spSetter = spUsdc.getRoleMember(SETTER_ROLE, 0);

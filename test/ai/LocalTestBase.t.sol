@@ -9,23 +9,54 @@ import { ERC20 }              from "../../lib/oz/contracts/token/ERC20/ERC20.sol
 import { SparkVault }      from "./lib/spusdc/SparkVault.sol";
 import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
 
-// 6-decimal mock USDC with public mint/burn.
+// 6-decimal mock USDC with public mint/burn and a Circle-style blacklist: `transfer`,
+// `transferFrom` and `approve` revert with the mainnet FiatToken message when the sender, the
+// receiver or the spender is blacklisted, and `isBlacklisted` is what the vault consults.
 contract MockUSDC is ERC20 {
+
+    string internal constant BLACKLISTED = "Blacklistable: account is blacklisted";
+
+    mapping(address => bool) public isBlacklisted;
+
     constructor() ERC20("USD Coin", "USDC") {}
+
     function decimals() public pure override returns (uint8) { return 6; }
+
     function mint(address to, uint256 amt) external { _mint(to, amt); }
+
     function burn(address from, uint256 amt) external { _burn(from, amt); }
+
+    function setBlacklisted(address who, bool state) external { isBlacklisted[who] = state; }
+
+    function transfer(address to, uint256 amt) public override returns (bool) {
+        require(!isBlacklisted[msg.sender] && !isBlacklisted[to], BLACKLISTED);
+        return super.transfer(to, amt);
+    }
+
+    function transferFrom(address from, address to, uint256 amt) public override returns (bool) {
+        require(
+            !isBlacklisted[msg.sender] && !isBlacklisted[from] && !isBlacklisted[to],
+            BLACKLISTED
+        );
+        return super.transferFrom(from, to, amt);
+    }
+
+    function approve(address spender, uint256 amt) public override returns (bool) {
+        require(!isBlacklisted[msg.sender] && !isBlacklisted[spender], BLACKLISTED);
+        return super.approve(spender, amt);
+    }
+
 }
 
 /// @dev Local (non-fork) harness: real spUSDC `SparkVault` code deployed behind a proxy over a
 ///      6-decimal mock USDC, and the `SparkPrimeVault` under test on top of it. No RPC needed.
 ///      Both indexes start "ugly" (spUSDC chi ~1.0476e27, spPRIME chi ~1.0098e27) with VSR frozen
 ///      at RAY; tests that want accrual set a rate explicitly. `src/` is upstream
-///      `refactor/more-simplifying`, unpatched.
+///      `master` @ 0ebb452, unpatched.
 ///
 ///      Actors
 ///        spUSDC side : spAdmin (DEFAULT_ADMIN + sets cap/bounds), spSetter (VSR), spTaker (USDC out)
-///        spPRIME side: admin, guardian, rebalancer, riskManager, setter, taker, unpauser
+///        spPRIME side: admin, guardian, rebalancer, redeemFeeSetter, taker, vsrSetter
 ///
 ///      Helpers at the bottom cover the operations every test file needs: funding, deposits,
 ///      redeems, draining spUSDC's USDC liquidity, taking spUSDC out of the prime vault and
@@ -52,21 +83,22 @@ contract LocalTestBase is Test {
     address internal spTaker  = makeAddr("spTaker");
 
     // spPRIME actors
-    address internal admin       = makeAddr("admin");
-    address internal guardian    = makeAddr("guardian");
-    address internal rebalancer  = makeAddr("rebalancer");
-    address internal riskManager = makeAddr("riskManager");
-    address internal setter      = makeAddr("setter");
-    address internal taker       = makeAddr("taker");
-    address internal unpauser    = makeAddr("unpauser");
+    address internal admin           = makeAddr("admin");
+    address internal guardian        = makeAddr("guardian");
+    address internal rebalancer      = makeAddr("rebalancer");
+    address internal redeemFeeSetter = makeAddr("redeemFeeSetter");
+    address internal taker           = makeAddr("taker");
+    address internal vsrSetter       = makeAddr("vsrSetter");
 
-    bytes32 internal DEFAULT_ADMIN_ROLE = 0x00;
-    bytes32 internal GUARDIAN_ROLE      = keccak256("GUARDIAN_ROLE");
-    bytes32 internal REBALANCER_ROLE    = keccak256("REBALANCER_ROLE");
-    bytes32 internal RISK_MANAGER_ROLE  = keccak256("RISK_MANAGER_ROLE");
-    bytes32 internal SETTER_ROLE        = keccak256("SETTER_ROLE");
-    bytes32 internal TAKER_ROLE         = keccak256("TAKER_ROLE");
-    bytes32 internal UNPAUSER_ROLE      = keccak256("UNPAUSER_ROLE");
+    bytes32 internal DEFAULT_ADMIN_ROLE     = 0x00;
+    bytes32 internal GUARDIAN_ROLE          = keccak256("GUARDIAN_ROLE");
+    bytes32 internal REBALANCER_ROLE        = keccak256("REBALANCER_ROLE");
+    bytes32 internal REDEEM_FEE_SETTER_ROLE = keccak256("REDEEM_FEE_SETTER_ROLE");
+    bytes32 internal TAKER_ROLE             = keccak256("TAKER_ROLE");
+    bytes32 internal VSR_SETTER_ROLE        = keccak256("VSR_SETTER_ROLE");
+
+    // spUSDC's own role names (SparkVault).
+    bytes32 internal SETTER_ROLE = keccak256("SETTER_ROLE");
 
     MockUSDC        internal usdc;
     SparkVault      internal spUsdc;
@@ -112,22 +144,21 @@ contract LocalTestBase is Test {
         );
 
         vm.startPrank(admin);
-        vault.grantRole(GUARDIAN_ROLE,     guardian);
-        vault.grantRole(REBALANCER_ROLE,   rebalancer);
-        vault.grantRole(RISK_MANAGER_ROLE, riskManager);
-        vault.grantRole(SETTER_ROLE,       setter);
-        vault.grantRole(TAKER_ROLE,        taker);
-        vault.grantRole(UNPAUSER_ROLE,     unpauser);
+        vault.grantRole(GUARDIAN_ROLE,          guardian);
+        vault.grantRole(REBALANCER_ROLE,        rebalancer);
+        vault.grantRole(REDEEM_FEE_SETTER_ROLE, redeemFeeSetter);
+        vault.grantRole(TAKER_ROLE,             taker);
+        vault.grantRole(VSR_SETTER_ROLE,        vsrSetter);
         vault.setCapacity(type(uint128).max);
         vault.setMaxRedeemFeeRate(vault.MAX_REDEEM_FEE());
         vault.setVSRBounds(RAY, MAX_VSR);
         vm.stopPrank();
 
         // Make spPRIME's index ugly too (~2.9% APY for 123 days), then freeze at RAY.
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vault.setVSR(UGLY_PRIME_VSR);
         vm.warp(block.timestamp + 123 days + 6789);
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vault.setVSR(RAY);  // drips internally
 
         assertGt(spUsdc.nowChi(), RAY, "harness: spUSDC chi not ugly");
@@ -144,11 +175,11 @@ contract LocalTestBase is Test {
         usdc.approve(address(vault), type(uint256).max);
     }
 
-    /// @dev Mints `amt` USDC to `who` and calls requestDeposit(amt, who).
+    /// @dev Mints `amt` USDC to `who` and calls requestDeposit(amt, who, 0).
     function _deposit(address who, uint256 amt) internal returns (uint256 id) {
         _fund(who, amt);
         vm.prank(who);
-        id = vault.requestDeposit(amt, who);
+        id = vault.requestDeposit(amt, who, 0);
     }
 
     function _requestRedeem(address who, uint256 shares) internal returns (uint256 id) {
@@ -166,7 +197,7 @@ contract LocalTestBase is Test {
     }
 
     function _setRedeemFeeRate(uint256 fee) internal {
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vault.setRedeemFeeRate(fee);
     }
 
@@ -180,13 +211,23 @@ contract LocalTestBase is Test {
         vault.setMinRedeem(minRedeemShares);
     }
 
-    function _realizeLoss(uint256 loss) internal {
-        vm.prank(riskManager);
-        vault.realizeLoss(loss);
+    /// @dev Admin-only, requires the vault to be paused. Negative delta realises a loss, positive
+    ///      a gain.
+    function _adjustTotalAssets(int256 delta) internal {
+        vm.prank(admin);
+        vault.adjustTotalAssets(delta);
+    }
+
+    /// @dev Pause, adjust, unpause: the shape every loss/gain test needs.
+    function _adjustTotalAssetsWhilePaused(int256 delta) internal {
+        bool wasPaused = vault.paused();
+        if (!wasPaused) _pause();
+        _adjustTotalAssets(delta);
+        if (!wasPaused) _unpause();
     }
 
     function _setPrimeVsr(uint256 vsr_) internal {
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vault.setVSR(vsr_);
     }
 
@@ -225,6 +266,20 @@ contract LocalTestBase is Test {
     function _unpause() internal {
         vm.prank(admin);
         vault.unpause();
+    }
+
+    /**********************************************************************************************/
+    /*** Blacklist                                                                              ***/
+    /**********************************************************************************************/
+
+    bytes internal constant BLACKLISTED = "Blacklistable: account is blacklisted";
+
+    function _blacklist(address who) internal {
+        usdc.setBlacklisted(who, true);
+    }
+
+    function _unblacklist(address who) internal {
+        usdc.setBlacklisted(who, false);
     }
 
     /**********************************************************************************************/
@@ -292,6 +347,7 @@ contract LocalTestBase is Test {
     /**********************************************************************************************/
 
 
+    /// @dev Raw array read (works for filled/cancelled ids below the head too).
     function _depositRequest(uint256 id)
         internal view returns (address owner, address recipient, uint256 shares)
     {

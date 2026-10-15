@@ -168,7 +168,7 @@ contract RoundingTest is LocalTestBase {
             abi.encodeCall(SparkPrimeVault.initialize, (address(spUsdc), "fresh", "fresh", admin))
         )));
         vm.startPrank(admin);
-        fresh.grantRole(SETTER_ROLE, setter);
+        fresh.grantRole(SETTER_ROLE, vsrSetter);
         fresh.setVSRBounds(RAY, MAX_VSR);
         vm.stopPrank();
     }
@@ -920,7 +920,7 @@ contract RoundingTest is LocalTestBase {
                 v = vault;
             }
 
-            vm.prank(setter);
+            vm.prank(vsrSetter);
             v.setVSR(row.vsr);
 
             uint256 rho = v.rho();
@@ -1135,7 +1135,7 @@ contract RoundingTest is LocalTestBase {
 
         _pause();
         for (uint256 loss = 0; loss <= 2; ++loss) {
-            vm.prank(riskManager);
+            vm.prank(redeemFeeSetter);
             vm.expectRevert("SparkPrimeVault/invalid-loss");
             vault.realizeLoss(loss);
         }
@@ -1152,7 +1152,7 @@ contract RoundingTest is LocalTestBase {
 
         assertEq(vault.chi(), RAY / 2);
         assertEq(vault.totalAssets(), 1);
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(1);                       // TA is 1 again: nothing more can be lost
     }
@@ -1174,15 +1174,15 @@ contract RoundingTest is LocalTestBase {
 
         _pause();
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(ta + 1);
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(ta);
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(0);
 
@@ -1209,7 +1209,7 @@ contract RoundingTest is LocalTestBase {
         assertEq(vault.totalAssets(), 0);
         _pause();
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(loss);
     }
@@ -1400,7 +1400,7 @@ contract RoundingTest is LocalTestBase {
         _realizeGain(5);
         assertEq(vault.chi(), (ta + 5) * RAY / supply);
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert();
         vault.realizeGain(1);                                          // DEFAULT_ADMIN_ROLE only
     }
@@ -1609,16 +1609,16 @@ contract RoundingTest is LocalTestBase {
         _fund(bob, 1e6);
         vm.prank(bob);
         vm.expectRevert(stdError.arithmeticError);
-        vault.requestDeposit(1e6, bob);
+        vault.requestDeposit(1e6, bob, 0);
 
         _pause();
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert(stdError.arithmeticError);
         vault.realizeLoss(1);
         vm.prank(admin);
         vm.expectRevert(stdError.arithmeticError);
         vault.realizeGain(1);
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vm.expectRevert(stdError.arithmeticError);
         vault.setVSR(RAY);
     }
@@ -1846,7 +1846,7 @@ contract RoundingTest is LocalTestBase {
         _fund(bob, 1e6);
         vm.prank(bob);
         vm.expectRevert(stdError.arithmeticError);
-        vault.requestDeposit(1e6, bob);
+        vault.requestDeposit(1e6, bob, 0);
 
         vm.prank(rebalancer);
         vm.expectRevert(stdError.arithmeticError);
@@ -1875,11 +1875,11 @@ contract RoundingTest is LocalTestBase {
         _fund(bob, 1e6);
         vm.prank(bob);
         vm.expectRevert(stdError.arithmeticError);
-        vault.requestDeposit(1e6, bob);
+        vault.requestDeposit(1e6, bob, 0);
 
         _setCapacity(limit1 + vault.totalSupply());
         vm.prank(bob);
-        vault.requestDeposit(1e6, bob);
+        vault.requestDeposit(1e6, bob, 0);
         assertGt(vault.balanceOf(bob), 0);
 
         // the harness value type(uint128).max is 3.4e38, far inside the limit at any reachable chi

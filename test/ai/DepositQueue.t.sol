@@ -131,7 +131,7 @@ contract DepositQueueTest is LocalTestBase {
     // Zero-asset request (F-5 ghost) by `who`.
     function _ghost(address who) internal returns (uint256 id) {
         vm.prank(who);
-        id = vault.requestDeposit(0, who);
+        id = vault.requestDeposit(0, who, 0);
     }
 
     // Owner cancels without settling the refund.
@@ -203,7 +203,7 @@ contract DepositQueueTest is LocalTestBase {
         emit Deposit(alice, alice, A_1M, SH_1M);
 
         vm.prank(alice);
-        uint256 id = vault.requestDeposit(ONE_M, alice);
+        uint256 id = vault.requestDeposit(ONE_M, alice, 0);
 
         // The entry is created even for an instant fill and then deleted by the fill (src 775).
         assertEq(id, 0);
@@ -494,7 +494,7 @@ contract DepositQueueTest is LocalTestBase {
         emit Deposit(alice, alice, 499_999_999_997, 495_202_592_052);
 
         vm.prank(alice);
-        uint256 id = vault.requestDeposit(ONE_M, alice);
+        uint256 id = vault.requestDeposit(ONE_M, alice, 0);
 
         assertEq(id,                                  0);
         assertEq(vault.balanceOf(alice),              495_202_592_052);
@@ -758,7 +758,7 @@ contract DepositQueueTest is LocalTestBase {
         vm.expectRevert("SparkPrimeVault/not-authorized");
         vault.requestDepositCancellation(id, bob);
 
-        // Rebalancer, admin and riskManager have no cancel power either.
+        // Rebalancer, admin and redeemFeeSetter have no cancel power either.
         vm.prank(rebalancer);
         vm.expectRevert("SparkPrimeVault/not-authorized");
         vault.requestDepositCancellation(id, rebalancer);
@@ -772,11 +772,11 @@ contract DepositQueueTest is LocalTestBase {
         uint256 id = _queue(alice, ONE_M);
 
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.requestDepositCancellation(id, address(0));
 
         vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.requestDepositCancellation(id, address(0));
     }
 
@@ -1045,7 +1045,7 @@ contract DepositQueueTest is LocalTestBase {
         emit Deposit(alice, bob, A_1M, SH_1M);
 
         vm.prank(alice);
-        vault.requestDeposit(ONE_M, bob);
+        vault.requestDeposit(ONE_M, bob, 0);
 
         assertEq(vault.balanceOf(alice), 0);
         assertEq(vault.balanceOf(bob),   SH_1M);
@@ -1056,9 +1056,9 @@ contract DepositQueueTest is LocalTestBase {
         _fund(alice, 2 * ONE_M);
 
         vm.prank(alice);
-        uint256 id1 = vault.requestDeposit(ONE_M, bob);
+        uint256 id1 = vault.requestDeposit(ONE_M, bob, 0);
         vm.prank(alice);
-        uint256 id2 = vault.requestDeposit(ONE_M, bob);
+        uint256 id2 = vault.requestDeposit(ONE_M, bob, 0);
 
         (address owner, address recipient, ) = _depositRequest(id1);
         assertEq(owner,     alice);
@@ -1106,7 +1106,7 @@ contract DepositQueueTest is LocalTestBase {
         _setCapacity(0);
         _fund(alice, ONE_M);
         vm.prank(alice);
-        uint256 id = vault.requestDeposit(ONE_M, bob);
+        uint256 id = vault.requestDeposit(ONE_M, bob, 0);
 
         vm.expectEmit(address(vault));
         emit DepositCancellationRequest(id, 0);
@@ -1143,12 +1143,12 @@ contract DepositQueueTest is LocalTestBase {
         _setCapacity(0);
         _fund(alice, ONE_M);
         vm.prank(alice);
-        uint256 id = vault.requestDeposit(ONE_M, bob);
+        uint256 id = vault.requestDeposit(ONE_M, bob, 0);
 
         address[4] memory bad = [bob, guardian, carol, address(vault)];
         for (uint256 i; i < 4; ++i) {
             vm.prank(guardian);
-            vm.expectRevert("SparkPrimeVault/invalid-recipient");
+            vm.expectRevert("SparkPrimeVault/zero-recipient");
             vault.requestDepositCancellation(id, bad[i]);
         }
 
@@ -1179,9 +1179,9 @@ contract DepositQueueTest is LocalTestBase {
         _setCapacity(0);
         _fund(alice, 2 * ONE_M);
         vm.prank(alice);
-        uint256 id1 = vault.requestDeposit(ONE_M, bob);
+        uint256 id1 = vault.requestDeposit(ONE_M, bob, 0);
         vm.prank(alice);
-        uint256 id2 = vault.requestDeposit(ONE_M, bob);
+        uint256 id2 = vault.requestDeposit(ONE_M, bob, 0);
 
         vm.prank(alice);
         uint256 c1 = vault.requestDepositCancellation(id1, carol);
@@ -1219,7 +1219,7 @@ contract DepositQueueTest is LocalTestBase {
         _setCapacity(0);
         _fund(alice, ONE_M);
         vm.prank(alice);
-        uint256 id = vault.requestDeposit(ONE_M, bob);
+        uint256 id = vault.requestDeposit(ONE_M, bob, 0);
 
         // Capacity for exactly SH_100K shares: fills S_100K-ish spUSDC shares.
         _setCapacity(SH_100K);
@@ -1312,7 +1312,7 @@ contract DepositQueueTest is LocalTestBase {
         _setCapacity(0);
         _fund(alice, ONE_M);
         vm.prank(alice);
-        uint256 id = vault.requestDeposit(ONE_M, bob);
+        uint256 id = vault.requestDeposit(ONE_M, bob, 0);
 
         address[3] memory callers = [carol, bob, guardian];
         for (uint256 i; i < 3; ++i) {
@@ -1322,7 +1322,7 @@ contract DepositQueueTest is LocalTestBase {
         }
 
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.updateDepositRecipient(id, address(0));
 
         (address owner, address recipient, uint256 shares) = _depositRequest(id);
@@ -1397,11 +1397,11 @@ contract DepositQueueTest is LocalTestBase {
     function test_requestDeposit_revertsZeroRecipient() public {
         _fund(alice, ONE_M);
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.requestDeposit(ONE_M, address(0));
 
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.requestDeposit(ONE_M, address(0), 7);
     }
 
@@ -1411,10 +1411,10 @@ contract DepositQueueTest is LocalTestBase {
 
         vm.prank(alice);
         vm.expectRevert("SparkPrimeVault/below-minimum");
-        vault.requestDeposit(HUNDRED_K - 1, alice);
+        vault.requestDeposit(HUNDRED_K - 1, alice, 0);
 
         vm.prank(alice);
-        vault.requestDeposit(HUNDRED_K, alice);
+        vault.requestDeposit(HUNDRED_K, alice, 0);
         assertEq(vault.balanceOf(alice), SH_100K);
     }
 
@@ -1433,7 +1433,7 @@ contract DepositQueueTest is LocalTestBase {
 
         vm.prank(bob);
         vm.expectRevert("SparkPrimeVault/paused");
-        vault.requestDeposit(HUNDRED_K, bob);
+        vault.requestDeposit(HUNDRED_K, bob, 0);
 
         vm.prank(bob);
         vm.expectRevert("SparkPrimeVault/paused");

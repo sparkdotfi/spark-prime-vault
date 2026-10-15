@@ -145,7 +145,7 @@ contract CancelAndFeesTest is LocalTestBase {
         _setCapacity(0);
         _fund(alice, 100e6);
         vm.prank(alice);
-        uint256 id2 = vault.requestDeposit(100e6, bob);
+        uint256 id2 = vault.requestDeposit(100e6, bob, 0);
 
         vm.prank(bob);
         vm.expectRevert("SparkPrimeVault/not-authorized");
@@ -161,16 +161,16 @@ contract CancelAndFeesTest is LocalTestBase {
 
         // Guardian naming itself, a third party, or the fill recipient: rejected.
         vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.requestDepositCancellation(id, guardian);
 
         vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.requestDepositCancellation(id, stranger);
 
         // Zero recipient: the generic check at :414 fires first for every caller.
         vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.requestDepositCancellation(id, address(0));
 
         // A stranger naming the owner is still `not-authorized` (:423 precedes :424).
@@ -213,11 +213,11 @@ contract CancelAndFeesTest is LocalTestBase {
         _setCapacity(0);
         _fund(alice, 100e6);
         vm.prank(alice);
-        uint256 id = vault.requestDeposit(100e6, bob);  // alice pays, bob would get the shares
+        uint256 id = vault.requestDeposit(100e6, bob, 0);  // alice pays, bob would get the shares
         _setCapacity(type(uint128).max);
 
         vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.requestDepositCancellation(id, bob);
 
         uint256 cid = _cancelDeposit(guardian, id, alice);
@@ -246,7 +246,7 @@ contract CancelAndFeesTest is LocalTestBase {
         vault.updateDepositCancellationRecipient(cid, stranger);
 
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.updateDepositCancellationRecipient(cid, address(0));
 
         vm.expectEmit(address(vault));
@@ -311,11 +311,11 @@ contract CancelAndFeesTest is LocalTestBase {
         uint256 id = _queueDeposit(alice, 100e6);
 
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.requestDepositCancellation(id, address(0));
 
         vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.requestDepositCancellation(id, address(0));
     }
 
@@ -568,7 +568,7 @@ contract CancelAndFeesTest is LocalTestBase {
 
         // Queue empty again: the re-request fills instantly.
         vm.prank(alice);
-        uint256 id2 = vault.requestDeposit(99_999_999, alice);
+        uint256 id2 = vault.requestDeposit(99_999_999, alice, 0);
         assertEq(id2, 1);
         assertEq(vault.firstPendingDepositId(), 2);
         assertEq(vault.balanceOf(alice), 99_040_516);  // 99_999_999 -> 95_453_268 spUSDC -> 99_999_998 -> shares
@@ -601,7 +601,7 @@ contract CancelAndFeesTest is LocalTestBase {
         _settleCancelled();
 
         vm.prank(alice);
-        uint256 id2 = vault.requestDeposit(99_999_999, alice);
+        uint256 id2 = vault.requestDeposit(99_999_999, alice, 0);
         assertEq(id2, 2);
         assertEq(vault.firstPendingDepositId(), 1);
         assertEq(vault.pendingDepositSavingsShares(), SS_100 + 95_453_268);
@@ -1070,10 +1070,10 @@ contract CancelAndFeesTest is LocalTestBase {
 
         vm.prank(alice);
         vm.expectRevert("SparkPrimeVault/below-minimum");
-        vault.requestDeposit(100e6 - 1, alice);
+        vault.requestDeposit(100e6 - 1, alice, 0);
 
         vm.prank(alice);
-        vault.requestDeposit(100e6, alice);
+        vault.requestDeposit(100e6, alice, 0);
         assertEq(vault.balanceOf(alice), SH_100);
     }
 
@@ -1105,7 +1105,7 @@ contract CancelAndFeesTest is LocalTestBase {
 
         for (uint256 i; i < 500; ++i) {
             vm.prank(stranger);
-            uint256 id = vault.requestDeposit(0, stranger);
+            uint256 id = vault.requestDeposit(0, stranger, 0);
             assertEq(id, 3 + i);
         }
         assertEq(vault.pendingDepositSavingsShares(), 9_545_326);
@@ -1143,7 +1143,7 @@ contract CancelAndFeesTest is LocalTestBase {
         _setCapacity(0);
         for (uint256 i; i < 10; ++i) {
             vm.prank(stranger);
-            vault.requestDeposit(0, stranger);
+            vault.requestDeposit(0, stranger, 0);
         }
         assertEq(vault.firstPendingDepositId(), 9);  // each ghost request walked the head up to itself
         _setCapacity(type(uint128).max);
@@ -1319,11 +1319,11 @@ contract CancelAndFeesTest is LocalTestBase {
     /**********************************************************************************************/
 
     function test_setRedeemFee_revertsAboveMax() public {
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/fee-too-high");
         vault.setRedeemFeeRate(0.01e18 + 1);
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vault.setRedeemFeeRate(0.01e18);
         assertEq(vault.redeemFeeRate(), 0.01e18);
     }
@@ -1353,11 +1353,11 @@ contract CancelAndFeesTest is LocalTestBase {
         assertEq(queued, SH_1M - 9_904_051_842);
 
         // Risk manager can no longer set anything above 0.1%, including the value in force.
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/fee-too-high");
         vault.setRedeemFeeRate(0.01e18);
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vault.setRedeemFeeRate(0.001e18);
         assertEq(vault.redeemFeeRate(), 0.001e18);
     }
@@ -1450,11 +1450,11 @@ contract CancelAndFeesTest is LocalTestBase {
         _pause();
         assertEq(vault.totalAssets(), 99_999_998);
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(0);
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(99_999_998);  // loss == totalAssets: rejected; 99_999_997 is the max
 
@@ -1561,7 +1561,7 @@ contract CancelAndFeesTest is LocalTestBase {
         vm.expectRevert("SparkPrimeVault/invalid-gain");
         vault.realizeGain(0);
 
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert();  // AccessControlUnauthorizedAccount: DEFAULT_ADMIN only
         vault.realizeGain(1);
     }
@@ -1707,7 +1707,7 @@ contract CancelAndFeesTest is LocalTestBase {
         uint256 amount = 100e6;
         for (uint256 i; i < 10; ++i) {
             vm.prank(alice);
-            uint256 id = vault.requestDeposit(amount, alice);
+            uint256 id = vault.requestDeposit(amount, alice, 0);
             assertEq(id, i);
             assertEq(vault.firstPendingDepositId(), i);
 
@@ -1744,7 +1744,7 @@ contract CancelAndFeesTest is LocalTestBase {
         _fund(stranger, 100e6);
         for (uint256 i; i < 50; ++i) {
             vm.prank(stranger);
-            uint256 id = vault.requestDeposit(100e6, stranger);
+            uint256 id = vault.requestDeposit(100e6, stranger, 0);
             assertEq(id, 1 + i);
             uint256 cid = _cancelDeposit(stranger, id, stranger);
             assertEq(cid, i);

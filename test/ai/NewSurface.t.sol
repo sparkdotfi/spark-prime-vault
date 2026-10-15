@@ -324,7 +324,7 @@ contract NewSurfaceTest is NewSurfaceBase {
         uint256 id = _deposit(alice, ONE_M);
 
         vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.requestDepositCancellation(id, guardian);
 
         vm.prank(guardian);
@@ -352,13 +352,13 @@ contract NewSurfaceTest is NewSurfaceBase {
         _setCapacity(0);
         uint256 id = _deposit(alice, ONE_M);
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.updateDepositRecipient(id, address(0));
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.updateDepositRecipient(99, address(0));
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.updateDepositCancellationRecipient(0, address(0));
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.updateRedeemRecipient(0, address(0));
     }
 
@@ -400,7 +400,7 @@ contract NewSurfaceTest is NewSurfaceBase {
 
     function test_realizeLoss_revertsWhenNotPaused() public {
         _deposit(alice, ONE_M);
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/not-paused");
         vault.realizeLoss(1);
     }
@@ -408,7 +408,7 @@ contract NewSurfaceTest is NewSurfaceBase {
     function test_realizeLoss_revertsOnZeroLoss() public {
         _deposit(alice, ONE_M);
         _pause();
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(0);
     }
@@ -419,7 +419,7 @@ contract NewSurfaceTest is NewSurfaceBase {
         address[3] memory who = [admin, guardian, alice];
         for (uint256 i; i < 3; ++i) {
             vm.prank(who[i]);
-            vm.expectRevert(_unauthorized(who[i], RISK_MANAGER_ROLE));
+            vm.expectRevert(_unauthorized(who[i], REDEEM_FEE_SETTER_ROLE));
             vault.realizeLoss(1);
         }
     }
@@ -433,7 +433,7 @@ contract NewSurfaceTest is NewSurfaceBase {
 
         uint256[3] memory losses = [uint256(1), 1e12, type(uint256).max];
         for (uint256 i; i < 3; ++i) {
-            vm.prank(riskManager);
+            vm.prank(redeemFeeSetter);
             vm.expectRevert("SparkPrimeVault/invalid-loss");
             vault.realizeLoss(losses[i]);
         }
@@ -448,7 +448,7 @@ contract NewSurfaceTest is NewSurfaceBase {
 
         uint256[3] memory losses = [ta, ta + 1, type(uint256).max];
         for (uint256 i; i < 3; ++i) {
-            vm.prank(riskManager);
+            vm.prank(redeemFeeSetter);
             vm.expectRevert("SparkPrimeVault/invalid-loss");
             vault.realizeLoss(losses[i]);
         }
@@ -484,7 +484,7 @@ contract NewSurfaceTest is NewSurfaceBase {
         assertEq(_vaultSpUsdc(),         S_1M);     // ~1M USDC of backing still in the vault
 
         // Nothing further can be realized as a loss (totalAssets is 0).
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(1);
 
@@ -510,10 +510,10 @@ contract NewSurfaceTest is NewSurfaceBase {
         assertEq(vault.totalAssets(), 1);
 
         _pause();
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(1);
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert("SparkPrimeVault/invalid-loss");
         vault.realizeLoss(0);
         assertEq(vault.chi(), CHI_P);
@@ -663,7 +663,7 @@ contract NewSurfaceRealizeGainTest is NewSurfaceBase {
 
     function test_realizeGain_revertsForNonAdmin() public {
         _deposit(alice, ONE_M);
-        address[5] memory who = [riskManager, guardian, setter, rebalancer, alice];
+        address[5] memory who = [redeemFeeSetter, guardian, vsrSetter, rebalancer, alice];
         for (uint256 i; i < 5; ++i) {
             vm.prank(who[i]);
             vm.expectRevert(_unauthorized(who[i], DEFAULT_ADMIN_ROLE));
@@ -892,7 +892,7 @@ contract NewSurfaceRealizeGainTest is NewSurfaceBase {
         _fund(carol, ONE_M);
         vm.prank(carol);
         vm.expectRevert(stdError.arithmeticError);
-        vault.requestDeposit(ONE_M, carol);
+        vault.requestDeposit(ONE_M, carol, 0);
 
         vm.prank(alice);
         vm.expectRevert(stdError.arithmeticError);
@@ -908,7 +908,7 @@ contract NewSurfaceRealizeGainTest is NewSurfaceBase {
         vm.expectRevert(stdError.arithmeticError);
         vault.processPendingDepositCancellations(type(uint256).max, type(uint256).max);
 
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vm.expectRevert(stdError.arithmeticError);
         vault.setVSR(RAY);
 
@@ -917,7 +917,7 @@ contract NewSurfaceRealizeGainTest is NewSurfaceBase {
         vault.realizeGain(1);
 
         _pause();
-        vm.prank(riskManager);
+        vm.prank(redeemFeeSetter);
         vm.expectRevert(stdError.arithmeticError);
         vault.realizeLoss(1);
 
@@ -964,7 +964,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
 
         vm.prank(alice);
         vm.expectRevert(stdError.arithmeticError);
-        vault.requestDeposit(ONE_M, alice);
+        vault.requestDeposit(ONE_M, alice, 0);
 
         vm.prank(rebalancer);
         vm.expectRevert(stdError.arithmeticError);
@@ -977,11 +977,11 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         _setCapacity(safe + 1);
         vm.prank(alice);
         vm.expectRevert(stdError.arithmeticError);
-        vault.requestDeposit(ONE_M, alice);
+        vault.requestDeposit(ONE_M, alice, 0);
 
         _setCapacity(safe);
         vm.prank(alice);
-        vault.requestDeposit(ONE_M, alice);
+        vault.requestDeposit(ONE_M, alice, 0);
         assertEq(vault.balanceOf(alice), SH_1M);
 
         // A capacity that was safe today bricks deposits once chi has grown.
@@ -990,7 +990,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         _fund(bob, ONE_M);
         vm.prank(bob);
         vm.expectRevert(stdError.arithmeticError);
-        vault.requestDeposit(ONE_M, bob);
+        vault.requestDeposit(ONE_M, bob, 0);
 
         vm.prank(rebalancer);
         vm.expectRevert(stdError.arithmeticError);
@@ -999,7 +999,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         // Admin recovers by lowering the capacity.
         _setCapacity(type(uint128).max);
         vm.prank(bob);
-        vault.requestDeposit(ONE_M, bob);
+        vault.requestDeposit(ONE_M, bob, 0);
         assertGt(vault.balanceOf(bob), 0);
     }
 
@@ -1065,7 +1065,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         _fund(mallory, 0);
         for (uint256 i; i < 3; ++i) {
             vm.prank(mallory);
-            assertEq(vault.requestDeposit(0, mallory), i);
+            assertEq(vault.requestDeposit(0, mallory, 0), i);
         }
         assertEq(vault.firstPendingDepositId(), 2);  // each ghost walked one step, none filled
         assertEq(_depositLength(),    3);
@@ -1083,7 +1083,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         uint256 idA = _deposit(alice, ONE_M);
         _fund(mallory, 0);
         vm.prank(mallory);
-        vault.requestDeposit(0, mallory);        // ghost at 1
+        vault.requestDeposit(0, mallory, 0);        // ghost at 1
         uint256 idB = _deposit(bob,   HUNDRED_K);  // 2
         uint256 idC = _deposit(carol, HUNDRED_K);  // 3
         assertEq(vault.firstPendingDepositId(), 0);
@@ -1109,7 +1109,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         _fund(mallory, 0);
         for (uint256 i; i < 500; ++i) {
             vm.prank(mallory);
-            vault.requestDeposit(0, mallory);
+            vault.requestDeposit(0, mallory, 0);
         }
         assertEq(vault.firstPendingDepositId(), 0);
         assertEq(_depositLength(),    501);
@@ -1121,7 +1121,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         _fund(bob, ONE_M);
         vm.prank(bob);
         uint256 g0 = gasleft();
-        vault.requestDeposit(ONE_M, bob);
+        vault.requestDeposit(ONE_M, bob, 0);
         uint256 gasBob = g0 - gasleft();
         assertEq(vault.firstPendingDepositId(),  502);
         assertEq(vault.balanceOf(bob), SH_1M);
@@ -1129,7 +1129,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         _fund(carol, ONE_M);
         vm.prank(carol);
         g0 = gasleft();
-        vault.requestDeposit(ONE_M, carol);
+        vault.requestDeposit(ONE_M, carol, 0);
         uint256 gasCarol = g0 - gasleft();
         assertEq(vault.firstPendingDepositId(), 503);
 
@@ -1241,7 +1241,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         vm.prank(alice);
         vm.expectEmit(address(vault));
         emit DepositRequest(alice, alice, 0, ONE_M, S_1M);
-        vault.requestDeposit(ONE_M, alice);
+        vault.requestDeposit(ONE_M, alice, 0);
     }
 
     // `Deposit`'s 4th argument is named `savingsShares` but carries spPRIME shares.
@@ -1250,7 +1250,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         vm.prank(alice);
         vm.expectEmit(address(vault));
         emit Deposit(alice, alice, A_1M, SH_1M);
-        vault.requestDeposit(ONE_M, alice);
+        vault.requestDeposit(ONE_M, alice, 0);
     }
 
     // Round 4: every `uint192` cast in the contract. `initialize` (:248) casts RAY; `drip` (:620)

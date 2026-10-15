@@ -381,7 +381,7 @@ contract UpgradeTest is LocalTestBase {
         address[] memory admins_      = vault.getRoleMembers(DEFAULT_ADMIN_ROLE);
         address[] memory guardians_   = vault.getRoleMembers(GUARDIAN_ROLE);
         address[] memory rebalancers_ = vault.getRoleMembers(REBALANCER_ROLE);
-        address[] memory riskMgrs_    = vault.getRoleMembers(RISK_MANAGER_ROLE);
+        address[] memory riskMgrs_    = vault.getRoleMembers(REDEEM_FEE_SETTER_ROLE);
         address[] memory setters_     = vault.getRoleMembers(SETTER_ROLE);
         address[] memory takers_      = vault.getRoleMembers(TAKER_ROLE);
         address[] memory unpausers_   = vault.getRoleMembers(UNPAUSER_ROLE);
@@ -389,8 +389,8 @@ contract UpgradeTest is LocalTestBase {
         assertEq(admins_.length,      1); assertEq(admins_[0],      admin);
         assertEq(guardians_.length,   1); assertEq(guardians_[0],   guardian);
         assertEq(rebalancers_.length, 1); assertEq(rebalancers_[0], rebalancer);
-        assertEq(riskMgrs_.length,    1); assertEq(riskMgrs_[0],    riskManager);
-        assertEq(setters_.length,     1); assertEq(setters_[0],     setter);
+        assertEq(riskMgrs_.length,    1); assertEq(riskMgrs_[0],    redeemFeeSetter);
+        assertEq(setters_.length,     1); assertEq(setters_[0],     vsrSetter);
         assertEq(takers_.length,      1); assertEq(takers_[0],      taker);
         assertEq(unpausers_.length,   1); assertEq(unpausers_[0],   unpauser);
 
@@ -428,7 +428,7 @@ contract UpgradeTest is LocalTestBase {
         assertEq(vault.getRoleMembers(DEFAULT_ADMIN_ROLE), admins_);
         assertEq(vault.getRoleMembers(GUARDIAN_ROLE),      guardians_);
         assertEq(vault.getRoleMembers(REBALANCER_ROLE),    rebalancers_);
-        assertEq(vault.getRoleMembers(RISK_MANAGER_ROLE),  riskMgrs_);
+        assertEq(vault.getRoleMembers(REDEEM_FEE_SETTER_ROLE),  riskMgrs_);
         assertEq(vault.getRoleMembers(SETTER_ROLE),        setters_);
         assertEq(vault.getRoleMembers(TAKER_ROLE),         takers_);
         assertEq(vault.getRoleMembers(UNPAUSER_ROLE),      unpausers_);
@@ -557,13 +557,13 @@ contract UpgradeTest is LocalTestBase {
     // arbitrary bytes32). Every role's admin is DEFAULT_ADMIN_ROLE, before and after upgrade.
     function test_roleAdmins_unchangedByUpgrade() public {
         bytes32[6] memory roles_ = [
-            DEFAULT_ADMIN_ROLE, GUARDIAN_ROLE, REBALANCER_ROLE, RISK_MANAGER_ROLE,
+            DEFAULT_ADMIN_ROLE, GUARDIAN_ROLE, REBALANCER_ROLE, REDEEM_FEE_SETTER_ROLE,
             SETTER_ROLE, TAKER_ROLE
         ];
         assertEq(vault.GUARDIAN_ROLE(),     GUARDIAN_ROLE);
         assertEq(vault.REBALANCER_ROLE(),   REBALANCER_ROLE);
-        assertEq(vault.RISK_MANAGER_ROLE(), RISK_MANAGER_ROLE);
-        assertEq(vault.SETTER_ROLE(),       SETTER_ROLE);
+        assertEq(vault.REDEEM_FEE_SETTER_ROLE(), REDEEM_FEE_SETTER_ROLE);
+        assertEq(vault.VSR_SETTER_ROLE(),       SETTER_ROLE);
         assertEq(vault.TAKER_ROLE(),        TAKER_ROLE);
         assertEq(vault.DEFAULT_ADMIN_ROLE(), bytes32(0));
 

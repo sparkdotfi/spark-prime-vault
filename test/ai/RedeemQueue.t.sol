@@ -771,7 +771,7 @@ contract RedeemQueueTest is LocalTestBase {
     function test_requestRedeem_revertsRecipientZero() public {
         _deposit(alice, 100_000e6);
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.requestRedeem(1, address(0));
     }
 
@@ -1591,7 +1591,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(sh, DEPOSIT_100K_SHARES);
 
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.updateRedeemRecipient(id, address(0));
 
         _processRedeems(type(uint256).max, 1);

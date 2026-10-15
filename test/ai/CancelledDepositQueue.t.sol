@@ -529,10 +529,10 @@ contract CancelledDepositQueueTest is LocalTestBase {
         uint256 id = _deposit(alice, ONE_M);
 
         vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.requestDepositCancellation(id, guardian);
         vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.requestDepositCancellation(id, bob);
 
         vm.prank(guardian);
@@ -573,7 +573,7 @@ contract CancelledDepositQueueTest is LocalTestBase {
     function test_requestDepositCancellation_zeroRecipientReverts() public {
         uint256 id = _deposit(alice, ONE_M);
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/invalid-recipient");
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
         vault.requestDepositCancellation(id, address(0));
     }
 
@@ -619,7 +619,7 @@ contract CancelledDepositQueueTest is LocalTestBase {
                 if (s == 0) continue;
                 if (o != u) {
                     vm.prank(guardian);
-                    vm.expectRevert("SparkPrimeVault/invalid-recipient");
+                    vm.expectRevert("SparkPrimeVault/zero-recipient");
                     vault.requestDepositCancellation(id, u);
                 }
                 vm.prank(guardian);
