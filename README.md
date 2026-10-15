@@ -1,4 +1,4 @@
-# Spark Prime Vault (`spPRIME`)
+# Spark Prime Vault (`spPrime`)
 
 An upgradeable, yield-accruing vault token backed by an underlying asset (e.g., USDC) and an ERC-4626 savings yield sleeve (e.g., `spUSDC`), featuring asynchronous FIFO deposit and withdrawal queues for capacity- and liquidity-constrained environments.
 
@@ -15,15 +15,15 @@ An upgradeable, yield-accruing vault token backed by an underlying asset (e.g., 
 
 ### 2. Deposits & Deposit Queue
 
-- **Instant Fill**: If no deposit queue exists and capacity is available (`totalSupply < maxCapacity`), `spPRIME` shares are minted immediately to `receiver`.
+- **Instant Fill**: If no deposit queue exists and capacity is available (`totalSupply < maxCapacity`), `spPrime` shares are minted immediately to `receiver`.
 - **Queueing**: If capacity is filled or a queue exists, excess assets are deposited into `spUSDC` and pushed to the FIFO `_depositRequests`. Queued depositors earn `spUSDC` yield while waiting.
-- **Processing**: The `REBALANCER_ROLE` calls `processPendingDeposits(maxAssets)` to mint `spPRIME` to queued depositors as vault capacity becomes available.
+- **Processing**: The `REBALANCER_ROLE` calls `processPendingDeposits(maxAssets)` to mint `spPrime` to queued depositors as vault capacity becomes available.
 - **Cancellation**: A queued deposit can be cancelled at any time by the `owner`, `receiver`, or `GUARDIAN_ROLE` via `requestDepositCancellation(requestId)`, returning the underlying assets plus all accrued `spUSDC` yield to the `owner`.
 
 ### 3. Redemptions & Withdraw Queue
 
-- **Instant Fill**: If no withdrawal queue exists and sufficient liquid assets are available (`availableLiquidAssets()`), `spPRIME` shares are burned and net assets are paid out immediately to `receiver`.
-- **Queueing**: If liquidity is insufficient, requested `spPRIME` shares are escrowed into the FIFO `withdrawQueue`. Escrowed shares continue earning vault yield until processed.
+- **Instant Fill**: If no withdrawal queue exists and sufficient liquid assets are available (`availableLiquidAssets()`), `spPrime` shares are burned and net assets are paid out immediately to `receiver`.
+- **Queueing**: If liquidity is insufficient, requested `spPrime` shares are escrowed into the FIFO `withdrawQueue`. Escrowed shares continue earning vault yield until processed.
 - **Processing**: Anyone can call `processWithdrawQueue(maxAssets)` to fulfill queued withdrawals FIFO as liquidity becomes available.
 - **Withdrawal Fee**: Each redemption request locks in the `withdrawFee` active at request time (capped at `maxWithdrawFee` ≤ 1%). The fee is deducted upon settlement and retained by the vault.
 
@@ -36,12 +36,12 @@ An upgradeable, yield-accruing vault token backed by an underlying asset (e.g., 
 
 ## Roles & Permissions
 
-| Role                        | Permitted Actions                                                                                                                | Description                                                                                          |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Role                        | Permitted Actions                                                                                                                | Description                                                                                                         |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | **`DEFAULT_ADMIN_ROLE`**    | `setCapacity`, `setMaxWithdrawFee`, `setMinimums`, `setVsrBounds`, `_authorizeUpgrade`, `unpause`, `adjustTotalAssets`           | Governs vault parameters, caps, bounds, and contract upgrades. Realizes gains/losses by writing `chi` while paused. |
-| **`SETTER_ROLE`**           | `setVsr`                                                                                                                         | Updates the compounding Vault Savings Rate within configured bounds (`[minVsr, maxVsr]`).            |
-| **`REBALANCER_ROLE`**       | `depositToSavings`, `withdrawFromSavings`, `processPendingDeposits`                                                              | Manages the `spUSDC` savings sleeve and settles queued deposits against available capacity.          |
-| **`TAKER_ROLE`**            | `take`                                                                                                                           | Withdraws available idle base assets for portfolio allocation.                                       |
-| **`RISK_MANAGER_ROLE`**     | `setWithdrawFee`                                                                                                                 | Configures redemption fees (≤ `maxWithdrawFee`).                                                     |
-| **`GUARDIAN_ROLE`**         | `pause`, `requestDepositCancellation`                                                                                            | Emergency pause for deposits/withdrawals and compliance cancellation of queued deposits.             |
-| **Public / Permissionless** | `requestDeposit`, `requestRedeem`, `requestDepositCancellation` _(owner/receiver)_, `processWithdrawQueue`, `drip`, ERC20/Permit | Standard user interactions and queue settlement.                                                     |
+| **`SETTER_ROLE`**           | `setVsr`                                                                                                                         | Updates the compounding Vault Savings Rate within configured bounds (`[minVsr, maxVsr]`).                           |
+| **`REBALANCER_ROLE`**       | `depositToSavings`, `withdrawFromSavings`, `processPendingDeposits`                                                              | Manages the `spUSDC` savings sleeve and settles queued deposits against available capacity.                         |
+| **`TAKER_ROLE`**            | `take`                                                                                                                           | Withdraws available idle base assets for portfolio allocation.                                                      |
+| **`RISK_MANAGER_ROLE`**     | `setWithdrawFee`                                                                                                                 | Configures redemption fees (≤ `maxWithdrawFee`).                                                                    |
+| **`GUARDIAN_ROLE`**         | `pause`, `requestDepositCancellation`                                                                                            | Emergency pause for deposits/withdrawals and compliance cancellation of queued deposits.                            |
+| **Public / Permissionless** | `requestDeposit`, `requestRedeem`, `requestDepositCancellation` _(owner/receiver)_, `processWithdrawQueue`, `drip`, ERC20/Permit | Standard user interactions and queue settlement.                                                                    |

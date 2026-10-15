@@ -87,7 +87,6 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         vaultState.availableCapacity     = 1_500_000e6 - 952_380.952380e6;
         vaultState.availableLiquidAssets = 1_000_000e6 - 1;
 
-        // The head points at cancelled request 1
         vaultState.depositRequests.pendingShares  = 0;
         vaultState.depositRequests.length         = 0;
         vaultState.depositRequests.firstPendingId = 1;
@@ -120,6 +119,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         uint256 expectedSavingsShares       = spUSDC.convertToShares(800_000e6);
         uint256 expectedSavingsSharesBurned = 534_114.753297e6;  // availableCapacity -> USDC -> spUSDC
+        uint256 expectedPendingSavingShares = expectedSavingsShares - expectedSavingsSharesBurned;
         uint256 expectedShares              = vaultState.availableCapacity - 2;  // Rounding error away from remaining capacity.
         uint256 expectedConvertedAssets     = 574_999.999999e6;  // expectedSavingsSharesBurned -> USDC
 
@@ -137,12 +137,14 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         assertEq(requestId, 1);
 
+        _assertDepositRequest(1, user, user, expectedPendingSavingShares);
+
         vaultState.totalSupply           += expectedShares;
         vaultState.totalAssets           += expectedConvertedAssets;
         vaultState.availableCapacity     = 2;
         vaultState.availableLiquidAssets += 800_000e6;
 
-        vaultState.depositRequests.pendingShares  = expectedSavingsShares - expectedSavingsSharesBurned;
+        vaultState.depositRequests.pendingShares  = expectedPendingSavingShares;
         vaultState.depositRequests.length         = 1;
         vaultState.depositRequests.firstPendingId = 1;
 
@@ -169,7 +171,6 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         vaultState.availableCapacity     = 0;
         vaultState.availableLiquidAssets = 1_000_000e6 - 1;
 
-        // The head points at cancelled request 1
         vaultState.depositRequests.pendingShares  = 0;
         vaultState.depositRequests.length         = 0;
         vaultState.depositRequests.firstPendingId = 1;
@@ -212,6 +213,8 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         uint256 requestId = spPrime.requestDeposit(800_000e6, user, REFERRAL);
 
         assertEq(requestId, 1);
+
+        _assertDepositRequest(1, user, user, expectedSavingsShares);
 
         vaultState.availableLiquidAssets += 800_000e6;
 
