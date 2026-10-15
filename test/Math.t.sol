@@ -30,7 +30,7 @@ contract MathTestBase is Test {
 
 contract DivupFailureTests is MathTestBase {
 
-    function test_divup_divideByZero() public {
+    function test_divup_divideByZero() external {
         vm.expectRevert(stdError.divisionError);
         harness.divUp(1, 0);
     }
@@ -45,7 +45,7 @@ contract DivupSuccessTests is MathTestBase {
         uint256 expected;
     }
 
-    function fixtureDivision() public pure returns (TestCase[] memory testCases) {
+    function fixtureDivision() external pure returns (TestCase[] memory testCases) {
         testCases = new TestCase[](10);
 
         testCases[0] = TestCase({ x: 1,  y: 1, expected: 1 });  // 1
@@ -61,7 +61,7 @@ contract DivupSuccessTests is MathTestBase {
         testCases[9] = TestCase({ x: 1e6, y: 1e6 - 1, expected: 2 });  // 1.000001
     }
 
-    function table_divup_roundUp(TestCase memory division) public view {
+    function table_divup_roundUp(TestCase memory division) external view {
         assertEq(harness.divUp(division.x, division.y), division.expected);
     }
 
@@ -76,7 +76,7 @@ contract RpowSuccessTests is MathTestBase {
 
     // NOTE: The CSV data was sourced from Sky Ecosystem's VSR conversion table:
     //       https://ipfs.io/ipfs/QmVp4mhhbwWGTfbh2BzwQB9eiBrQBKiqcPRZCaAxNUaar6
-    function fixtureApyVsr() public view returns (ApyVsrTestCase[] memory testCases) {
+    function fixtureApyVsr() external view returns (ApyVsrTestCase[] memory testCases) {
         string memory csv = vm.readFile("test/tables/rpow-apy.csv");
         string[] memory rows = vm.split(csv, "\n");
         testCases = new ApyVsrTestCase[](rows.length);
@@ -88,7 +88,7 @@ contract RpowSuccessTests is MathTestBase {
         }
     }
 
-    function table_rpow_apyVsr18Decimals(ApyVsrTestCase memory apyVsr) public view {
+    function table_rpow_apyVsr18Decimals(ApyVsrTestCase memory apyVsr) external view {
         uint256 deposit = 1_000_000e18;
 
         uint256 depositWithYieldApy = deposit * (10000 + apyVsr.apy) / 10000;
@@ -97,7 +97,7 @@ contract RpowSuccessTests is MathTestBase {
         assertApproxEqAbs(depositWithYieldApy, depositWithYieldVsr, 150_000);  // 1.5e-13 difference maximum on 1m
     }
 
-    function table_rpow_apyVsr6Decimals(ApyVsrTestCase memory apyVsr) public view {
+    function table_rpow_apyVsr6Decimals(ApyVsrTestCase memory apyVsr) external view {
         uint256 deposit = 1_000_000e6;
 
         uint256 depositWithYieldApy = deposit * (10000 + apyVsr.apy) / 10000;
@@ -108,7 +108,7 @@ contract RpowSuccessTests is MathTestBase {
 
     // Adding this test to demonstrate the upper bound values of rpow instead of failure mode testing.
     // MAX_VSR is 100% APY.
-    function test_rpow_upperBoundValues() public {
+    function test_rpow_upperBoundValues() external {
         uint256 maxVsr = harness.MAX_VSR();
 
         // Reverts between 75 and 80 years
@@ -122,7 +122,7 @@ contract RpowSuccessTests is MathTestBase {
         assertEq(maxVsrChi, 3.7778931862957161634615052296000273248252349772281e49);
     }
 
-    function test_rpow_lowerBoundValues() public view {
+    function test_rpow_lowerBoundValues() external view {
         uint256 minVsr = 1e27;
 
         uint256 minVsrChi = harness.rpow(minVsr, 1000 * 365 days);

@@ -11,25 +11,66 @@ import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
 
 interface IERC20Like {
 
-    function approve(address spender, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
 
-    function balanceOf(address user) external view returns (uint256);
+    function approve(address spender, uint256 amount) external;
+
+    function balanceOf(address owner) external view returns (uint256);
 
 }
 
 interface ISparkVaultLike {
 
-    function balanceOf(address user) external view returns (uint256);
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    function assetsOf(address owner) external view returns (uint256);
+
+    function balanceOf(address owner) external view returns (uint256);
 
     function convertToAssets(uint256 shares) external view returns (uint256);
 
     function convertToShares(uint256 assets) external view returns (uint256);
 
-    function transfer(address to, uint256 amount) external returns (bool);
+    function nowChi() external view returns (uint256);
 
 }
 
-contract TestBase is Test {
+abstract contract TestBase is Test {
+
+    struct PendingRequestsState {
+        uint256 pendingShareValue;  // USDC value of spUSDC shares (deposit queue) or spPrime shares (redeem queue)
+        uint256 length;             // Requests from firstPendingId to the end, cancelled included
+        uint256 firstPendingId;     // First unfilled request id
+    }
+
+    struct VaultState {
+        uint256 rho;                     // Last chi update timestamp
+        uint256 chi;                     // Rate accumulator [ray]
+        uint256 totalAssets;             // USDC value of supply
+        uint256 availableCapacityValue;  // USDC value of spPrime shares left to mint
+        uint256 availableLiquidAssets;   // USDC the vault can withdraw from spUSDC now (maxWithdraw)
+        PendingRequestsState depositRequests;
+        PendingRequestsState depositCancellationRequests;
+        PendingRequestsState redeemRequests;
+    }
+
+    struct AccountBalances {
+        address account;            // Account being checked
+        uint256 assets;             // USDC held
+        uint256 shareValue;         // USDC value of spPrime held
+        uint256 savingsShareValue;  // USDC value of spUSDC held
+        uint256 claimableAssets;    // USDC claimable
+    }
+
+    uint256 internal constant MINIMUM_DEPOSIT = 100e6;
+    uint256 internal constant MINIMUM_REDEEM  = 100e6;
+    uint256 internal constant VAULT_CAPACITY  = 100_000_000e6;
+    uint256 internal constant RAY             = 1e27;
+    uint256 internal constant MAX_VSR         = 1.000000021979553151239153027e27;  // 100% APY
+
+    uint256 internal constant ONE_PCT_VSR  = 1.000000000315522921573372069e27;
+    uint256 internal constant FOUR_PCT_VSR = 1.000000001243680656318820312e27;
+    uint256 internal constant FIVE_PCT_VSR = 1.000000001547125957863212448e27;
 
     address internal admin           = makeAddr("admin");
     address internal guardian        = makeAddr("guardian");
@@ -46,22 +87,285 @@ contract TestBase is Test {
     bytes32 internal VSR_SETTER_ROLE        = keccak256("VSR_SETTER_ROLE");
 
     IERC20Like      internal usdc   = IERC20Like(Ethereum.USDC);
-    ISparkVaultLike internal spUsdc = ISparkVaultLike(Ethereum.SPARK_VAULT_V2_SPUSDC);
+    ISparkVaultLike internal spUSDC = ISparkVaultLike(Ethereum.SPARK_VAULT_V2_SPUSDC);
 
-    SparkPrimeVault internal vault;
+    SparkPrimeVault internal spPrime;
+
+    VaultState internal vaultState;
 
     function setUp() public virtual {
-        vm.createSelectFork(getChain("mainnet").rpcUrl, 26148600);
+        vm.createSelectFork(getChain("mainnet").rpcUrl, _getBlock());
 
-        vault = SparkPrimeVault(
+        spPrime = SparkPrimeVault(
             address(new ERC1967Proxy(
                 address(new SparkPrimeVault()),
                 abi.encodeCall(
                     SparkPrimeVault.initialize,
-                    (address(spUsdc), "Spark Prime USDC", "spPRIME", admin)
+                    (address(spUSDC), "Spark Prime USDC", "spPrime", admin)
                 )
             ))
         );
+
+        vm.startPrank(admin);
+
+        spPrime.grantRole(GUARDIAN_ROLE,          guardian);
+        spPrime.grantRole(REBALANCER_ROLE,        rebalancer);
+        spPrime.grantRole(REDEEM_FEE_SETTER_ROLE, redeemFeeSetter);
+        spPrime.grantRole(TAKER_ROLE,             taker);
+        spPrime.grantRole(VSR_SETTER_ROLE,        vsrSetter);
+
+        spPrime.setCapacity(VAULT_CAPACITY);
+        spPrime.setMinDeposit(MINIMUM_DEPOSIT);
+        spPrime.setMinRedeem(MINIMUM_REDEEM);
+        spPrime.setVSRBounds(RAY, spPrime.MAX_VSR());
+
+        vm.stopPrank();
+
+        vm.prank(vsrSetter);
+        spPrime.setVSR(FIVE_PCT_VSR);
+
+        PendingRequestsState memory depositRequests = PendingRequestsState({
+            pendingShareValue : 0,
+            length            : 0,
+            firstPendingId    : 0
+        });
+
+        PendingRequestsState memory depositCancellationRequests = PendingRequestsState({
+            pendingShareValue : 0,
+            length            : 0,
+            firstPendingId    : 0
+        });
+
+        PendingRequestsState memory redeemRequests = PendingRequestsState({
+            pendingShareValue : 0,
+            length            : 0,
+            firstPendingId    : 0
+        });
+
+        vaultState = VaultState({
+            rho                         : vm.getBlockTimestamp(),
+            chi                         : uint192(RAY),
+            totalAssets                 : 0,
+            availableCapacityValue      : spPrime.convertToAssets(VAULT_CAPACITY),
+            availableLiquidAssets       : 0,
+            depositRequests             : depositRequests,
+            depositCancellationRequests : depositCancellationRequests,
+            redeemRequests              : redeemRequests
+        });
+
+        vm.label(address(admin),           "admin");
+        vm.label(address(guardian),        "guardian");
+        vm.label(address(rebalancer),      "rebalancer");
+        vm.label(address(redeemFeeSetter), "redeemFeeSetter");
+        vm.label(address(spPrime),         "spPrime");
+        vm.label(address(spUSDC),          "spUSDC");
+        vm.label(address(taker),           "taker");
+        vm.label(address(usdc),            "usdc");
+        vm.label(address(vsrSetter),       "vsrSetter");
+    }
+
+    function _getBlock() internal pure returns (uint256) {
+        return 26148600;
+    }
+
+    /**********************************************************************************************/
+    /*** Action Helpers                                                                         ***/
+    /**********************************************************************************************/
+
+    function _pause() internal {
+        vm.prank(guardian);
+        spPrime.pause();
+    }
+
+    function _setCapacity(uint256 capacity) internal {
+        vm.prank(admin);
+        spPrime.setCapacity(capacity);
+    }
+
+    function _processPendingDeposits(uint256 maxSavingsShares, uint256 maxRequests) internal {
+        vm.prank(rebalancer);
+        spPrime.processPendingDeposits(maxSavingsShares, maxRequests);
+    }
+
+    function _processPendingDeposits(uint256 maxRequests) internal {
+        _processPendingDeposits(type(uint256).max, maxRequests);
+    }
+
+    function _requestDeposit(address account, address recipient, uint256 assets) internal returns (uint256 requestId) {
+        deal(address(usdc), account, assets);
+
+        vm.startPrank(account);
+        usdc.approve(address(spPrime), assets);
+        requestId = spPrime.requestDeposit(assets, recipient, 0);
+        vm.stopPrank();
+    }
+
+    function _requestDeposit(address account, uint256 assets) internal returns (uint256 requestId) {
+        return _requestDeposit(account, account, assets);
+    }
+
+    function _requestDepositCancellation(address account, uint256 requestId, address recipient) internal returns (uint256 newRequestId) {
+        vm.prank(account);
+        return spPrime.requestDepositCancellation(requestId, recipient);
+    }
+
+    function _requestDepositCancellation(address account, uint256 requestId) internal returns (uint256 newRequestId) {
+        return _requestDepositCancellation(account, requestId, account);
+    }
+
+    /**********************************************************************************************/
+    /*** Assertion helpers                                                                      ***/
+    /**********************************************************************************************/
+
+    function _assertVaultState() internal view {
+        // General state variables
+
+        assertEq(
+            spPrime.rho(),
+            vaultState.rho,
+            "vaultState.rho"
+        );
+
+        assertEq(
+            spPrime.chi(),
+            vaultState.chi,
+            "vaultState.chi"
+        );
+
+        assertEq(
+            spPrime.totalAssets(),
+            vaultState.totalAssets,
+            "vaultState.totalAssets"
+        );
+
+        assertEq(
+            spPrime.convertToAssets(spPrime.availableCapacity()),
+            vaultState.availableCapacityValue,
+            "vaultState.availableCapacityValue"
+        );
+
+        assertEq(
+            spPrime.availableLiquidAssets(),
+            vaultState.availableLiquidAssets,
+            "vaultState.availableLiquidAssets"
+        );
+
+        // Deposit Requests
+
+        assertEq(
+            spUSDC.convertToAssets(spPrime.pendingDepositSavingsShares()),
+            vaultState.depositRequests.pendingShareValue,
+            "vaultState.depositRequests.pendingShareValue"
+        );
+
+        assertEq(
+            spPrime.getPendingDepositRequests().length,
+            vaultState.depositRequests.length,
+            "vaultState.depositRequests.length"
+        );
+
+        assertEq(
+            spPrime.firstPendingDepositId(),
+            vaultState.depositRequests.firstPendingId,
+            "vaultState.depositRequests.firstPendingId"
+        );
+
+        // Deposit Cancellation Requests
+
+        assertEq(
+            spUSDC.convertToAssets(spPrime.pendingCancelledDepositSavingsShares()),
+            vaultState.depositCancellationRequests.pendingShareValue,
+            "vaultState.depositCancellationRequests.pendingShareValue"
+        );
+
+        assertEq(
+            spPrime.getPendingDepositCancellationRequests().length,
+            vaultState.depositCancellationRequests.length,
+            "vaultState.depositCancellationRequests.length"
+        );
+
+        assertEq(
+            spPrime.firstPendingDepositCancellationId(),
+            vaultState.depositCancellationRequests.firstPendingId,
+            "vaultState.depositCancellationRequests.firstPendingId"
+        );
+
+        // Redeem Requests
+
+        assertEq(
+            spUSDC.convertToAssets(spPrime.pendingRedeemShares()),
+            vaultState.redeemRequests.pendingShareValue,
+            "vaultState.redeemRequests.pendingShareValue"
+        );
+
+        assertEq(
+            spPrime.getPendingRedeemRequests().length,
+            vaultState.redeemRequests.length,
+            "vaultState.redeemRequests.length"
+        );
+
+        assertEq(
+            spPrime.firstPendingRedeemId(),
+            vaultState.redeemRequests.firstPendingId,
+            "vaultState.redeemRequests.firstPendingId"
+        );
+
+    }
+
+    function _assertAccountBalances(AccountBalances memory accountState) internal view {
+        assertEq(
+            usdc.balanceOf(accountState.account),
+            accountState.assets,
+            "accountState.assets"
+        );
+
+        assertEq(
+            spPrime.assetsOf(accountState.account),
+            accountState.shareValue,
+            "accountState.shareValue"
+        );
+
+        assertEq(
+            spUSDC.assetsOf(accountState.account),
+            accountState.savingsShareValue,
+            "accountState.savingsShareValue"
+        );
+
+        assertEq(
+            spPrime.claimableAssets(accountState.account),
+            accountState.claimableAssets,
+            "accountState.claimableAssets"
+        );
+    }
+
+    function _assertDepositRequest(
+        uint256 requestId,
+        address owner,
+        address recipient,
+        uint256 savingsShareValue
+    )
+        internal view
+    {
+        ( address owner_, address recipient_, uint256 shares_ ) = spPrime.getPendingDepositRequest(requestId);
+
+        assertEq(
+            owner_,
+            owner,
+            "depositRequest.owner"
+        );
+
+        assertEq(
+            recipient_,
+            recipient,
+            "depositRequest.recipient"
+        );
+
+        assertEq(
+            spUSDC.convertToAssets(shares_),
+            savingsShareValue,
+            "depositRequest.savingsShareValue"
+        );
+
     }
 
 }
