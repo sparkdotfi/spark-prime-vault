@@ -21,6 +21,12 @@ interface ISparkVaultLike {
 
     function balanceOf(address user) external view returns (uint256);
 
+    function convertToAssets(uint256 shares) external view returns (uint256);
+
+    function convertToShares(uint256 assets) external view returns (uint256);
+
+    function transfer(address to, uint256 amount) external returns (bool);
+
 }
 
 contract TestBase is Test {
