@@ -99,20 +99,6 @@ contract RoleBasedTests is TestBase {
     }
 
     /**********************************************************************************************/
-    /*** upgradeToAndCall tests                                                                 ***/
-    /**********************************************************************************************/
-
-    function setUp() public override {
-        super.setUp();
-
-        vm.prank(admin);
-        spPrime.setVSRBounds(RAY, FIVE_PCT_VSR);
-
-        vm.prank(vsrSetter);
-        spPrime.setVSR(FIVE_PCT_VSR);
-    }
-
-    /**********************************************************************************************/
     /*** adjustTotalAssets tests                                                                ***/
     /**********************************************************************************************/
 
@@ -603,6 +589,9 @@ contract RoleBasedTests is TestBase {
     }
 
     function test_setVSR_vsrTooLowBoundary() external {
+        vm.prank(admin);
+        spPrime.setVSRBounds(ONE_PCT_VSR, FOUR_PCT_VSR);
+
         vm.expectRevert("SparkPrimeVault/vsr-too-low");
         vm.prank(vsrSetter);
         spPrime.setVSR(ONE_PCT_VSR - 1);
@@ -612,8 +601,11 @@ contract RoleBasedTests is TestBase {
     }
 
     function test_setVSR_vsrTooHighBoundary() external {
-        vm.prank(vsrSetter);
+        vm.prank(admin);
+        spPrime.setVSRBounds(RAY, FOUR_PCT_VSR);
+
         vm.expectRevert("SparkPrimeVault/vsr-too-high");
+        vm.prank(vsrSetter);
         spPrime.setVSR(FOUR_PCT_VSR + 1);
 
         vm.prank(vsrSetter);
