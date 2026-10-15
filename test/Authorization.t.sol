@@ -83,8 +83,6 @@ contract GrantRoleTests is AuthorizationTestBase {
 
 contract RevokeRoleTests is AuthorizationTestBase {
 
-    event RoleRevoked(bytes32 indexed role, address indexed account, address indexed sender);
-
     // Failure tests
 
     function test_revokeRole_notAdmin() public {
@@ -141,8 +139,6 @@ contract UpgradeToAndCallTests is AuthorizationTestBase {
 contract AdjustTotalAssetsTests is AuthorizationTestBase {
 
     using stdStorage for StdStorage;
-
-    event TotalAssetsAdjusted(uint192 chi, int256 deltaTotalAssets);
 
     function setUp() public override {
         super.setUp();
@@ -268,7 +264,7 @@ contract AdjustTotalAssetsTests is AuthorizationTestBase {
         assertEq(expectedChi, 0.949999999998949999999998949e27);
 
         vm.expectEmit(address(vault));
-        emit TotalAssetsAdjusted(expectedChi, -int256(loss));
+        emit SparkPrimeVault.TotalAssetsAdjusted(expectedChi, -int256(loss));
 
         vm.prank(admin);
         vault.adjustTotalAssets(-int256(loss));
@@ -305,7 +301,7 @@ contract AdjustTotalAssetsTests is AuthorizationTestBase {
         assertEq(expectedChi, 1.149999999999149999999999149e27);
 
         vm.expectEmit(address(vault));
-        emit TotalAssetsAdjusted(expectedChi, int256(gain));
+        emit SparkPrimeVault.TotalAssetsAdjusted(expectedChi, int256(gain));
 
         vm.prank(admin);
         vault.adjustTotalAssets(int256(gain));
@@ -340,7 +336,7 @@ contract AdjustTotalAssetsTests is AuthorizationTestBase {
         assertEq(expectedChi, 0.899999999999899999999999899e27);
 
         vm.expectEmit(address(vault));
-        emit TotalAssetsAdjusted(expectedChi, -int256(loss));
+        emit SparkPrimeVault.TotalAssetsAdjusted(expectedChi, -int256(loss));
 
         vm.prank(admin);
         vault.adjustTotalAssets(-int256(loss));
@@ -388,7 +384,7 @@ contract AdjustTotalAssetsTests is AuthorizationTestBase {
         assertEq(expectedChi, 0.899999999999899999999999899e27);
 
         vm.expectEmit(address(vault));
-        emit TotalAssetsAdjusted(expectedChi, -int256(loss));
+        emit SparkPrimeVault.TotalAssetsAdjusted(expectedChi, -int256(loss));
 
         vm.prank(admin);
         vault.adjustTotalAssets(-int256(loss));
@@ -739,16 +735,16 @@ contract TakeTests is AuthorizationTestBase {
     }
 
     function test_take_insufficientSharesBoundary() external {
-        uint256 expectedSavingsShares = spUsdc.convertToShares(1_000_000e6);
-
         _requestDeposit(user, 1_000_000e6);  // Instant fill
+
+        uint256 vaultBalance = spUsdc.balanceOf(address(vault));
 
         vm.expectRevert("SparkPrimeVault/insufficient-shares");
         vm.prank(taker);
-        vault.take(expectedSavingsShares + 1);
+        vault.take(vaultBalance + 1);
 
         vm.prank(taker);
-        vault.take(expectedSavingsShares);
+        vault.take(vaultBalance);
     }
 
     // Success tests
