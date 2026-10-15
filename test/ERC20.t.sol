@@ -1,14 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
+import { ERC1967Proxy } from "../lib/oz/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+
+import { Ethereum } from "../lib/spark-address-registry/src/Ethereum.sol";
+
 import { TokenFuzzChecks } from "../lib/token-tests/src/TokenFuzzChecks.sol";
 
-import "./TestBase.t.sol";
+import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
 
-contract ERC20Tests is TestBase, TokenFuzzChecks {
+contract ERC20Tests is TokenFuzzChecks {
+
+    address internal admin = makeAddr("admin");
+
+    SparkPrimeVault internal vault;
 
     function setUp() public override {
-        super.setUp();
+        vault = SparkPrimeVault(
+            address(new ERC1967Proxy(
+                address(new SparkPrimeVault()),
+                abi.encodeCall(
+                    SparkPrimeVault.initialize,
+                    (Ethereum.SPARK_VAULT_V2_SPUSDC, "Spark Prime USDC", "spPRIME", admin)
+                )
+            ))
+        );
 
         vm.startPrank(admin);
         vault.grantRole(SETTER_ROLE, setter);
