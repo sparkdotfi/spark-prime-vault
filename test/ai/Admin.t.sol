@@ -1057,6 +1057,58 @@ contract AdminTest is LocalTestBase {
         assertEq(uint256(vault.drip()), safe_ * MAX_VSR / RAY);
     }
 
+    // G-1 (open), second bound: `drip()` also computes `totalSupply_ * nChi_` (:640) and every
+    // view computes `shares * nowChi` (:793), so the index is additionally bounded by
+    // `type(uint256).max / totalSupply`. With 2e27 shares (2e21 USDC) that is ~5.8e49, below
+    // the `RAY` bound: `nowChi()` still works but `drip()`, `totalAssets()` and therefore
+    // `adjustTotalAssets` (:282, :284) revert. `uint192` catches neither.
+    function test_BUG_G1_dripDiffOverflowBoundWithLargeSupply() public {
+        _deposit(alice, 2e27);
+        uint256 supply_ = vault.totalSupply();
+        uint256 bound_  = type(uint256).max / supply_;
+        assertLt(bound_, MAX_DRIP_CHI);
+
+        vm.store(address(vault), CHI_SLOT, bytes32(bound_));
+        skip(1);
+        assertEq(uint256(vault.nowChi()), bound_);
+        assertEq(uint256(vault.drip()),   bound_);
+        assertEq(vault.totalAssets(),     supply_ * bound_ / RAY);
+
+        vm.store(address(vault), CHI_SLOT, bytes32(bound_ + 1));
+        skip(1);
+        assertEq(uint256(vault.nowChi()), bound_ + 1);  // the RAY product still fits
+        vm.expectRevert(stdError.arithmeticError);
+        vault.drip();
+        vm.expectRevert(stdError.arithmeticError);
+        vault.totalAssets();
+        _pause();
+        vm.prank(admin);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.adjustTotalAssets(-1);
+    }
+
+    // Rounding of a gain: the write-up is short by less than `ceil(totalSupply / RAY)` wei
+    // because `chi` is floored. Below `RAY` shares that is at most 1 wei (see the fuzz test);
+    // above it a 1-wei "gain" can leave `totalAssets` unchanged while the event still fires.
+    function test_adjustTotalAssets_gainRoundingBoundedBySupplyOverRay() public {
+        _deposit(alice, 2.2e27);
+        uint256 supply_ = vault.totalSupply();
+        assertGt(supply_, 2 * RAY);
+        _pause();
+
+        uint256 ta_ = vault.totalAssets();
+        _adjustTotalAssets(1);
+        uint256 after_ = vault.totalAssets();
+        assertLe(after_, ta_ + 1);
+        assertGe(after_ + supply_ / RAY + 1, ta_ + 1);
+        assertEq(vault.chi(), _expectedChi(ta_ + 1, supply_));
+
+        // A gain of ceil(supply / RAY) wei always moves the index.
+        uint192 chi_ = vault.chi();
+        _adjustTotalAssets(int256(supply_ / RAY + 1));
+        assertGt(vault.chi(), chi_);
+    }
+
     // G-1 (open): `adjustTotalAssets` can push the index past the drip bound (the only check is
     // `uint192`). Same block everything works; one second later every path that drips reverts:
     // requests, all three queues, `setVSR`, `drip`, the views, and `adjustTotalAssets` itself
