@@ -71,40 +71,51 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         spPrime.requestDeposit(1_000_000e6, user, 0);
     }
 
+    function test_requestDeposit_notEnoughBalanceBoundary() external {
+        deal(address(usdc), user, 1_000_000e6);
+
+        vm.prank(user);
+        usdc.approve(address(spPrime), 1_000_000e6 + 1);
+
+        vm.prank(user);
+        vm.expectRevert("ERC20: transfer amount exceeds balance");
+        spPrime.requestDeposit(1_000_000e6 + 1, user, 0);
+
+        vm.prank(user);
+        spPrime.requestDeposit(1_000_000e6, user, 0);
+    }
+
     // Success tests
 
     function test_requestDeposit_partialFill() external {
         _requestDeposit(user, 1_000_000e6);  // Deposit Request 0 (Filled instantly)
 
-        _setCapacity(1_500_000e6);
+        _setCapacity(spPrime.convertToShares(1_500_000e6));
 
-        assertEq(spUSDC.nowChi(), 1.076547682778879499179621925e27);
+        vaultState.rho                    = vm.getBlockTimestamp();
+        vaultState.chi                    = 1.049999999999999999961070145e27;
+        vaultState.totalAssets            = 1_000_000e6 - 2;
+        vaultState.availableCapacityValue = 500_000e6;
+        vaultState.availableLiquidAssets  = 1_000_000e6 - 1;
 
-        vaultState.rho                   = vm.getBlockTimestamp();
-        vaultState.chi                   = 1.049999999999999999961070145e27;
-        vaultState.totalSupply           = 952_380.952380e6;  // 1_000_000e6 USDC -> spUSDC -> USD -> spPrime
-        vaultState.totalAssets           = 1_000_000e6 - 2;
-        vaultState.availableCapacity     = 1_500_000e6 - 952_380.952380e6;
-        vaultState.availableLiquidAssets = 1_000_000e6 - 1;
-
-        vaultState.depositRequests.pendingShares  = 0;
-        vaultState.depositRequests.length         = 0;
-        vaultState.depositRequests.firstPendingId = 1;
+        vaultState.depositRequests.pendingShareValue = 0;
+        vaultState.depositRequests.length            = 0;
+        vaultState.depositRequests.firstPendingId    = 1;
 
         AccountBalances memory userBalances = AccountBalances({
-            account         : user,
-            assets          : 0,
-            shares          : 952_380.952380e6,
-            savingsShares   : 0,
-            claimableAssets : 0
+            account           : user,
+            assets            : 0,
+            shareValue        : 1_000_000e6 - 2,
+            savingsShareValue : 0,
+            claimableAssets   : 0
         });
 
         AccountBalances memory vaultBalances = AccountBalances({
-            account         : address(spPrime),
-            assets          : 0,
-            shares          : 0,
-            savingsShares   : 928_895.223125e6,  // 1_000_000e6 USDC -> spUSDC
-            claimableAssets : 0
+            account           : address(spPrime),
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 1_000_000e6 - 1,
+            claimableAssets   : 0
         });
 
         _assertVaultState();
@@ -117,40 +128,38 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         vm.prank(user);
         usdc.approve(address(spPrime), 800_000e6);
 
-        uint256 expectedSavingsShares       = spUSDC.convertToShares(800_000e6);
-        uint256 expectedSavingsSharesBurned = 534_114.753297e6;  // availableCapacity -> USDC -> spUSDC
-        uint256 expectedPendingSavingShares = expectedSavingsShares - expectedSavingsSharesBurned;
-        uint256 expectedShares              = vaultState.availableCapacity - 2;  // Rounding error away from remaining capacity.
-        uint256 expectedConvertedAssets     = 574_999.999999e6;  // expectedSavingsSharesBurned -> USDC
+        uint256 expectedConvertedAssets       = 500_000e6 - 1;
+        uint256 expectedSavingsSharesMinted   = spUSDC.convertToShares(800_000e6);
+        uint256 expectedSavingsSharesConsumed = spUSDC.convertToShares(expectedConvertedAssets) + 1;
+        uint256 expectedSharesMinted          = spPrime.convertToShares(expectedConvertedAssets);
 
         vm.expectEmit(address(spPrime));
         emit SparkPrimeVault.Referral(REFERRAL, 1, user, user, 800_000e6);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.DepositRequest(1, user, user, 800_000e6, expectedSavingsShares);
+        emit SparkPrimeVault.DepositRequest(1, user, user, 800_000e6, expectedSavingsSharesMinted);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Deposit(1, user, user, expectedSavingsSharesBurned, expectedConvertedAssets, expectedShares);
+        emit SparkPrimeVault.Deposit(1, user, user, expectedSavingsSharesConsumed, expectedConvertedAssets, expectedSharesMinted);
 
         vm.prank(user);
         uint256 requestId = spPrime.requestDeposit(800_000e6, user, REFERRAL);
 
         assertEq(requestId, 1);
 
-        _assertDepositRequest(1, user, user, expectedPendingSavingShares);
+        _assertDepositRequest(1, user, user, 800_000e6 - 500_000e6);
 
-        vaultState.totalSupply           += expectedShares;
-        vaultState.totalAssets           += expectedConvertedAssets;
-        vaultState.availableCapacity     = 2;
-        vaultState.availableLiquidAssets += 800_000e6;
+        vaultState.totalAssets            += expectedConvertedAssets;
+        vaultState.availableCapacityValue = 2;
+        vaultState.availableLiquidAssets  += 800_000e6;
 
-        vaultState.depositRequests.pendingShares  = expectedPendingSavingShares;
-        vaultState.depositRequests.length         = 1;
-        vaultState.depositRequests.firstPendingId = 1;
+        vaultState.depositRequests.pendingShareValue += 800_000e6 - 500_000e6;
+        vaultState.depositRequests.length            = 1;
+        vaultState.depositRequests.firstPendingId    = 1;
 
-        userBalances.shares += expectedShares;
+        userBalances.shareValue += 500_000e6 - 1;
 
-        vaultBalances.savingsShares += expectedSavingsShares;
+        vaultBalances.savingsShareValue += 800_000e6;
 
         _assertVaultState();
         _assertAccountBalances(userBalances);
@@ -160,35 +169,32 @@ contract RequestDepositTests is SparkPrimeVaultTests {
     function test_requestDeposit_queued() external {
         _requestDeposit(user, 1_000_000e6);  // Deposit Request 0 (Filled instantly)
 
-        _setCapacity(952_380.952380e6);  // 1_000_000e6 USDC -> spUSDC -> USD -> spPrime
+        _setCapacity(spPrime.convertToShares(1_000_000e6));
 
-        assertEq(spUSDC.nowChi(), 1.076547682778879499179621925e27);
+        vaultState.rho                    = vm.getBlockTimestamp();
+        vaultState.chi                    = 1.049999999999999999961070145e27;
+        vaultState.totalAssets            = 1_000_000e6 - 2;
+        vaultState.availableCapacityValue = 0;
+        vaultState.availableLiquidAssets  = 1_000_000e6 - 1;
 
-        vaultState.rho                   = vm.getBlockTimestamp();
-        vaultState.chi                   = 1.049999999999999999961070145e27;
-        vaultState.totalSupply           = 952_380.952380e6;
-        vaultState.totalAssets           = 1_000_000e6 - 2;
-        vaultState.availableCapacity     = 0;
-        vaultState.availableLiquidAssets = 1_000_000e6 - 1;
-
-        vaultState.depositRequests.pendingShares  = 0;
-        vaultState.depositRequests.length         = 0;
-        vaultState.depositRequests.firstPendingId = 1;
+        vaultState.depositRequests.pendingShareValue = 0;
+        vaultState.depositRequests.length            = 0;
+        vaultState.depositRequests.firstPendingId    = 1;
 
         AccountBalances memory userBalances = AccountBalances({
-            account         : user,
-            assets          : 0,
-            shares          : 952_380.952380e6,
-            savingsShares   : 0,
-            claimableAssets : 0
+            account           : user,
+            assets            : 0,
+            shareValue        : 1_000_000e6 - 2,
+            savingsShareValue : 0,
+            claimableAssets   : 0
         });
 
         AccountBalances memory vaultBalances = AccountBalances({
-            account         : address(spPrime),
-            assets          : 0,
-            shares          : 0,
-            savingsShares   : 928_895.223125e6,  // 1_000_000e6 USDC -> spUSDC
-            claimableAssets : 0
+            account           : address(spPrime),
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 1_000_000e6 - 1,
+            claimableAssets   : 0
         });
 
         _assertVaultState();
@@ -201,28 +207,28 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         vm.prank(user);
         usdc.approve(address(spPrime), 800_000e6);
 
-        uint256 expectedSavingsShares = spUSDC.convertToShares(800_000e6);
+        uint256 expectedSavingsSharesMinted = spUSDC.convertToShares(800_000e6);
 
         vm.expectEmit(address(spPrime));
         emit SparkPrimeVault.Referral(REFERRAL, 1, user, user, 800_000e6);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.DepositRequest(1, user, user, 800_000e6, expectedSavingsShares);
+        emit SparkPrimeVault.DepositRequest(1, user, user, 800_000e6, expectedSavingsSharesMinted);
 
         vm.prank(user);
         uint256 requestId = spPrime.requestDeposit(800_000e6, user, REFERRAL);
 
         assertEq(requestId, 1);
 
-        _assertDepositRequest(1, user, user, expectedSavingsShares);
+        _assertDepositRequest(1, user, user, 800_000e6 - 1);
 
         vaultState.availableLiquidAssets += 800_000e6;
 
-        vaultState.depositRequests.pendingShares  = expectedSavingsShares;
-        vaultState.depositRequests.length         = 1;
-        vaultState.depositRequests.firstPendingId = 1;
+        vaultState.depositRequests.pendingShareValue = 800_000e6 - 1;
+        vaultState.depositRequests.length            = 1;
+        vaultState.depositRequests.firstPendingId    = 1;
 
-        vaultBalances.savingsShares += expectedSavingsShares;
+        vaultBalances.savingsShareValue += 800_000e6;
 
         _assertVaultState();
         _assertAccountBalances(userBalances);

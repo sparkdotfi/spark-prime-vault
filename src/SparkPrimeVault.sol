@@ -92,7 +92,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         uint256 indexed requestId,
         address indexed owner,
         address indexed recipient,
-        uint256         savingsSharesBurned,
+        uint256         savingsSharesConsumed,
         uint256         assetsConverted,
         uint256         sharesMinted
     );

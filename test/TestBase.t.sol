@@ -15,7 +15,7 @@ interface IERC20Like {
 
     function approve(address spender, uint256 amount) external;
 
-    function balanceOf(address user) external view returns (uint256);
+    function balanceOf(address owner) external view returns (uint256);
 
 }
 
@@ -23,7 +23,9 @@ interface ISparkVaultLike {
 
     function transfer(address to, uint256 amount) external returns (bool);
 
-    function balanceOf(address user) external view returns (uint256);
+    function assetsOf(address owner) external view returns (uint256);
+
+    function balanceOf(address owner) external view returns (uint256);
 
     function convertToAssets(uint256 shares) external view returns (uint256);
 
@@ -36,29 +38,28 @@ interface ISparkVaultLike {
 abstract contract TestBase is Test {
 
     struct PendingRequestsState {
-        uint256 pendingShares;  // spUSDC shares (deposit queue) or spPrime shares (redeem queue)
-        uint256 length;         // requests from firstPendingId to the end, cancelled included
-        uint256 firstPendingId;  // first unfilled request id
+        uint256 pendingShareValue;  // USDC value of spUSDC shares (deposit queue) or spPrime shares (redeem queue)
+        uint256 length;             // requests from firstPendingId to the end, cancelled included
+        uint256 firstPendingId;     // first unfilled request id
     }
 
     struct VaultState {
-        uint256 rho;                   // last chi update timestamp
-        uint256 chi;                   // rate accumulator [ray]
-        uint256 totalSupply;           // spPrime shares total supply
-        uint256 totalAssets;           // USDC value of supply
-        uint256 availableCapacity;     // spPrime shares left to mint
-        uint256 availableLiquidAssets;  // USDC the vault can withdraw from spUSDC now (maxWithdraw)
+        uint256 rho;                     // last chi update timestamp
+        uint256 chi;                     // rate accumulator [ray]
+        uint256 totalAssets;             // USDC value of supply
+        uint256 availableCapacityValue;  // USDC value of spPrime shares left to mint
+        uint256 availableLiquidAssets;   // USDC the vault can withdraw from spUSDC now (maxWithdraw)
         PendingRequestsState depositRequests;
         PendingRequestsState depositCancellationRequests;
         PendingRequestsState redeemRequests;
     }
 
     struct AccountBalances {
-        address account;         // account being checked
-        uint256 assets;          // USDC held
-        uint256 shares;          // spPrime held
-        uint256 savingsShares;   // spUSDC held
-        uint256 claimableAssets;  // USDC claimable
+        address account;            // account being checked
+        uint256 assets;             // USDC held
+        uint256 shareValue;         // USDC value of spPrime held
+        uint256 savingsShareValue;  // USDC value of spUSDC held
+        uint256 claimableAssets;    // USDC claimable
     }
 
     uint256 internal constant MINIMUM_DEPOSIT = 100e6;
@@ -124,29 +125,28 @@ abstract contract TestBase is Test {
         spPrime.setVSR(FIVE_PCT_VSR);
 
         PendingRequestsState memory depositRequests = PendingRequestsState({
-            pendingShares  : 0,
-            length         : 0,
-            firstPendingId : 0
+            pendingShareValue : 0,
+            length            : 0,
+            firstPendingId    : 0
         });
 
         PendingRequestsState memory depositCancellationRequests = PendingRequestsState({
-            pendingShares  : 0,
-            length         : 0,
-            firstPendingId : 0
+            pendingShareValue : 0,
+            length            : 0,
+            firstPendingId    : 0
         });
 
         PendingRequestsState memory redeemRequests = PendingRequestsState({
-            pendingShares  : 0,
-            length         : 0,
-            firstPendingId : 0
+            pendingShareValue : 0,
+            length            : 0,
+            firstPendingId    : 0
         });
 
         vaultState = VaultState({
             rho                         : vm.getBlockTimestamp(),
             chi                         : uint192(RAY),
-            totalSupply                 : 0,
             totalAssets                 : 0,
-            availableCapacity           : VAULT_CAPACITY,
+            availableCapacityValue      : spPrime.convertToAssets(VAULT_CAPACITY),
             availableLiquidAssets       : 0,
             depositRequests             : depositRequests,
             depositCancellationRequests : depositCancellationRequests,
@@ -233,21 +233,15 @@ abstract contract TestBase is Test {
         );
 
         assertEq(
-            spPrime.totalSupply(),
-            vaultState.totalSupply,
-            "vaultState.totalSupply"
-        );
-
-        assertEq(
             spPrime.totalAssets(),
             vaultState.totalAssets,
             "vaultState.totalAssets"
         );
 
         assertEq(
-            spPrime.availableCapacity(),
-            vaultState.availableCapacity,
-            "vaultState.availableCapacity"
+            spPrime.convertToAssets(spPrime.availableCapacity()),
+            vaultState.availableCapacityValue,
+            "vaultState.availableCapacityValue"
         );
 
         assertEq(
@@ -259,9 +253,9 @@ abstract contract TestBase is Test {
         // Deposit Requests
 
         assertEq(
-            spPrime.pendingDepositSavingsShares(),
-            vaultState.depositRequests.pendingShares,
-            "vaultState.depositRequests.pendingShares"
+            spUSDC.convertToAssets(spPrime.pendingDepositSavingsShares()),
+            vaultState.depositRequests.pendingShareValue,
+            "vaultState.depositRequests.pendingShareValue"
         );
 
         assertEq(
@@ -279,9 +273,9 @@ abstract contract TestBase is Test {
         // Deposit Cancellation Requests
 
         assertEq(
-            spPrime.pendingCancelledDepositSavingsShares(),
-            vaultState.depositCancellationRequests.pendingShares,
-            "vaultState.depositCancellationRequests.pendingShares"
+            spUSDC.convertToAssets(spPrime.pendingCancelledDepositSavingsShares()),
+            vaultState.depositCancellationRequests.pendingShareValue,
+            "vaultState.depositCancellationRequests.pendingShareValue"
         );
 
         assertEq(
@@ -299,9 +293,9 @@ abstract contract TestBase is Test {
         // Redeem Requests
 
         assertEq(
-            spPrime.pendingRedeemShares(),
-            vaultState.redeemRequests.pendingShares,
-            "vaultState.redeemRequests.pendingShares"
+            spUSDC.convertToAssets(spPrime.pendingRedeemShares()),
+            vaultState.redeemRequests.pendingShareValue,
+            "vaultState.redeemRequests.pendingShareValue"
         );
 
         assertEq(
@@ -326,15 +320,15 @@ abstract contract TestBase is Test {
         );
 
         assertEq(
-            spPrime.balanceOf(accountState.account),
-            accountState.shares,
-            "accountState.shares"
+            spPrime.assetsOf(accountState.account),
+            accountState.shareValue,
+            "accountState.shareValue"
         );
 
         assertEq(
-            spUSDC.balanceOf(accountState.account),
-            accountState.savingsShares,
-            "accountState.savingsShares"
+            spUSDC.assetsOf(accountState.account),
+            accountState.savingsShareValue,
+            "accountState.savingsShareValue"
         );
 
         assertEq(
@@ -342,14 +336,13 @@ abstract contract TestBase is Test {
             accountState.claimableAssets,
             "accountState.claimableAssets"
         );
-
     }
 
     function _assertDepositRequest(
         uint256 requestId,
         address owner,
         address recipient,
-        uint256 sparkVaultShares
+        uint256 savingsShareValue
     )
         internal view
     {
@@ -368,9 +361,9 @@ abstract contract TestBase is Test {
         );
 
         assertEq(
-            shares_,
-            sparkVaultShares,
-            "depositRequest.sparkVaultShares"
+            spUSDC.convertToAssets(shares_),
+            savingsShareValue,
+            "depositRequest.savingsShareValue"
         );
 
     }
