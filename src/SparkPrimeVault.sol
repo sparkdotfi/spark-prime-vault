@@ -505,6 +505,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         require(recipient_ != address(0),    "SparkPrimeVault/zero-recipient");
         require(recipient_ != address(this), "SparkPrimeVault/vault-recipient");
 
+        require(requestId_ < _depositRequests.length, "SparkPrimeVault/invalid-request-id");
+
         Request storage request_ = _depositRequests[requestId_];
 
         require(request_.shares != 0,         "SparkPrimeVault/no-request");
@@ -516,6 +518,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     function updateDepositCancellationRecipient(uint256 requestId_, address recipient_) external {
         require(recipient_ != address(0),     "SparkPrimeVault/zero-recipient");
         require(_canReceiveAsset(recipient_), "SparkPrimeVault/recipient-cannot-receive");
+
+        require(
+            requestId_ < _depositCancellationRequests.length,
+            "SparkPrimeVault/invalid-request-id"
+        );
 
         Request storage request_ = _depositCancellationRequests[requestId_];
 
@@ -531,6 +538,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     function updateRedeemRecipient(uint256 requestId_, address recipient_) external {
         require(recipient_ != address(0),     "SparkPrimeVault/zero-recipient");
         require(_canReceiveAsset(recipient_), "SparkPrimeVault/recipient-cannot-receive");
+
+        require(requestId_ < _redeemRequests.length, "SparkPrimeVault/invalid-request-id");
 
         Request storage request_ = _redeemRequests[requestId_];
 

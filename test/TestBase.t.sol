@@ -33,6 +33,16 @@ interface ISparkVaultLike {
 
 }
 
+interface IUSDCLike {
+
+    function blacklist(address account) external;
+
+    function unblacklist(address account) external;
+
+    function blacklister() external view returns (address);
+
+}
+
 abstract contract TestBase is Test {
 
     struct PendingRequestsState {
@@ -186,6 +196,24 @@ abstract contract TestBase is Test {
         _processPendingDeposits(type(uint256).max, maxRequests);
     }
 
+    function _processPendingDepositCancellations(uint256 maxSavingsShares, uint256 maxRequests) internal {
+        vm.prank(processor);
+        spPrime.processPendingDepositCancellations(maxSavingsShares, maxRequests);
+    }
+
+    function _processPendingDepositCancellations(uint256 maxRequests) internal {
+        _processPendingDepositCancellations(type(uint256).max, maxRequests);
+    }
+
+    function _processPendingRedeems(uint256 maxSavingsShares, uint256 maxRequests) internal {
+        vm.prank(processor);
+        spPrime.processPendingRedeems(maxSavingsShares, maxRequests);
+    }
+
+    function _processPendingRedeems(uint256 maxRequests) internal {
+        _processPendingRedeems(type(uint256).max, maxRequests);
+    }
+
     function _requestDeposit(address account, address recipient, uint256 assets) internal returns (uint256 requestId) {
         deal(address(usdc), account, assets);
 
@@ -206,6 +234,25 @@ abstract contract TestBase is Test {
 
     function _requestDepositCancellation(address account, uint256 requestId) internal returns (uint256 newRequestId) {
         return _requestDepositCancellation(account, requestId, account);
+    }
+
+    function _requestRedeem(address account, address recipient, uint256 shares) internal returns (uint256 requestId) {
+        vm.prank(account);
+        return spPrime.requestRedeem(shares, recipient);
+    }
+
+    function _requestRedeem(address account, uint256 shares) internal returns (uint256 requestId) {
+        return _requestRedeem(account, account, shares);
+    }
+
+    function _blacklist(address account) internal {
+        vm.prank(IUSDCLike(Ethereum.USDC).blacklister());
+        IUSDCLike(Ethereum.USDC).blacklist(account);
+    }
+
+    function _unblacklist(address account) internal {
+        vm.prank(IUSDCLike(Ethereum.USDC).blacklister());
+        IUSDCLike(Ethereum.USDC).unblacklist(account);
     }
 
     /**********************************************************************************************/
@@ -368,6 +415,68 @@ abstract contract TestBase is Test {
             "depositRequest.sparkVaultShares"
         );
 
+    }
+
+    function _assertDepositCancellationRequest(
+        uint256 requestId,
+        address owner,
+        address recipient,
+        uint256 sparkVaultShares
+    )
+        internal view
+    {
+        ( 
+            address owner_,
+            address recipient_,
+            uint256 shares_
+        ) = spPrime.getPendingDepositCancellationRequest(requestId);
+
+        assertEq(
+            owner_,
+            owner,
+            "depositCancellationRequest.owner"
+        );
+
+        assertEq(
+            recipient_,
+            recipient,
+            "depositCancellationRequest.recipient"
+        );
+
+        assertEq(
+            shares_,
+            sparkVaultShares,
+            "depositCancellationRequest.sparkVaultShares"
+        );
+    }
+
+    function _assertRedeemRequest(
+        uint256 requestId,
+        address owner,
+        address recipient,
+        uint256 shares
+    )
+        internal view
+    {
+        ( address owner_, address recipient_, uint256 shares_ ) = spPrime.getPendingRedeemRequest(requestId);
+
+        assertEq(
+            owner_,
+            owner,
+            "redeemRequest.owner"
+        );
+        
+        assertEq(
+            recipient_,
+            recipient,
+            "redeemRequest.recipient"
+        );
+
+        assertEq(
+            shares_,
+            shares,
+            "redeemRequest.shares"
+        );
     }
 
 }

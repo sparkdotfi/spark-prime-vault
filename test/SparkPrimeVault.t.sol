@@ -227,3 +227,197 @@ contract RequestDepositTests is SparkPrimeVaultTests {
     }
 
 }
+
+contract UpdateDepositRecipientTests is SparkPrimeVaultTests {
+
+    // Failure tests
+
+    function test_updateDepositRecipient_zeroRecipient() external {
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
+        vm.prank(user);
+        spPrime.updateDepositRecipient(1, address(0));
+    }
+
+    function test_updateDepositRecipient_vaultRecipient() external {
+        vm.expectRevert("SparkPrimeVault/vault-recipient");
+        vm.prank(user);
+        spPrime.updateDepositRecipient(1, address(spPrime));
+    }
+
+    function test_updateDepositRecipient_invalidRequestId() external {
+        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.prank(user);
+        spPrime.updateDepositRecipient(0, user);
+    }
+
+    function test_updateDepositRecipient_noRequest() external {
+        _requestDeposit(user, 1_000_000e6); // Deposit Request 0 (Filled instantly)
+
+        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.prank(user);
+        spPrime.updateDepositRecipient(0, user);
+    }
+
+    function test_updateDepositRecipient_notAuthorized() external {
+        _setCapacity(0);
+        _requestDeposit(user, 1_000_000e6); // Request 0 queued
+
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.prank(makeAddr("unauthorized"));
+        spPrime.updateDepositRecipient(0, makeAddr("newRecipient"));
+    }
+
+    // Success tests
+
+    function test_updateDepositRecipient() external {
+        address newRecipient          = makeAddr("newRecipient");
+        uint256 expectedSavingsShares = spUSDC.convertToShares(1_000_000e6);
+
+        _setCapacity(0);
+        _requestDeposit(user, 1_000_000e6); // Request 0 queued
+
+        _assertDepositRequest(0, user, user, expectedSavingsShares);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.DepositRecipientUpdated(0, newRecipient);
+
+        vm.prank(user);
+        spPrime.updateDepositRecipient(0, newRecipient);
+
+        _assertDepositRequest(0, user, newRecipient, expectedSavingsShares);
+    }
+
+}
+
+contract UpdateDepositCancellationRecipientTests is SparkPrimeVaultTests {
+
+    // Failure tests
+
+    function test_updateDepositCancellationRecipient_zeroRecipient() external {
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
+        vm.prank(user);
+        spPrime.updateDepositCancellationRecipient(1, address(0));
+    }
+
+    function test_updateDepositCancellationRecipient_recipientCannotReceive() external {
+        _blacklist(user);
+
+        vm.expectRevert("SparkPrimeVault/recipient-cannot-receive");
+        vm.prank(user);
+        spPrime.updateDepositCancellationRecipient(1, user);
+    }
+
+    function test_updateDepositCancellationRecipient_invalidRequestId() external {
+        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.prank(user);
+        spPrime.updateDepositCancellationRecipient(0, user);
+    }
+
+    function test_updateDepositCancellationRecipient_noRequest() external {
+        _setCapacity(0);
+        _requestDeposit(user, 1_000_000e6);   // Request 0 queued
+        _requestDepositCancellation(user, 0); // Request 0 cancellation queued
+        _processPendingDepositCancellations(1);
+
+        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.prank(user);
+        spPrime.updateDepositCancellationRecipient(0, user);
+    }
+
+    function test_updateDepositCancellationRecipient_notAuthorized() external {
+        _setCapacity(0);
+        _requestDeposit(user, 1_000_000e6);   // Request 0 queued
+        _requestDepositCancellation(user, 0); // Request 0 cancellation queued
+
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.prank(makeAddr("unauthorized"));
+        spPrime.updateDepositCancellationRecipient(0, user);
+    }
+
+    // Success tests
+
+    function test_updateDepositCancellationRecipient() external {
+        address newRecipient          = makeAddr("newRecipient");
+        uint256 expectedSavingsShares = spUSDC.convertToShares(1_000_000e6);
+
+        _setCapacity(0);
+        _requestDeposit(user, 1_000_000e6);   // Request 0 queued
+        _requestDepositCancellation(user, 0); // Request 0 cancellation queued
+
+        _assertDepositCancellationRequest(0, user, user, expectedSavingsShares);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.DepositCancellationRecipientUpdated(0, newRecipient);
+
+        vm.prank(user);
+        spPrime.updateDepositCancellationRecipient(0, newRecipient);
+
+        _assertDepositCancellationRequest(0, user, newRecipient, expectedSavingsShares);
+    }
+
+}
+
+contract UpdateRedeemRecipientTests is SparkPrimeVaultTests {
+
+    // Failure tests
+
+    function test_updateRedeemRecipient_zeroRecipient() external {
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
+        vm.prank(user);
+        spPrime.updateRedeemRecipient(1, address(0));
+    }
+
+    function test_updateRedeemRecipient_recipientCannotReceive() external {
+        _blacklist(user);
+
+        vm.expectRevert("SparkPrimeVault/recipient-cannot-receive");
+        vm.prank(user);
+        spPrime.updateRedeemRecipient(1, user);
+    }
+
+    function test_updateRedeemRecipient_invalidRequestId() external {
+        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.prank(user);
+        spPrime.updateRedeemRecipient(0, user);
+    }
+
+    function test_updateRedeemRecipient_noRequest() external {
+        _requestDeposit(user, 1_000_000e6); // Request 0 filled instantly
+        _requestRedeem(user,  100e6);       // Request 0 redeem queued
+
+        _processPendingRedeems(1);
+
+        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.prank(user);
+        spPrime.updateRedeemRecipient(0, user);
+    }
+
+    function test_updateRedeemRecipient_notAuthorized() external {
+        _requestDeposit(user, 1_000_000e6); // Request 0 deposit queued
+        _requestRedeem(user,  100e6);       // Request 0 redeem queued
+
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.prank(makeAddr("unauthorized"));
+        spPrime.updateRedeemRecipient(0, user);
+    }
+
+    // Success tests
+
+    function test_updateRedeemRecipient() external {
+        address newRecipient = makeAddr("newRecipient");
+
+        _requestDeposit(user, 1_000_000e6); // Request 0 deposit queued
+        _requestRedeem(user,  100e6);       // Request 0 redeem queued
+        
+        _assertRedeemRequest(0, user, user, 100e6);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.RedeemRecipientUpdated(0, newRecipient);
+
+        vm.prank(user);
+        spPrime.updateRedeemRecipient(0, newRecipient);
+
+        _assertRedeemRequest(0, user, newRecipient, 100e6);
+    }
+
+}
