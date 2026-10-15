@@ -3,6 +3,14 @@ pragma solidity ^0.8.34;
 
 import { TestBase, SparkPrimeVault, ISparkVaultLike } from "./TestBase.t.sol";
 
+interface IUSDCLike {
+
+    function blacklist(address account) external;
+
+    function blacklister() external view returns (address);
+
+}
+
 contract SparkPrimeVaultTests is TestBase {
 
     uint16 internal constant REFERRAL = type(uint16).max;
@@ -223,6 +231,185 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         _assertVaultState();
         _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+    }
+
+}
+
+contract RequestDepositCancellationTests is SparkPrimeVaultTests {
+
+    address internal recipient = makeAddr("recipient");
+
+    // Failure tests
+
+    function test_requestDepositCancellation_paused() external {
+        _setCapacity(0);
+
+        uint256 requestId = _requestDeposit(user, 100e6);
+
+        _pause();
+
+        vm.expectRevert("SparkPrimeVault/paused");
+        vm.prank(user);
+        spPrime.requestDepositCancellation(requestId, user);
+    }
+
+    function test_requestDepositCancellation_zeroRecipient() external {
+        _setCapacity(0);
+
+        uint256 requestId = _requestDeposit(user, 100e6);
+
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
+        vm.prank(user);
+        spPrime.requestDepositCancellation(requestId, address(0));
+    }
+
+    function test_requestDepositCancellation_recipientCannotReceive() external {
+        _setCapacity(0);
+
+        uint256 requestId = _requestDeposit(user, 100e6);
+
+        vm.prank(IUSDCLike(address(usdc)).blacklister());
+        IUSDCLike(address(usdc)).blacklist(recipient);
+
+        vm.expectRevert("SparkPrimeVault/recipient-cannot-receive");
+        vm.prank(user);
+        spPrime.requestDepositCancellation(requestId, recipient);
+    }
+
+    function test_requestDepositCancellation_requestFilled() external {
+        uint256 requestId = _requestDeposit(user, 100e6);  // Filled instantly
+
+        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.prank(user);
+        spPrime.requestDepositCancellation(requestId, user);
+    }
+
+    function test_requestDepositCancellation_requestAlreadyCancelled() external {
+        _setCapacity(0);
+
+        uint256 requestId = _requestDeposit(user, 100e6);
+
+        _requestDepositCancellation(user, requestId);
+
+        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.prank(user);
+        spPrime.requestDepositCancellation(requestId, user);
+    }
+
+    function test_requestDepositCancellation_notOwner() external {
+        _setCapacity(0);
+
+        uint256 requestId = _requestDeposit(user, recipient, 100e6);
+
+        // The deposit recipient cannot cancel, only the owner can.
+        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.prank(recipient);
+        spPrime.requestDepositCancellation(requestId, recipient);
+
+        vm.prank(user);
+        spPrime.requestDepositCancellation(requestId, user);
+    }
+
+    // Success tests
+
+    function test_requestDepositCancellation() external {
+        _requestDeposit(user, 1_000_000e6);  // Deposit Request 0 (Filled instantly)
+
+        _setCapacity(952_380.952380e6);  // Set capacity such that the deposit request is queued.
+
+        uint256 requestId = _requestDeposit(user, 800_000e6);  // Deposit Request 1 (Queued)
+
+        assertEq(requestId, 1);
+
+        uint256 expectedSavingsShares = 743_116.178500e6;  // 800_000e6 USDC -> spUSDC
+
+        vaultState.rho                   = vm.getBlockTimestamp();
+        vaultState.chi                   = 1.049999999999999999961070145e27;
+        vaultState.totalSupply           = 952_380.952380e6;
+        vaultState.totalAssets           = 1_000_000e6 - 2;
+        vaultState.availableCapacity     = 0;
+        vaultState.availableLiquidAssets = 1_800_000e6 - 1;
+
+        vaultState.depositRequests.pendingShares  = expectedSavingsShares;
+        vaultState.depositRequests.length         = 1;
+        vaultState.depositRequests.firstPendingId = 1;
+
+        AccountBalances memory userBalances = AccountBalances({
+            account         : user,
+            assets          : 0,
+            shares          : 952_380.952380e6,
+            savingsShares   : 0,
+            claimableAssets : 0
+        });
+
+        AccountBalances memory recipientBalances = AccountBalances({
+            account         : recipient,
+            assets          : 0,
+            shares          : 0,
+            savingsShares   : 0,
+            claimableAssets : 0
+        });
+
+        AccountBalances memory vaultBalances = AccountBalances({
+            account         : address(spPrime),
+            assets          : 0,
+            shares          : 0,
+            savingsShares   : 928_895.223125e6 + expectedSavingsShares,
+            claimableAssets : 0
+        });
+
+        _assertVaultState();
+        _assertDepositRequest(requestId, user, user, expectedSavingsShares);
+
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(recipientBalances);
+        _assertAccountBalances(vaultBalances);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.DepositCancellationRequest(requestId, 0, recipient);
+
+        vm.prank(user);
+        uint256 cancelRequestId = spPrime.requestDepositCancellation(requestId, recipient);
+
+        assertEq(cancelRequestId, 0);
+
+        // The cancelled deposit request stays in the queue as an empty entry.
+        vaultState.depositRequests.pendingShares = 0;
+
+        vaultState.depositCancellationRequests.pendingShares  = expectedSavingsShares;
+        vaultState.depositCancellationRequests.length         = 1;
+        vaultState.depositCancellationRequests.firstPendingId = 0;
+
+        _assertVaultState();
+        _assertDepositRequest(requestId, address(0), address(0), 0);
+        _assertDepositCancellationRequest(cancelRequestId, user, recipient, expectedSavingsShares);
+
+        // No funds move until the cancellation is processed.
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(recipientBalances);
+        _assertAccountBalances(vaultBalances);
+
+        uint256 expectedAssets = 799_999.999999e6;  // expectedSavingsShares -> USDC
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.DepositCancellation(cancelRequestId, user, recipient, expectedSavingsShares, expectedAssets);
+
+        _processPendingDepositCancellations(1);
+
+        vaultState.availableLiquidAssets = 1_000_000e6 - 1;
+
+        vaultState.depositCancellationRequests.pendingShares  = 0;
+        vaultState.depositCancellationRequests.length         = 0;
+        vaultState.depositCancellationRequests.firstPendingId = 1;
+
+        recipientBalances.assets = expectedAssets;
+
+        vaultBalances.savingsShares -= expectedSavingsShares;
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(recipientBalances);
         _assertAccountBalances(vaultBalances);
     }
 
