@@ -375,3 +375,46 @@ contract SetCapacityTests is AuthorizationTestBase {
     }
 
 }
+
+contract SetMaxRedeemFeeTests is AuthorizationTestBase {
+
+    // Failure tests
+
+    function test_setMaxRedeemFeeRate_notAdmin() external {
+        vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
+        vm.prank(unauthorized);
+        vault.setMaxRedeemFeeRate(0.01e18);
+    }
+
+    function test_setMaxRedeemFee_feeTooHighBoundary() external {
+        vm.expectRevert("SparkPrimeVault/fee-too-high");
+        vm.prank(admin);
+        vault.setMaxRedeemFeeRate(0.01e18 + 1);
+
+        vm.prank(admin);
+        vault.setMaxRedeemFeeRate(0.01e18);  // MAX_REDEEM_FEE is 1%
+    }
+
+    // Success tests
+
+    function test_setMaxRedeemFeeRate() external {
+        assertEq(vault.maxRedeemFeeRate(), 0);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.MaxRedeemFeeRateSet(0.01e18);
+
+        vm.prank(admin);
+        vault.setMaxRedeemFeeRate(0.01e18);
+
+        assertEq(vault.maxRedeemFeeRate(), 0.01e18);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.MaxRedeemFeeRateSet(0);
+
+        vm.prank(admin);
+        vault.setMaxRedeemFeeRate(0);
+
+        assertEq(vault.maxRedeemFeeRate(), 0);
+    }
+
+}
