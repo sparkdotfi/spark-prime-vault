@@ -118,7 +118,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         uint256         assetsReceived
     );
 
-    event AssetsMovedToClaimable(address indexed recipient, uint256 assets);
+    event ClaimableAssetsIncreased(address indexed recipient, uint256 increase);
 
     event Claim(address indexed recipient, uint256 assets);
 
@@ -184,21 +184,25 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     /*** Storage variables                                                                      ***/
     /**********************************************************************************************/
 
+    Request[] internal _depositRequests;
+    Request[] internal _depositCancellationRequests;
+    Request[] internal _redeemRequests;
+
     address public savings;
     address public asset;
 
-    uint8 public decimals;
+    bool public paused;
 
     string public name;
     string public symbol;
+
+    uint8 public decimals;
 
     uint64  public rho;    // Time of last drip              [unix epoch time]
     uint192 public chi;    // The Rate Accumulator           [ray]
     uint256 public vsr;    // The Vault Savings Rate         [ray]
     uint256 public minVSR; // The minimum Vault Savings Rate [ray]
     uint256 public maxVSR; // The maximum Vault Savings Rate [ray]
-
-    bool public paused;
 
     uint256 public maxCapacity;      // Max totalSupply
     uint256 public minDeposit;       // [savings asset units]
@@ -212,17 +216,14 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     uint256 public pendingCancelledDepositSavingsShares;
     uint256 public pendingRedeemShares;
 
-    Request[] internal _depositRequests;
-    Request[] internal _depositCancellationRequests;
-    Request[] internal _redeemRequests;
-
     uint256 public firstPendingDepositId;              // First unfilled index of the deposit queue
     uint256 public firstPendingDepositCancellationId;  // First unfilled index of the cancelled deposit queue
     uint256 public firstPendingRedeemId;               // First unfilled index of the redeem queue
 
     mapping (address account => uint256 balance) public balanceOf;
-    mapping (address account => uint256 assets)  public claimableAssets;  // Held for blacklisted recipients
     mapping (address account => uint256 nonce)   public nonces;
+
+    mapping (address account => uint256 assets) public claimableAssets;
 
     mapping (address account => mapping (address spender => uint256 amount)) public allowance;
 
@@ -1100,7 +1101,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     function _incrementClaimableAssets(address recipient_, uint256 assets_) internal {
         claimableAssets[recipient_] += assets_;
 
-        emit AssetsMovedToClaimable(recipient_, assets_);
+        emit ClaimableAssetsIncreased(recipient_, assets_);
     }
 
     // NOTE: Assumes the asset exposes `isBlacklisted` (USDC/EURC). Override for other assets.
