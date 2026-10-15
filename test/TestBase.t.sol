@@ -33,6 +33,16 @@ interface ISparkVaultLike {
 
 }
 
+interface IUSDCLike {
+
+    function blacklist(address account) external;
+
+    function unblacklist(address account) external;
+
+    function blacklister() external view returns (address);
+
+}
+
 abstract contract TestBase is Test {
 
     struct PendingRequestsState {
@@ -208,6 +218,26 @@ abstract contract TestBase is Test {
         return _requestDepositCancellation(account, requestId, account);
     }
 
+    function _setRedeemFeeRate(uint256 feeRate) internal {
+        vm.startPrank(admin);
+        spPrime.grantRole(REDEEM_FEE_SETTER_ROLE, redeemFeeSetter);
+        spPrime.setMaxRedeemFeeRate(feeRate);
+        vm.stopPrank();
+
+        vm.prank(redeemFeeSetter);
+        spPrime.setRedeemFeeRate(feeRate);
+    }
+
+    function _blacklist(address account) internal {
+        vm.prank(IUSDCLike(Ethereum.USDC).blacklister());
+        IUSDCLike(Ethereum.USDC).blacklist(account);
+    }
+
+    function _unblacklist(address account) internal {
+        vm.prank(IUSDCLike(Ethereum.USDC).blacklister());
+        IUSDCLike(Ethereum.USDC).unblacklist(account);
+    }
+
     /**********************************************************************************************/
     /*** Assertion helpers                                                                      ***/
     /**********************************************************************************************/
@@ -366,6 +396,36 @@ abstract contract TestBase is Test {
             shares_,
             sparkVaultShares,
             "depositRequest.sparkVaultShares"
+        );
+
+    }
+
+    function _assertRedeemRequest(
+        uint256 requestId,
+        address owner,
+        address recipient,
+        uint256 shares
+    )
+        internal view
+    {
+        ( address owner_, address recipient_, uint256 shares_ ) = spPrime.getPendingRedeemRequest(requestId);
+
+        assertEq(
+            owner_,
+            owner,
+            "redeemRequest.owner"
+        );
+
+        assertEq(
+            recipient_,
+            recipient,
+            "redeemRequest.recipient"
+        );
+
+        assertEq(
+            shares_,
+            shares,
+            "redeemRequest.shares"
         );
 
     }
