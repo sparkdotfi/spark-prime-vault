@@ -5,6 +5,7 @@ import { stdError }               from "../lib/forge-std/src/StdError.sol";
 import { stdStorage, StdStorage } from "../lib/forge-std/src/StdStorage.sol";
 
 import { IAccessControl } from "../lib/oz/contracts/access/IAccessControl.sol";
+import { IERC1967 }       from "../lib/oz/contracts/interfaces/IERC1967.sol";
 
 import { TestBase } from "./TestBase.t.sol";
 
@@ -23,12 +24,12 @@ contract AuthorizationTestBase is TestBase {
     function setUp() public virtual override {
         super.setUp();
 
+        // NOTE: This file tests all auth'ed functions except the rebalancer
         vm.startPrank(admin);
-        vault.grantRole(GUARDIAN_ROLE,     guardian);
-        vault.grantRole(REBALANCER_ROLE,   rebalancer);
+        vault.grantRole(GUARDIAN_ROLE,          guardian);
         vault.grantRole(REDEEM_FEE_SETTER_ROLE, redeemFeeSetter);
-        vault.grantRole(VSR_SETTER_ROLE,   vsrSetter);
-        vault.grantRole(TAKER_ROLE,        taker);
+        vault.grantRole(VSR_SETTER_ROLE,        vsrSetter);
+        vault.grantRole(TAKER_ROLE,             taker);
         vault.setCapacity(1_000_000e6);
         vm.stopPrank();
 
@@ -51,6 +52,89 @@ contract AuthorizationTestBase is TestBase {
         vm.stopPrank();
     }
 
+}
+
+contract GrantRoleTests is AuthorizationTestBase {
+
+    // Failure tests
+
+    function test_grantRole_notAdmin() public {
+        vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
+        vm.prank(unauthorized);
+        vault.grantRole(REBALANCER_ROLE, rebalancer);
+    }
+
+    // Success tests
+
+    function test_grantRole() public {
+        assertEq(vault.hasRole(REBALANCER_ROLE, rebalancer), false);
+
+        vm.expectEmit(address(vault));
+        emit IAccessControl.RoleGranted(REBALANCER_ROLE, rebalancer, admin);
+
+        vm.prank(admin);
+        vault.grantRole(REBALANCER_ROLE, rebalancer);
+
+        assertEq(vault.hasRole(REBALANCER_ROLE, rebalancer), true);
+    }
+
+}
+
+contract RevokeRoleTests is AuthorizationTestBase {
+
+    event RoleRevoked(bytes32 indexed role, address indexed account, address indexed sender);
+
+    // Failure tests
+
+    function test_revokeRole_notAdmin() public {
+        vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
+        vm.prank(unauthorized);
+        vault.revokeRole(GUARDIAN_ROLE, guardian);
+    }
+
+    // Success tests
+
+    function test_revokeRole() public {
+        assertEq(vault.hasRole(GUARDIAN_ROLE, guardian), true);
+
+        vm.expectEmit(address(vault));
+        emit IAccessControl.RoleRevoked(GUARDIAN_ROLE, guardian, admin);
+
+        vm.prank(admin);
+        vault.revokeRole(GUARDIAN_ROLE, guardian);
+
+        assertEq(vault.hasRole(GUARDIAN_ROLE, guardian), false);
+    }
+
+}
+
+contract UpgradeToAndCallTests is AuthorizationTestBase {
+
+    // Failure tests
+
+    function test_upgradeToAndCall_notAdmin() public {
+        address newImplementation = address(new SparkPrimeVault());
+
+        vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
+        vm.prank(unauthorized);
+        vault.upgradeToAndCall(newImplementation, "");
+    }
+
+    // Success tests
+
+    function test_upgradeToAndCall() public {
+        address newImplementation = address(new SparkPrimeVault());
+
+        assertNotEq(vault.implementation(), newImplementation);
+
+        vm.expectEmit(address(vault));
+        emit IERC1967.Upgraded(newImplementation);
+
+        vm.prank(admin);
+        vault.upgradeToAndCall(newImplementation, "");
+
+        assertEq(vault.implementation(), newImplementation);
+    }
 }
 
 contract AdjustTotalAssetsTests is AuthorizationTestBase {
@@ -567,6 +651,195 @@ contract UnpauseTests is AuthorizationTestBase {
         vault.unpause();
 
         assertEq(vault.paused(), false);
+    }
+
+}
+
+contract SetVSRTests is AuthorizationTestBase {
+
+    function setUp() public override {
+        super.setUp();
+
+        vm.prank(admin);
+        vault.setVSRBounds(ONE_PCT_VSR, FOUR_PCT_VSR);
+    }
+
+    // Failure tests
+
+    function test_setVSR_notSetter() external {
+        vm.expectRevert(_notAuthorized(unauthorized, VSR_SETTER_ROLE));
+        vm.prank(unauthorized);
+        vault.setVSR(ONE_PCT_VSR);
+    }
+
+    function test_setVSR_vsrTooLowBoundary() external {
+        vm.expectRevert("SparkPrimeVault/vsr-too-low");
+        vm.prank(vsrSetter);
+        vault.setVSR(ONE_PCT_VSR - 1);
+
+        vm.prank(vsrSetter);
+        vault.setVSR(ONE_PCT_VSR);
+    }
+
+    function test_setVSR_vsrTooHighBoundary() external {
+        vm.prank(vsrSetter);
+        vm.expectRevert("SparkPrimeVault/vsr-too-high");
+        vault.setVSR(FOUR_PCT_VSR + 1);
+
+        vm.prank(vsrSetter);
+        vault.setVSR(FOUR_PCT_VSR);
+    }
+
+    // Success tests
+
+    function test_setVSR() external {
+        uint256 deployTimestamp = block.timestamp;
+
+        skip(10 days);
+
+        assertEq(uint256(vault.chi()), RAY);
+        assertEq(uint256(vault.rho()), deployTimestamp);
+        assertEq(vault.vsr(),          RAY);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.Drip(uint192(RAY), 0);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.VSRSet(FOUR_PCT_VSR);
+
+        vm.prank(vsrSetter);
+        vault.setVSR(FOUR_PCT_VSR);
+
+        assertEq(uint256(vault.chi()), RAY);
+        assertEq(uint256(vault.rho()), block.timestamp);
+        assertEq(vault.vsr(),          FOUR_PCT_VSR);
+    }
+
+}
+
+contract TakeTests is AuthorizationTestBase {
+
+    // Failure tests
+
+    function test_take_notAuthorized() external {
+        vm.expectRevert(_notAuthorized(unauthorized, TAKER_ROLE));
+        vm.prank(unauthorized);
+        vault.take(1_000_000e6);
+    }
+
+    function test_take_insufficientSharesBoundary() external {
+        uint256 expectedSavingsShares = spUsdc.convertToShares(1_000_000e6);
+
+        _requestDeposit(user, 1_000_000e6);  // Instant fill
+
+        vm.expectRevert("SparkPrimeVault/insufficient-shares");
+        vm.prank(taker);
+        vault.take(expectedSavingsShares + 1);
+
+        vm.prank(taker);
+        vault.take(expectedSavingsShares);
+    }
+
+    // Success tests
+
+    function test_take() external {
+        uint256 expectedSavingsShares = spUsdc.convertToShares(1_000_000e6);
+
+        _requestDeposit(user, 1_000_000e6); // Instant fill
+
+        assertEq(spUsdc.balanceOf(address(vault)), expectedSavingsShares);
+        assertEq(spUsdc.balanceOf(taker),          0);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.Take(expectedSavingsShares);
+
+        vm.prank(taker);
+        vault.take(expectedSavingsShares);
+
+        assertEq(spUsdc.balanceOf(address(vault)), 0);
+        assertEq(spUsdc.balanceOf(taker),          expectedSavingsShares);
+    }
+
+}
+
+contract SetRedeemFeeRateTests is AuthorizationTestBase {
+
+    // Failure tests
+
+    function test_setRedeemFeeRate_notAuthorized() external {
+        vm.expectRevert(_notAuthorized(unauthorized, REDEEM_FEE_SETTER_ROLE));
+        vm.prank(unauthorized);
+        vault.setRedeemFeeRate(0.005e18);
+    }
+
+    function test_setRedeemFeeRate_feeTooHighBoundary() external {
+        vm.expectRevert("SparkPrimeVault/fee-too-high");
+        vm.prank(redeemFeeSetter);
+        vault.setRedeemFeeRate(1);  // Can't set a fee until admin sets the max fee
+
+        vm.prank(redeemFeeSetter);
+        vault.setRedeemFeeRate(0);  // Max is 0 on deployment
+
+        vm.prank(admin);
+        vault.setMaxRedeemFeeRate(0.005e18);
+
+        vm.expectRevert("SparkPrimeVault/fee-too-high");
+        vm.prank(redeemFeeSetter);
+        vault.setRedeemFeeRate(0.005e18 + 1);
+
+        vm.prank(redeemFeeSetter);
+        vault.setRedeemFeeRate(0.005e18);
+    }
+
+    // Success tests
+
+    function test_setRedeemFeeRate() external {
+        vm.prank(admin);
+        vault.setMaxRedeemFeeRate(0.01e18);
+
+        assertEq(vault.redeemFeeRate(), 0);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.RedeemFeeRateSet(0.01e18);
+
+        vm.prank(redeemFeeSetter);
+        vault.setRedeemFeeRate(0.01e18);
+
+        assertEq(vault.redeemFeeRate(), 0.01e18);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.RedeemFeeRateSet(0);
+
+        vm.prank(redeemFeeSetter);
+        vault.setRedeemFeeRate(0);
+
+        assertEq(vault.redeemFeeRate(), 0);
+    }
+
+}
+
+contract PauseTests is AuthorizationTestBase {
+
+    // Failure tests
+
+    function test_pause_notAuthorized() external {
+        vm.expectRevert(_notAuthorized(unauthorized, GUARDIAN_ROLE));
+        vm.prank(unauthorized);
+        vault.pause();
+    }
+
+    // Success tests
+
+    function test_pause() external {
+        assertEq(vault.paused(), false);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.Paused();
+
+        vm.prank(guardian);
+        vault.pause();
+
+        assertEq(vault.paused(), true);
     }
 
 }
