@@ -27,7 +27,7 @@ contract ERC20Tests is TokenFuzzChecks {
         );
 
         vm.startPrank(admin);
-        vault.grantRole(SETTER_ROLE, setter);
+        vault.grantRole(VSR_SETTER_ROLE, vsrSetter);
 
         vault.setVSRBounds(1e27, vault.MAX_VSR());
         vm.stopPrank();
@@ -43,7 +43,7 @@ contract ERC20Tests is TokenFuzzChecks {
         vsr      = bound(vsr,      1e27, 1.000000012857214317438491659e27);  // 0 to 50% APY
         warpTime = bound(warpTime, 0,    10 days);
 
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vault.setVSR(vsr);
 
         skip(warpTime);
