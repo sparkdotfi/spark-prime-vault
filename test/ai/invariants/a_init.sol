@@ -34,8 +34,9 @@ contract Init is Test {
     bytes32 constant DEFAULT_ADMIN_ROLE = 0x00;
     bytes32 constant GUARDIAN_ROLE      = keccak256("GUARDIAN_ROLE");
     bytes32 constant REBALANCER_ROLE    = keccak256("REBALANCER_ROLE");
-    bytes32 constant REDEEM_FEE_SETTER_ROLE  = keccak256("REDEEM_FEE_SETTER_ROLE");
-    bytes32 constant SETTER_ROLE        = keccak256("SETTER_ROLE");
+    bytes32 constant REDEEM_FEE_SETTER_ROLE = keccak256("REDEEM_FEE_SETTER_ROLE");
+    bytes32 constant VSR_SETTER_ROLE        = keccak256("VSR_SETTER_ROLE");
+    bytes32 constant SETTER_ROLE            = keccak256("SETTER_ROLE");  // spUSDC
     bytes32 constant TAKER_ROLE         = keccak256("TAKER_ROLE");
 
     uint256 constant MAX_DEPOSIT = 1_000_000_000e6;  // 1bn USDC per request
