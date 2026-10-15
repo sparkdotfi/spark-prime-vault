@@ -11,6 +11,7 @@ An upgradeable, yield-accruing vault token backed by an underlying asset (e.g., 
 - Yield accrues continuously via the Vault Savings Rate (`vsr`), a per-second compounding factor.
 - `drip()` compounds accumulated interest into the accumulator `chi`.
 - Share-to-asset conversion: `assets = shares * chi / RAY`.
+- **Gain/Loss Realization**: While paused, `DEFAULT_ADMIN_ROLE` can call `adjustTotalAssets(delta)` to settle pending drip and rewrite `chi` so that `totalAssets` moves by `delta` (positive or negative). Pausing first blocks request/processing activity so nobody can front-run the adjustment. `delta` may not consume all assets and the resulting `chi` must be non-zero.
 
 ### 2. Deposits & Deposit Queue
 
@@ -37,10 +38,10 @@ An upgradeable, yield-accruing vault token backed by an underlying asset (e.g., 
 
 | Role                        | Permitted Actions                                                                                                                | Description                                                                                          |
 | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| **`DEFAULT_ADMIN_ROLE`**    | `setCapacity`, `setMaxWithdrawFee`, `setMinimums`, `setVsrBounds`, `_authorizeUpgrade`, `unpause`, `realizeGain`                 | Governs vault parameters, caps, bounds, and contract upgrades.                                       |
+| **`DEFAULT_ADMIN_ROLE`**    | `setCapacity`, `setMaxWithdrawFee`, `setMinimums`, `setVsrBounds`, `_authorizeUpgrade`, `unpause`, `adjustTotalAssets`           | Governs vault parameters, caps, bounds, and contract upgrades. Realizes gains/losses by writing `chi` while paused. |
 | **`SETTER_ROLE`**           | `setVsr`                                                                                                                         | Updates the compounding Vault Savings Rate within configured bounds (`[minVsr, maxVsr]`).            |
 | **`REBALANCER_ROLE`**       | `depositToSavings`, `withdrawFromSavings`, `processPendingDeposits`                                                              | Manages the `spUSDC` savings sleeve and settles queued deposits against available capacity.          |
 | **`TAKER_ROLE`**            | `take`                                                                                                                           | Withdraws available idle base assets for portfolio allocation.                                       |
-| **`RISK_MANAGER_ROLE`**     | `setWithdrawFee`, `realizeLoss`                                                                                                  | Configures redemption fees (≤ `maxWithdrawFee`) and adjusts `chi` during emergencies (while paused). |
+| **`RISK_MANAGER_ROLE`**     | `setWithdrawFee`                                                                                                                 | Configures redemption fees (≤ `maxWithdrawFee`).                                                     |
 | **`GUARDIAN_ROLE`**         | `pause`, `requestDepositCancellation`                                                                                            | Emergency pause for deposits/withdrawals and compliance cancellation of queued deposits.             |
 | **Public / Permissionless** | `requestDeposit`, `requestRedeem`, `requestDepositCancellation` _(owner/receiver)_, `processWithdrawQueue`, `drip`, ERC20/Permit | Standard user interactions and queue settlement.                                                     |
