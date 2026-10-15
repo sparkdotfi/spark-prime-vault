@@ -5,7 +5,17 @@ import { stdError } from "../../lib/forge-std/src/StdError.sol";
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
 
-/// @dev Cancelled-deposit queue tests for `SparkPrimeVault` (refactor/more-simplifying @ ff828d2).
+/// @dev Cancelled-deposit queue tests for `SparkPrimeVault` (round 5, `master` @ 0ebb452).
+///
+///      Round-5 semantics under test (src lines on 0ebb452):
+///        - `requestDepositCancellation` (419-444): owner-only (430), recipient must be non-zero
+///          (424) and not blacklisted (425); the entry is deleted and pushed to the cancellation
+///          queue; the deposit head is NOT moved (no walk any more).
+///        - `_processPendingDepositCancellations` (864-898): budget `min(max, spUSDC.maxRedeem
+///          (vault))` (869-870), pays through `_redeemSavings` (934-945): to the recipient when it
+///          can receive USDC, otherwise `redeem` to the vault itself and credit
+///          `claimableAssets[recipient]` (942-944); `claim(recipient)` (524-534) pays it out.
+///        - `updateDepositCancellationRecipient` (491-504): owner-only, blacklist-checked.
 ///
 ///      Harness indexes (frozen at RAY after setUp):
 ///        spUSDC  chi_s = 1.047633055711877768967605062e27
@@ -16,7 +26,15 @@ import { LocalTestBase } from "./LocalTestBase.t.sol";
 ///          100_000e6 USDC ->  95_453_269_114 spUSDC shares -> redeem:  99_999_999_999 USDC
 contract CancelledDepositQueueTest is LocalTestBase {
 
-    event DepositCancellationRequest(uint256 indexed depositRequestId, uint256 cancelRequestId);
+    event DepositCancellationRequest(
+        uint256 indexed depositRequestId,
+        uint256 indexed cancelRequestId,
+        address indexed recipient
+    );
+
+    event ClaimableAssetsIncreased(address indexed recipient, uint256 increase);
+
+    event Claim(address indexed recipient, uint256 assets);
 
     event DepositCancellation(
         address indexed owner,
@@ -89,7 +107,7 @@ contract CancelledDepositQueueTest is LocalTestBase {
         assertEq(usdc.balanceOf(alice),                        0);
 
         vm.expectEmit(address(vault));
-        emit DepositCancellationRequest(0, 0);
+        emit DepositCancellationRequest(0, 0, alice);
         vm.prank(alice);
         uint256 cancelId = vault.requestDepositCancellation(id, alice);
 
@@ -110,7 +128,7 @@ contract CancelledDepositQueueTest is LocalTestBase {
         assertEq(usdc.balanceOf(alice),                        0);
         assertEq(vault.pendingDepositSavingsShares(),          0);
         assertEq(vault.pendingCancelledDepositSavingsShares(), S_1M);
-        assertEq(vault.firstPendingDepositId(),                          1);   // advanced past the cancelled head
+        assertEq(vault.firstPendingDepositId(),                          0);   // head stays: no walk on master
         assertEq(vault.firstPendingDepositCancellationId(),                 0);
 
         vm.expectEmit(address(vault));
@@ -140,7 +158,7 @@ contract CancelledDepositQueueTest is LocalTestBase {
         assertEq(_cancel(bob,   idB, bob),   1);
 
         assertEq(vault.pendingCancelledDepositSavingsShares(), S_1M + S_100K);
-        assertEq(vault.firstPendingDepositId(),                          2);
+        assertEq(vault.firstPendingDepositId(),                          0);  // head frozen on the dead slot
 
         uint256 half = S_1M / 2;  // 477_266_345_571
         uint256 halfAssets = spUsdc.convertToAssets(half);
@@ -522,28 +540,36 @@ contract CancelledDepositQueueTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** 8. Guardian cancel (F-1 fixed at bf93b0d: refund goes to the owner; CANCEL-FEES owns)  ***/
+    /*** 8. Guardian cancel path removed (V2-2 / F-1 fixed on master)                          ***/
     /**********************************************************************************************/
 
-    function test_requestDepositCancellation_guardianMustRefundOwner() public {
+    function test_fixed_requestDepositCancellation_guardianCannotCancel() public {
         uint256 id = _deposit(alice, ONE_M);
 
-        vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/zero-recipient");
-        vault.requestDepositCancellation(id, guardian);
-        vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/zero-recipient");
-        vault.requestDepositCancellation(id, bob);
+        address[3] memory named = [guardian, bob, alice];
+        for (uint256 i; i < 3; ++i) {
+            vm.prank(guardian);
+            vm.expectRevert("SparkPrimeVault/not-authorized");
+            vault.requestDepositCancellation(id, named[i]);
+        }
 
-        vm.prank(guardian);
-        uint256 cid = vault.requestDepositCancellation(id, alice);
-
-        ( address owner, address recipient, uint256 shares ) = _cancelledDepositRequest(cid);
+        ( address owner, address recipient, uint256 shares ) = _depositRequest(id);
         assertEq(owner,     alice);
         assertEq(recipient, alice);
         assertEq(shares,    S_1M);
+        assertEq(_cancelledLength(), 0);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
 
+        // The owner can, and the pause guard sits before the ownership check.
+        _pause();
+        vm.prank(guardian);
+        vm.expectRevert("SparkPrimeVault/paused");
+        vault.requestDepositCancellation(id, alice);
+        _unpause();
+
+        uint256 cid = _cancel(alice, id, alice);
         _processCancelledDeposits(type(uint256).max, type(uint256).max);
+        assertEq(cid, 0);
         assertEq(usdc.balanceOf(guardian), 0);
         assertEq(usdc.balanceOf(alice),    A_1M);
     }
@@ -610,20 +636,25 @@ contract CancelledDepositQueueTest is LocalTestBase {
                 // queue a deposit (capacity is 0, nothing fills)
                 _deposit(u, bound(amt, 1, 1_000_000e6));
             } else if (a == 1) {
-                // cancel a random open deposit entry owned by anyone (guardian path): the
-                // refund must go to the entry's owner (bf93b0d)
+                // cancel a random open deposit entry: only its owner can (master), the guardian
+                // and a non-owner user get `not-authorized`
                 uint256 len = _depositLength();
                 if (len == 0) continue;
                 uint256 id = amt % len;
                 ( address o,, uint256 s ) = _depositRequest(id);
                 if (s == 0) continue;
+                vm.prank(guardian);
+                vm.expectRevert("SparkPrimeVault/not-authorized");
+                vault.requestDepositCancellation(id, o);
                 if (o != u) {
-                    vm.prank(guardian);
-                    vm.expectRevert("SparkPrimeVault/zero-recipient");
+                    vm.prank(u);
+                    vm.expectRevert("SparkPrimeVault/not-authorized");
                     vault.requestDepositCancellation(id, u);
                 }
-                vm.prank(guardian);
+                uint256 headBef = vault.firstPendingDepositId();
+                vm.prank(o);
                 vault.requestDepositCancellation(id, o);
+                assertEq(vault.firstPendingDepositId(), headBef, "cancel moved the head");
             } else if (a == 2) {
                 _processCancelledDeposits(bound(amt, 0, 2_000_000e6), amt % 4);
             } else if (a == 3) {
