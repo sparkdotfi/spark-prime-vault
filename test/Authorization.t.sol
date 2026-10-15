@@ -17,6 +17,7 @@ contract AuthorizationTestBase is TestBase {
 
     uint256 internal constant ONE_PCT_VSR  = 1.000000000315522921573372069e27;
     uint256 internal constant FOUR_PCT_VSR = 1.000000001243680656318820312e27;
+    uint256 internal constant FIVE_PCT_VSR = 1.000000001547125957863212448e27;
 
     address internal user        = makeAddr("user");
     address internal unauthorized = makeAddr("unauthorized");
@@ -44,11 +45,11 @@ contract AuthorizationTestBase is TestBase {
         );
     }
 
-    function _requestDeposit(address user, uint256 assets) internal returns (uint256 requestId) {
-        vm.startPrank(user);
-        usdc.approve(address(vault), assets);
+    function _requestDeposit(address user_, uint256 assets_) internal returns (uint256 requestId) {
+        vm.startPrank(user_);
+        usdc.approve(address(vault), assets_);
 
-        requestId = vault.requestDeposit(assets, user);
+        requestId = vault.requestDeposit(assets_, user_, 0);
         vm.stopPrank();
     }
 
@@ -142,6 +143,16 @@ contract AdjustTotalAssetsTests is AuthorizationTestBase {
     using stdStorage for StdStorage;
 
     event TotalAssetsAdjusted(uint192 chi, int256 deltaTotalAssets);
+
+    function setUp() public override {
+        super.setUp();
+
+        vm.prank(admin);
+        vault.setVSRBounds(RAY, FIVE_PCT_VSR);
+
+        vm.prank(vsrSetter);
+        vault.setVSR(FIVE_PCT_VSR);
+    }
 
     /**********************************************************************************************/
     /*** Helpers                                                                                ***/
@@ -843,4 +854,3 @@ contract PauseTests is AuthorizationTestBase {
     }
 
 }
-
