@@ -8,50 +8,63 @@ import { IAccessControl } from "../lib/oz/contracts/access/IAccessControl.sol";
 
 import { TestBase } from "./TestBase.t.sol";
 
-contract AdjustTotalAssetsTests is TestBase {
+import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
+
+contract AuthorizationTestBase is TestBase {
+
+    uint256 public constant RAY = 1e27;
+
+    uint256 internal constant ONE_PCT_VSR  = 1.000000000315522921573372069e27;
+    uint256 internal constant FOUR_PCT_VSR = 1.000000001243680656318820312e27;
+
+    address internal user        = makeAddr("user");
+    address internal unauthorized = makeAddr("unauthorized");
+
+    function setUp() public virtual override {
+        super.setUp();
+
+        vm.startPrank(admin);
+        vault.grantRole(GUARDIAN_ROLE,     guardian);
+        vault.grantRole(REBALANCER_ROLE,   rebalancer);
+        vault.grantRole(REDEEM_FEE_SETTER_ROLE, redeemFeeSetter);
+        vault.grantRole(VSR_SETTER_ROLE,   vsrSetter);
+        vault.grantRole(TAKER_ROLE,        taker);
+        vault.setCapacity(1_000_000e6);
+        vm.stopPrank();
+
+        deal(address(usdc), user, 1_000_000e6);
+    }
+
+    function _notAuthorized(address account, bytes32 role) internal pure returns (bytes memory) {
+        return abi.encodeWithSignature(
+            "AccessControlUnauthorizedAccount(address,bytes32)",
+            account,
+            role
+        );
+    }
+
+    function _requestDeposit(address user, uint256 assets) internal returns (uint256 requestId) {
+        vm.startPrank(user);
+        usdc.approve(address(vault), assets);
+
+        requestId = vault.requestDeposit(assets, user);
+        vm.stopPrank();
+    }
+
+}
+
+contract AdjustTotalAssetsTests is AuthorizationTestBase {
 
     using stdStorage for StdStorage;
 
     event TotalAssetsAdjusted(uint192 chi, int256 deltaTotalAssets);
 
-    address internal user = makeAddr("user");
-
-    uint256 internal constant RAY            = 1e27;
-    uint256 internal constant VAULT_CAPACITY = 100_000_000e6;
-    uint256 internal constant FIVE_PCT       = 1.000000001547125957863212448e27;  // 5% APY
-
-    function setUp() public override {
-        super.setUp();
-
-        vm.startPrank(admin);
-
-        vault.grantRole(GUARDIAN_ROLE,   guardian);
-        vault.grantRole(VSR_SETTER_ROLE, vsrSetter);
-
-        vault.setCapacity(VAULT_CAPACITY);
-        vault.setVSRBounds(RAY, vault.MAX_VSR());
-
-        vm.stopPrank();
-
-        vm.prank(vsrSetter);
-        vault.setVSR(FIVE_PCT);
-    }
-
     /**********************************************************************************************/
     /*** Helpers                                                                                ***/
     /**********************************************************************************************/
 
-    function _deposit(uint256 assets) internal {
-        deal(address(usdc), user, assets);
-
-        vm.startPrank(user);
-        usdc.approve(address(vault), assets);
-        vault.requestDeposit(assets, user);
-        vm.stopPrank();
-    }
-
     function _depositAndPause(uint256 assets) internal {
-        _deposit(assets);
+        _requestDeposit(user, assets);
 
         vm.prank(guardian);
         vault.pause();
@@ -313,6 +326,52 @@ contract AdjustTotalAssetsTests is TestBase {
         assertEq(vault.totalSupply(),         0);
         assertEq(vault.totalAssets(),         0);
         assertEq(usdc.balanceOf(user),        900_000e6 - 2);  // Rounding, 100k loss incurred
+    }
+
+}
+
+contract SetCapacityTests is AuthorizationTestBase {
+
+    // Failure tests
+
+    function test_setCapacity_notAdmin() external {
+        vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
+        vm.prank(unauthorized);
+        vault.setCapacity(2_000_000e6);
+    }
+
+    // Success tests
+
+    function test_setCapacity() external {
+        assertEq(vault.maxCapacity(),       1_000_000e6);
+        assertEq(vault.availableCapacity(), 1_000_000e6);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.CapacitySet(2_000_000e6);
+
+        vm.prank(admin);
+        vault.setCapacity(2_000_000e6);
+
+        assertEq(vault.maxCapacity(),       2_000_000e6);
+        assertEq(vault.availableCapacity(), 2_000_000e6);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.CapacitySet(type(uint256).max);
+
+        vm.prank(admin);
+        vault.setCapacity(type(uint256).max);
+
+        assertEq(vault.maxCapacity(),       type(uint256).max);
+        assertEq(vault.availableCapacity(), type(uint256).max);
+
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.CapacitySet(0);
+
+        vm.prank(admin);
+        vault.setCapacity(0);
+
+        assertEq(vault.maxCapacity(),       0);
+        assertEq(vault.availableCapacity(), 0);
     }
 
 }

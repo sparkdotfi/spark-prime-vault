@@ -19,8 +19,8 @@ contract AuthorizationTestBase is TestBase {
         vm.startPrank(admin);
         vault.grantRole(GUARDIAN_ROLE,     guardian);
         vault.grantRole(REBALANCER_ROLE,   rebalancer);
-        vault.grantRole(RISK_MANAGER_ROLE, riskManager);
-        vault.grantRole(SETTER_ROLE,       setter);
+        vault.grantRole(REDEEM_FEE_SETTER_ROLE, redeemFeeSetter);
+        vault.grantRole(VSR_SETTER_ROLE,   vsrSetter);
         vault.grantRole(TAKER_ROLE,        taker);
         vault.setCapacity(1_000_000e6);
         vm.stopPrank();
@@ -248,26 +248,26 @@ contract SetVSRTests is AuthorizationTestBase {
     // Failure tests
 
     function test_setVSR_notSetter() external {
-        vm.expectRevert(_notAuthorized(unauthorized, SETTER_ROLE));
+        vm.expectRevert(_notAuthorized(unauthorized, VSR_SETTER_ROLE));
         vm.prank(unauthorized);
         vault.setVSR(ONE_PCT_VSR);
     }
 
     function test_setVSR_vsrTooLowBoundary() external {
         vm.expectRevert("SparkPrimeVault/vsr-too-low");
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vault.setVSR(ONE_PCT_VSR - 1);
 
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vault.setVSR(ONE_PCT_VSR);
     }
 
     function test_setVSR_vsrTooHighBoundary() external {
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vm.expectRevert("SparkPrimeVault/vsr-too-high");
         vault.setVSR(FOUR_PCT_VSR + 1);
 
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vault.setVSR(FOUR_PCT_VSR);
     }
 
@@ -288,7 +288,7 @@ contract SetVSRTests is AuthorizationTestBase {
         vm.expectEmit(address(vault));
         emit SparkPrimeVault.VSRSet(FOUR_PCT_VSR);
 
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vault.setVSR(FOUR_PCT_VSR);
 
         assertEq(uint256(vault.chi()), RAY);
@@ -573,7 +573,7 @@ contract RealizeGainTests is AuthorizationTestBase {
         vm.prank(admin);
         vault.setVSRBounds(ONE_PCT_VSR, FOUR_PCT_VSR);
 
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vault.setVSR(FOUR_PCT_VSR);
 
         skip(365 days);
@@ -705,7 +705,7 @@ contract RealizeLossTests is AuthorizationTestBase {
         vm.prank(admin);
         vault.setVSRBounds(ONE_PCT_VSR, FOUR_PCT_VSR);
 
-        vm.prank(setter);
+        vm.prank(vsrSetter);
         vault.setVSR(FOUR_PCT_VSR);
 
         skip(365 days);
