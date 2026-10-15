@@ -72,22 +72,22 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         address indexed owner,
         address indexed recipient,
         uint256 indexed requestId,
-        uint256         assets,
-        uint256         savingsShares
+        uint256         assetsDeposited,
+        uint256         savingsSharesMinted
     );
 
     event Deposit(
         address indexed owner,
         address indexed recipient,
-        uint256         assets,
-        uint256         savingsShares
+        uint256         assetsConverted,
+        uint256         sharesMinted
     );
 
     event DepositCancellation(
         address indexed owner,
         address indexed recipient,
-        uint256         savingsShares,
-        uint256         assets
+        uint256         savingsSharesBurned,
+        uint256         assetsReceived
     );
 
     event DepositCancellationRequest(
@@ -104,8 +104,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         address indexed owner,
         address indexed recipient,
         uint256 indexed requestId,
-        uint256         shares,
-        uint256         fee
+        uint256         sharesToBurn,
+        uint256         feeSharesBurned
     );
 
     event RedeemRecipientUpdated(uint256 indexed requestId, address indexed recipient);
@@ -113,8 +113,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     event Redeem(
         address indexed owner,
         address indexed recipient,
-        uint256         shares,
-        uint256         assets
+        uint256         sharesBurned,
+        uint256         savingsSharesBurned,
+        uint256         assetsReceived
     );
 
     event AssetsMovedToClaimable(address indexed recipient, uint256 assets);
@@ -546,9 +547,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         claimableAssets[recipient_] = 0;
 
-        SafeERC20.safeTransfer(IERC20OZ(asset), recipient_, assets_);
-
         emit Claim(recipient_, assets_);
+
+        SafeERC20.safeTransfer(IERC20OZ(asset), recipient_, assets_);
     }
 
     /**********************************************************************************************/
@@ -946,15 +947,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
             request_.shares                      -= savingsShares_;
             remaining_                           -= savingsShares_;
 
-            bool canReceiveAsset_ = _canReceiveAsset(request_.recipient);
-
-            uint256 assets_ = IERC4626Like(savings).redeem(
-                savingsShares_,
-                canReceiveAsset_ ? request_.recipient : address(this),
-                address(this)
-            );
-
-            if (!canReceiveAsset_) _moveToClaimableAssets(request_.recipient, assets_);
+            uint256 assets_ = _redeemSavings(savingsShares_, request_.recipient);
 
             emit DepositCancellation(request_.owner, request_.recipient, savingsShares_, assets_);
 
@@ -992,17 +985,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
             _burn(address(this), shares_);
 
-            emit Redeem(request_.owner, request_.recipient, shares_, assets_);
+            uint256 savingsShares_ = _withdrawSavings(assets_, request_.recipient);
 
-            bool canReceiveAsset_ = _canReceiveAsset(request_.recipient);
-
-            IERC4626Like(savings).withdraw(
-                assets_,
-                canReceiveAsset_ ? request_.recipient : address(this),
-                address(this)
-            );
-
-            if (!canReceiveAsset_) _moveToClaimableAssets(request_.recipient, assets_);
+            emit Redeem(request_.owner, request_.recipient, shares_, savingsShares_, assets_);
 
             if (request_.shares != 0) break;  // Partial fill, entry stays at the head
 
@@ -1010,6 +995,32 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         }
 
         firstPendingRedeemId = i_;
+    }
+
+    function _redeemSavings(uint256 savingsShares_, address recipient_)
+        internal
+        returns (uint256 assets_)
+    {
+        if (_canReceiveAsset(recipient_)) {
+            return IERC4626Like(savings).redeem(savingsShares_, recipient_, address(this));
+        }
+
+        assets_ = IERC4626Like(savings).redeem(savingsShares_, address(this), address(this));
+
+        _incrementClaimableAssets(recipient_, assets_);
+    }
+
+    function _withdrawSavings(uint256 assets_, address recipient_)
+        internal
+        returns (uint256 savingsShares_)
+    {
+        if (_canReceiveAsset(recipient_)) {
+            return IERC4626Like(savings).withdraw(assets_, recipient_, address(this));
+        }
+
+        savingsShares_ = IERC4626Like(savings).withdraw(assets_, address(this), address(this));
+
+        _incrementClaimableAssets(recipient_, assets_);
     }
 
     /**********************************************************************************************/
@@ -1096,7 +1107,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     /*** Blacklist internal helper functions                                                    ***/
     /**********************************************************************************************/
 
-    function _moveToClaimableAssets(address recipient_, uint256 assets_) internal {
+    function _incrementClaimableAssets(address recipient_, uint256 assets_) internal {
         claimableAssets[recipient_] += assets_;
 
         emit AssetsMovedToClaimable(recipient_, assets_);
