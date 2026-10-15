@@ -1,5 +1,190 @@
 # spPRIME adversarial campaign
 
+## Round 5 (`master` @ `0ebb452`)
+
+Worker: adversarial. File: `test/ai/Adversarial.t.sol`, three contracts: `AdversarialTest` (87),
+`AdversarialRound4Test` (14), new `AdversarialRound5Test` (19); 120 tests, all passing at 1000
+fuzz runs. No deliberately failing test: every open finding is a passing proof of the behaviour.
+Line numbers refer to `src/SparkPrimeVault.sol` @ 0ebb452. Port notes: `realizeGain`/`realizeLoss`
+tests rewritten against `adjustTotalAssets` (paused-only); the `vm.mockCallRevert` blacklist is
+replaced by the harness's real `_blacklist` (the vault consults `isBlacklisted` at :1052);
+`test_BUG_realizeGain_sandwichUnchangedWithoutCancel` deleted (superseded by the governance-flow
+test below); guardian-cancel and `UNPAUSER_ROLE` cases rewritten as owner-only / admin-only pins;
+`requestDeposit(x, vault)` cases became `test_fixed_` since :395 rejects them.
+
+### (a) Findings
+
+#### R5-1 High (R3-1, changed not fixed): a deposit between "payload public" and "pause" captures the gain
+`adjustTotalAssets` :278-295 requires `paused` (:279), but the pause is a separate GUARDIAN tx and
+the spell payload is public before it; `requestDeposit` :389-417 fills instantly (:414-415) at the
+old chi. Real flow, 1M TVL (alice), 1M attacker, 50_000 gain:
+- fee 0: attacker out 1_024_999_999_998, profit 24_999_999_998; alice loses 25_000_000_000
+  (`test_BUG_R3_1_adjustTotalAssets_depositBeforePauseCapturesGain_0pctFee`).
+- fee 1%: out 1_014_749_999_997, profit 14_749_999_997; alice still loses 25_000_000_000
+  (`..._1pctFee`). Take = gain * c / (TVL + c): 4_545_454_544 for 1M vs 10M TVL
+  (`..._takeScalesWithCapital_1MvsTVL10M`, `..._10MvsTVL10M`).
+- Four orders from one snapshot (`test_BUG_R3_1_governanceFlow_fourOrders_exactProfit`):
+  (i) deposit -> pause -> adjust -> unpause -> redeem: 24_999_999_998 / 14_749_999_997;
+  (ii) pause BEFORE the deposit: deposit reverts `paused`, alice gets 1_049_999_999_997
+  (`test_fixed_R3_1_pauseBeforeDepositKillsSandwich`);
+  (iii) capacity pinned to totalSupply before the payload: deposit queued, filled after the gain at
+  the new chi, attacker <= 1_000_000e6 (`test_adjustTotalAssets_queuedDepositFilledAfterGainGetsNoProfit`);
+  (iv) rebalancer never pays: alice is already diluted on paper (assetsOf attacker 1_024_999_999_998).
+  What kills it: pause (or capacity pin) landing before any deposit can see the payload, i.e. the
+  guardian must pause at payload deployment, not at execution. Escrowed redeemers also receive the
+  gain (`test_adjustTotalAssets_escrowedRedeemersReceiveGain_cancelledDepositsDoNot`: 1_049_999_999_997).
+
+#### R5-2 Medium (C-3, open): no loss floor
+`adjustTotalAssets(-(totalAssets - 1))` passes :286 and sets `chi = RAY / totalSupply` (:289):
+alice's 1_000_000 USDC -> `assetsOf == 0`, `totalAssets == 0`; only `-totalAssets` and `0` are
+rejected (`loss-too-high`, `delta-total-assets-zero`); 10 years at MAX_VSR recover < 2_000 wei
+(`test_BUG_C3_adjustTotalAssets_nearFullLossWipesHolders`). The vault keeps operating afterwards
+(`test_adjustTotalAssets_nearWipeStillOperates`). A gain at `totalSupply == 0` panics with
+division by zero at :289 (`test_adjustTotalAssets_boundsAreChecks_gainAtZeroSupplyPanics`).
+
+#### R5-3 Medium (G-1/G-2, open): the uint192 bound is 5.4e7 times above the real overflow bound
+:292 allows chi up to 6.27e57; `drip` :637 computes `_rpow(vsr, dt) * chi` checked, so the largest
+surviving chi is exactly `type(uint256).max / RAY` = 115792089237316195423570985008687907508017464175173
+(1.157e50): one second later `drip`, `nowChi`, `totalAssets`, `requestDeposit`, `requestRedeem`,
+`processPendingRedeems`, `setVSR` and `adjustTotalAssets` itself (:282 drips first) all panic 0x11;
+only `transfer`, `approve`, `pause`, `take` and `claim` work. Over 1M TVL the bricking gain is
+1.1468e35 USDC-wei, one chi-step (`+totalSupply` assets) above the safe one. Only an upgrade repairs
+(`test_BUG_G1_adjustTotalAssets_chiAboveDripBoundBricks_exactThreshold`).
+
+#### R5-4 Medium (F-2, open): queue backing is not ring-fenced; the rebalancer picks who is paid
+After `take` leaves only bob's cancelled-deposit backing (bQ shares), `availableLiquidAssets` :789
+still counts it and `processPendingRedeems` pays alice 999_999_998 from it; bob's refund is then
+unpayable (`pendingCancelledDepositSavingsShares` stays bQ). The reverse order refunds bob
+999_999_999 and leaves alice waiting (`test_BUG_F2_redeemsCanConsumeCancellationBacking_afterTake`).
+`takeAll` then the three queues: deposits still fill (unbacked mint :852), redeems and
+cancellations are no-ops, nothing lost once backing returns (`test_taker_takeAll_thenThreeQueues`).
+`take` works while paused (`test_pause_matrix`).
+
+#### R5-5 Low (V2-13, open, cancellation variant new): vault / spUSDC as recipients strand USDC with no claim path
+`_canReceiveAsset` only checks the blacklist (:425, :452, :1052), so the vault and spUSDC are
+accepted. Redeem to vault: 99_999_999_998 USDC in the vault, `claimableAssets[vault] == 0`,
+`claim` says `nothing-to-claim`, `take` cannot move it
+(`test_BUG_V2_13_redeemRecipientVaultStrandsUsdcInVault`). Cancellation to vault / spUSDC:
+`spUSDC.redeem(.., vault, vault)` :939 strands 99_999_999 and the spUSDC leg nets to 0 in spUSDC's
+balance while spUSDC's totalAssets drops by both (`test_BUG_V2_13_cancelRecipientVaultOrSpUsdc_strandedNotClaimable`).
+Owner's own choice only (`not-authorized` for everyone else).
+
+#### R5-6 Low (F-4, open): zero-share mints at a high chi
+`convertToShares` :797 floors; after a gain to chi = 2e33, a 1 USDC deposit mints 0 shares (:852),
+the entry is deleted (:858) and the USDC becomes vault equity; 3 USDC mints 1 share worth 2 USDC,
+1 USDC lost (`test_BUG_F4_zeroShareMint_exactThreshold`). Threshold: deposit < chi / RAY wei.
+
+#### R5-7 Info: the cancellation queue is a fee-free spUSDC-rate position without capacity
+Refunds are `spUSDC.redeem` at the live spUSDC index (:939): a 1_000 USDC deposit queued
+(capacity full), cancelled, settled a year later at 10% spUSDC VSR returns 1_099_999_998, no fee,
+no spPRIME shares ever held. Not a spPRIME holder loss (the yield is spUSDC's on queue backing
+that would otherwise be vault equity). spPRIME itself has no fee-free exit: a transfer to a fresh
+address pays the same 1% at :460 (`test_extremes_noFeeFreeExit_cancelQueueEarnsSpUsdcRate`).
+
+#### R5-8 Info (USDC risk): if Circle sanctions the vault itself
+Deposits revert in USDC; payouts to clean recipients still work (spUSDC -> recipient); but a
+recipient blacklisted mid-flight makes the fallback `withdraw(.., vault, vault)` :955 revert and
+blocks that queue (R4-A re-emerges), and `claim` is dead. The owner's repoint to a clean address
+unblocks it (`test_blacklist_vaultItselfSanctioned_fallbackBlocksQueue`).
+
+#### R5-9 Info: griefing numbers on 0ebb452
+- Capacity-0 head freeze (`remaining_ == 0` at :837 skips the walk): ghosts placed while capacity
+  is full are never walked, by anyone, until capacity returns; the first real depositor then pays
+  548 gas per ghost warm (310_700 for 300), 11_773 ghosts to push one deposit past 30M at a cold
+  estimate; attacker pays 83_233 per ghost (`test_griefing_capacityZeroFreezesHead_nextDepositorPaysWalk`).
+  `processPendingDeposits(1, N)` clears them once capacity exists.
+- Owner cancel at the head is O(1) now (117_536 gas with 1000 ghosts behind, :419-444 has no
+  loop); the next depositor walks the 1001 closed entries for 643_666
+  (`test_griefing_ownerCancelAtHeadIsO1_nextDepositorWalksGhosts`).
+- Planner skips: 480 per deposit ghost, 504-506 per redeem ghost; `requestRedeem(0)` ghosts cost
+  92_426 and are permanent; dust cancels 19_671 planner gas per entry, 254_035 attacker gas each
+  (`test_griefing_ghostDepositEntriesGasPerSkip`, `test_griefing_zeroRedeemGhostsAreFree`,
+  `test_cancelQueue_dustCancelsGasPerEntry`). `minDeposit >= 1e6`, `minRedeem >= 100` remove all.
+
+#### R5-10 Info (C-1 re-examined, not reproducible)
+A full fill burns at most the entry's own deposited spUSDC (deposit floors twice at :402 and
+:845-846; withdraw ceils once at :955/:952) and the partial tail is bounded by the live balance, so
+the batched call never needs more spUSDC than the vault holds. Searched 8 odd-sized entries with
+backing from exact to 400 shares short: no revert; batched and chunked pay identical amounts; 7
+surplus shares remain (`test_C1_batchedRedeemNeverRevertsAtOrBelowFullBacking`). C-1 only
+materialises under an under-backed vault (after `take`), where it is F-2.
+
+### (b) Previously reported findings, status now
+
+| Finding | Status | Pinning test |
+|---|---|---|
+| R4-A blacklisted redeem recipient blocks the queue | fixed: rejected at :452, fallback to `claimableAssets` :955-957, queue moves, `claim` reverts in USDC while blacklisted and pays after; exact 99_959_089 for the 99e6-share jam, alice 989_999_999_997 | `test_fixed_R4A_blacklistedRedeemRecipient_rejectedAtRequest_claimableAtPayout`, `test_fixed_R4A_blacklistedRedeemRecipientDoesNotBlockQueue`, `test_fixed_R4A_nobodyCanRepointToBlacklisted_checkOrder` (blacklist check :508 precedes the owner check :513) |
+| R4-B blacklisted cancel recipient blocks the cancellation queue | fixed: :425 rejects, :942-944 credits `claimableAssets` with the floored `redeem` amount (999_999), victim 999_999_999_999 | `test_fixed_R4B_blacklistedCancelRecipient_rejectedAtRequest_claimableAtSettlement` |
+| R3-1 realizeGain sandwich | changed: pause-gated (:279) but the deposit before the pause still captures (R5-1) | `test_fixed_R3_1_pauseBeforeDepositKillsSandwich`, `test_BUG_R3_1_*` |
+| V2-2 / F-1 guardian-chosen refund recipient | fixed: cancel is owner-only (:430), guardian has `pause` only, cancel blocked while paused | `test_fixed_V2_2_guardianHasNoCancelPath`, fuzz op 4 in `testFuzz_queueInvariants_randomOps` |
+| V2-1 unauthenticated recipient updaters | fixed, owner-only | `test_updateRecipient_strangerCannotRepoint{Redeem,Deposit,Cancelled}_*`, `test_updateRecipient_onlyOwnerWritesCountAtFill` |
+| A-5 / R2-2 vault as deposit recipient, phantom shares, `transfer(vault)` | fixed (:395, :481, :549, :557) | `test_fixed_depositRecipientVaultRejected`, `test_fixed_updateDepositRecipientVaultRejected`, `test_fixed_noPhantomSharesOutsideEscrow`, `test_fixed_transferToVaultRejected_escrowInvariantHolds` |
+| UNPAUSER_ROLE / hot-wallet unpause | gone; admin-only | `test_unpause_guardianCannot` |
+| C-3, G-1/G-2, F-2, V2-13, F-4 | open, re-measured above | R5-2..R5-6 |
+| C-7 live fee not clamped by a lower max | open | `test_compromised_redeemFeeSetter_maxFeeOnEveryExit` |
+| C-9 MAX_VSR 100% APY | open: 1_900.837678 USDC/day on 1M | `test_compromised_setter_maxVsrOverCreditsPerDay`, `..._overCreditRealisedOnRedeem` |
+| V2-9 `requestRedeem(0)` ghosts, V2-11 cancel bloat | open, numbers in R5-9 | see R5-9 |
+| R4-3 capacity hog is a commitment | unchanged | `test_capacityHog_isACommitmentUntilPlannerPays` |
+| R4-5 rebalancer lock-in in all three queues | unchanged | `test_compromised_rebalancer_starvedUsersAreLockedInAllThreeQueues` |
+| C-1 batched redeem revert | not reproducible on a backed vault (R5-10) | `test_C1_batchedRedeemNeverRevertsAtOrBelowFullBacking` |
+
+### (c) Properties that held
+
+- Blacklist matrix, both queues, every (request / payout / claim) combination including a partial
+  fill while blacklisted and the remainder paid directly afterwards: credited amount equals what a
+  clean recipient gets (`withdraw` ceil-burn :955 identical to :952; `redeem` burns exactly the
+  shares :942), a failed `claim` leaves the credit intact, a stranger's `claim` pays the recipient
+  only, double claim is `nothing-to-claim` (`test_blacklist_redeemQueue_fullMatrix`: 499_999_998 +
+  499_999_999; `test_blacklist_cancelQueue_fullMatrix`).
+- `claimableAssets` USDC is isolated: `requestDeposit` pulls and forwards exactly `assets_`
+  (:400-402), clean payouts go spUSDC -> recipient, `adjustTotalAssets` reads totalSupply * chi
+  only, `take` moves spUSDC only; two credits accumulate (249_999_998 + 249_999_999) and `claim`
+  works while paused (`test_blacklist_claimableUsdcIsIsolatedAndAccumulates`).
+- A blacklisted owner keeps every action that moves no USDC: cancel to a clean recipient, repoint,
+  request a redeem, his queued deposit still fills; only his own `requestDeposit` dies in USDC
+  (`test_blacklist_ownerBlacklistedMidFlight_ownerActionsStillWork`).
+- A loss cannot be dodged through the redeem queue (priced at fill :914: attacker paid
+  89_999_999_999 on 100k after a 10% loss); queued spUSDC deposits do not absorb it and get more
+  shares when filled after (`test_adjustTotalAssets_lossHitsEscrowAndHolders_notQueuedDeposits`).
+  Capacity in shares shrinks in USD after a loss: 500k headroom -> 250k after a 50% loss, a 400k
+  deposit is 250k filled / 150k queued (`test_adjustTotalAssets_lossShrinksUsdCapacity`).
+- Gain/loss pairs never ratchet chi up; totalAssets drift <= 2 units per pair
+  (`testFuzz_adjustTotalAssets_gainLossPairs_noRatchet`). Access/bounds/event/drip-first
+  (`test_adjustTotalAssets_accessAndBounds`, `test_adjustTotalAssets_notPaused`).
+- Rebalancer ordering and chunking change no payout on a backed vault (three orders from one
+  snapshot, within one floor per partial: `test_rebalancer_orderingDoesNotChangePayouts_whenBacked`);
+  the rebalancer cannot extract value (`test_compromised_rebalancer_cannotExtractValue`).
+- Extreme indexes: spUSDC chi 1.0728e30 and spPRIME chi 1.0097e15: 1 USDC mints 990_233_844_012_150_035
+  shares, round-trip loss 174 wei, never a profit, the depositor never consumes others' backing
+  (`test_extremes_spUsdcChiHuge_primeChiTiny_roundTripBounded`); fuzzed round trips bounded by
+  chiS/RAY + chiP/RAY + 4 (`testFuzz_roundTrip_userNeverProfits`); supply never exceeds capacity
+  (`testFuzz_processDeposits_supplyNeverExceedsCapacity`).
+- The redeem escrow cannot be spent: `allowance[vault][x] == 0` is never written (`approve` is
+  msg.sender-keyed; `permit(vault, ..)` fails ecrecover and the ERC-1271 staticcall to the vault
+  returns `success == false` with empty data, :1030-1037), `transferFrom(vault, ..)` reverts
+  `insufficient-allowance`, nonces untouched (`test_erc20_escrowCannotBeSpentViaTransferFromOrPermit`).
+  ERC-1271 signers cannot mutate state or reach the queues (`test_reentrancy_erc1271Signer*`).
+- External-call ordering: `requestDeposit` makes its two external calls (:400-402) before the push
+  (:406); a spUSDC cap revert leaves no entry and no USDC in the vault. The fallback credit is
+  written after the withdraw (:955 then :957), so a liquidity shortfall credits nothing. `claim`
+  zeroes before transferring (:529-533) and a USDC revert restores the credit. No recipient is ever
+  called (`test_cei_externalCallBeforeStateWrite_revertsLeaveNoPartialState`,
+  `test_reentrancy_noCallbackToRecipient`). With a hooked asset the pre-push calls in
+  `requestDeposit` would be the only reentrancy surface; USDC/spUSDC have none.
+- Pause matrix: blocked = three requests + three process*; allowed = drip, claim, transfer,
+  approve, updaters, setVSR, adjustTotalAssets, take (`test_pause_matrix`).
+- Queue invariants under random ops (sum of open entries == pending, head never skips an open
+  entry, escrow == pendingRedeemShares, backing >= queued claims): `testFuzz_queueInvariants_randomOps`.
+
+### (d) Unsettled
+
+- R5-1 is a process question for governance: the only on-chain kill switches are pausing or
+  pinning capacity before the payload is actionable; whether the spell pipeline can guarantee that
+  ordering is outside this suite.
+- The sanctioned-vault case (R5-8) depends on Circle's behaviour toward a contract address; the
+  mock mirrors FiatToken's `transfer`/`transferFrom`/`approve` checks only.
+- Gas figures are warm-slot numbers from one test tx; cold estimates add ~2_000 per skipped entry.
+
 ## Round 4 (bf93b0d)
 
 Worker: adversarial. File: `test/ai/Adversarial.t.sol` (contracts `AdversarialTest`, 87 tests, and
