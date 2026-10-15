@@ -3,9 +3,10 @@ pragma solidity ^0.8.34;
 
 import "./b_flows_user.sol";
 
-// Admin / role / environment flows: capacity, fee, minimums, both VSRs, pause/unpause, loss and
-// gain realisation, the three queue processors, take/return, spUSDC liquidity drains and returns,
-// time.
+// Admin / role / environment flows: capacity (including below totalSupply), max fee and fee,
+// minimums, both VSRs, pause/unpause, `adjustTotalAssets` with positive and negative deltas while
+// paused (plus probes of its guards), the three queue processors, take/return, spUSDC liquidity
+// drains and returns, time.
 contract FlowsAdmin is FlowsUser {
 
     constructor(address vault_) FlowsUser(vault_) {}
@@ -14,8 +15,9 @@ contract FlowsAdmin is FlowsUser {
     /*** Parameters                                                                             ***/
     /**********************************************************************************************/
 
-    // `setCapacity` no longer bounds the value; the handler keeps it <= uint128.max because a
+    // `setCapacity` does not bound the value; the handler keeps it <= uint128.max because a
     // larger capacity overflows `convertToAssets(availableCapacity())` and bricks deposits.
+    // 2 of 10 calls set it at or below totalSupply (invariant X tracks that).
     function setCapacity(uint256 capacity, uint256 seed) public counted("setCapacity") {
         uint256 supply = vault.totalSupply();
         uint256 kind   = seed % 10;
@@ -26,6 +28,20 @@ contract FlowsAdmin is FlowsUser {
 
         vm.startPrank(admin);
         vault.setCapacity(capacity);
+        vm.stopPrank();
+
+        if (capacity < supply) {
+            capacityLoweredBelowSupply = true;
+            capacityBelowSupplyEvents++;
+        }
+    }
+
+    // Admin bound on the fee; may land below the live `redeemFeeRate` (C-7, not clamped).
+    function setMaxRedeemFeeRate(uint256 maxFee) public counted("setMaxRedeemFeeRate") {
+        maxFee = _bound(maxFee, 0, vault.MAX_REDEEM_FEE());
+
+        vm.startPrank(admin);
+        vault.setMaxRedeemFeeRate(maxFee);
         vm.stopPrank();
     }
 
@@ -84,7 +100,7 @@ contract FlowsAdmin is FlowsUser {
     }
 
     /**********************************************************************************************/
-    /*** Pause and losses                                                                       ***/
+    /*** Pause and total-assets adjustments                                                     ***/
     /**********************************************************************************************/
 
     // Pauses in ~1 of 4 calls so the vault is not paused half of the time (GUARDIAN_ROLE).
@@ -102,78 +118,109 @@ contract FlowsAdmin is FlowsUser {
         vm.stopPrank();
     }
 
-    // Small losses (`1 <= loss <= totalAssets / 10`, so `0 < loss < totalAssets` always holds),
-    // only while paused with a live supply, and only when the resulting chi stays positive. The
-    // handler asserts the contract's floor (`totalAssets after + loss <= totalAssets before`),
-    // records the per-call accounting error (invariant T) and lowers the deficit ledger by the
-    // loss (invariant H).
-    function realizeLoss(uint256 loss) public counted("realizeLoss") {
-        if (!vault.paused()) return;
+    // `adjustTotalAssets(delta)`: admin only, requires `paused`, drips, then sets
+    // `chi = (totalAssets + delta) * RAY / totalSupply`. Deltas are bounded to
+    // `1 <= |delta| <= totalAssets / 10`; negative deltas are skipped when the resulting chi would
+    // be 0, positive ones when it would pass 1e30 (keeps every conversion far from overflow).
+    // The guards are probed: not paused -> `not-paused`; totalSupply == 0 -> panic 0x12.
+    // Records the per-call accounting error (invariant T) and moves the deficit ledger (H).
+    function adjustTotalAssets(uint256 magnitude, uint256 seed) public counted("adjustTotalAssets") {
+        bool negative = seed % 2 == 0;
+
+        // The vault is rarely paused when this flow is drawn, so 3 of 4 unpaused draws pause it
+        // first (guardian), adjust, and leave it paused in 1 of 4 of those; the remaining draw
+        // probes the `not-paused` guard instead.
+        bool pausedHere;
+        if (!vault.paused()) {
+            if (seed / 2 % 4 == 0) { _probeAdjustNotPaused(); return; }
+            vm.startPrank(guardian);
+            vault.pause();
+            vm.stopPrank();
+            pausedHere = seed / 8 % 4 != 0;
+        }
 
         uint256 supply = vault.totalSupply();
-        if (supply == 0) return;
+        if (supply == 0) { _probeAdjustZeroSupply(); _unpauseIf(pausedHere); return; }
 
         uint256 assetsBefore = vault.totalAssets();
-        if (assetsBefore < 10) return;
+        if (assetsBefore < 10) { _unpauseIf(pausedHere); return; }
 
-        loss = _bound(loss, 1, assetsBefore / 10);
+        magnitude = _bound(magnitude, 1, assetsBefore / 10);
 
-        if (((assetsBefore - loss) * RAY) / supply == 0) return;
+        if (negative  && ((assetsBefore - magnitude) * RAY) / supply == 0)   { _unpauseIf(pausedHere); return; }
+        if (!negative && ((assetsBefore + magnitude) * RAY) / supply > 1e30) { _unpauseIf(pausedHere); return; }
 
         uint256 chiBefore = vault.nowChi();
 
-        vm.startPrank(redeemFeeSetter);
-        vault.realizeLoss(loss);
-        vm.stopPrank();
-
-        uint256 assetsAfter = vault.totalAssets();
-
-        assertLt(vault.nowChi(), chiBefore, "handler: realizeLoss did not lower chi");
-        assertGt(vault.nowChi(), 0,         "handler: realizeLoss zeroed chi");
-        assertLe(assetsAfter + loss, assetsBefore, "handler: loss under-applied");
-
-        _recordGainLossError(assetsBefore, assetsAfter, loss, false);
-
-        lossRealizations++;
-        realizedLossUsdc += loss;
-        ghostDeficitUsdc -= int256(loss);
-
-        lastChi = vault.nowChi();  // sanctioned chi decrease (invariant G)
-    }
-
-    // Small gains (`1 <= gain <= totalAssets / 10`), admin only, in any pause state, only with a
-    // live supply, and skipped when the resulting chi would pass 1e30 (keeps every conversion far
-    // from overflow). No backing arrives in the harness, so the gain raises the deficit ledger
-    // (invariant H) and the per-call accounting error is recorded (invariant T).
-    function realizeGain(uint256 gain) public counted("realizeGain") {
-        uint256 supply = vault.totalSupply();
-        if (supply == 0) return;
-
-        uint256 assetsBefore = vault.totalAssets();
-        if (assetsBefore < 10) return;
-
-        gain = _bound(gain, 1, assetsBefore / 10);
-
-        if (((assetsBefore + gain) * RAY) / supply > 1e30) return;
-
-        uint256 chiBefore = vault.nowChi();
+        int256 delta = negative ? -int256(magnitude) : int256(magnitude);
 
         vm.startPrank(admin);
-        vault.realizeGain(gain);
+        vault.adjustTotalAssets(delta);
         vm.stopPrank();
 
         uint256 assetsAfter = vault.totalAssets();
 
-        assertGe(vault.nowChi(), chiBefore,     "handler: realizeGain lowered chi");
-        assertLe(assetsAfter, assetsBefore + gain, "handler: gain over-applied");
+        if (negative) {
+            assertLt(vault.nowChi(), chiBefore,            "handler: negative adjust did not lower chi");
+            assertGt(vault.nowChi(), 0,                    "handler: negative adjust zeroed chi");
+            assertLe(assetsAfter + magnitude, assetsBefore, "handler: loss under-applied");
+            adjustNegatives++;
+            adjustedLossUsdc += magnitude;
+            ghostDeficitUsdc -= int256(magnitude);
+        } else {
+            assertGe(vault.nowChi(), chiBefore,            "handler: positive adjust lowered chi");
+            assertLe(assetsAfter, assetsBefore + magnitude, "handler: gain over-applied");
+            adjustPositives++;
+            adjustedGainUsdc += magnitude;
+            ghostDeficitUsdc += int256(magnitude);
+        }
 
-        _recordGainLossError(assetsBefore, assetsAfter, gain, true);
+        _recordGainLossError(assetsBefore, assetsAfter, magnitude, !negative);
 
-        gainRealizations++;
-        realizedGainUsdc += gain;
-        ghostDeficitUsdc += int256(gain);
+        lastChi = vault.nowChi();  // sanctioned chi move (invariant G)
 
-        lastChi = vault.nowChi();  // sanctioned chi increase outside warp (invariant G)
+        _unpauseIf(pausedHere);
+    }
+
+    function _unpauseIf(bool yes) internal {
+        if (!yes) return;
+        vm.startPrank(admin);
+        vault.unpause();
+        vm.stopPrank();
+    }
+
+    function _probeAdjustNotPaused() internal {
+        adjustNotPausedProbes++;
+        vm.startPrank(admin);
+        try vault.adjustTotalAssets(1) {
+            vm.stopPrank();
+            _recordRevert("<no revert: adjustTotalAssets while not paused>", false);
+        } catch Error(string memory r) {
+            vm.stopPrank();
+            _recordRevert(r, _eq(r, "SparkPrimeVault/not-paused"));
+        } catch {
+            vm.stopPrank();
+            _recordRevert("<non-string revert: adjustTotalAssets while not paused>", false);
+        }
+    }
+
+    // With totalSupply == 0 the contract divides by zero (`:289`, NOTE at `:288`).
+    function _probeAdjustZeroSupply() internal {
+        adjustZeroSupplyProbes++;
+        vm.startPrank(admin);
+        try vault.adjustTotalAssets(1) {
+            vm.stopPrank();
+            _recordRevert("<no revert: adjustTotalAssets at zero supply>", false);
+        } catch Error(string memory r) {
+            vm.stopPrank();
+            _recordRevert(r, false);
+        } catch Panic(uint256 code) {
+            vm.stopPrank();
+            if (_recordRevert("<panic: adjustTotalAssets at zero supply>", code == 0x12)) adjustZeroSupplyPanics++;
+        } catch {
+            vm.stopPrank();
+            _recordRevert("<non-string revert: adjustTotalAssets at zero supply>", false);
+        }
     }
 
     /**********************************************************************************************/
@@ -206,8 +253,9 @@ contract FlowsAdmin is FlowsUser {
     }
 
     // Pays cancelled deposits by spUSDC `redeem` with a budget of min(max, spUSDC.maxRedeem(vault)),
-    // which caps at both the vault's spUSDC balance and spUSDC's USDC liquidity, so since ff828d2
-    // the call must never revert. Any revert is counted and its reason kept (invariant P).
+    // which caps at both the vault's spUSDC balance and spUSDC's USDC liquidity, so the call must
+    // never revert. A blacklisted recipient's USDC is redeemed to the vault and credited to
+    // `claimableAssets` instead; both are "paid" for invariants I and Y.
     function processPendingDepositCancellations(uint256 maxSavingsShares, uint256 maxRequests, uint256 seed)
         public counted("processPendingDepositCancellations")
     {
@@ -222,22 +270,32 @@ contract FlowsAdmin is FlowsUser {
         uint256          head            = vault.firstPendingDepositCancellationId();
         uint256[] memory sharesBefore    = _snapshotCancelledQueue(head);
         uint256          usersUsdcBefore = _usersUsdc();
+        uint256          vaultUsdcBefore = usdc.balanceOf(address(vault));
+        uint256          claimableBefore = _usersClaimable();
         uint256          supplyBefore    = vault.totalSupply();
 
         vm.startPrank(rebalancer);
         try vault.processPendingDepositCancellations(maxSavingsShares, maxRequests) {
             vm.stopPrank();
-            _countCancelledFills(head, sharesBefore);
-            usersRefundedUsdc += _usersUsdc() - usersUsdcBefore;
+            uint256 expected = _countCancelledFills(head, sharesBefore);
+            uint256 toUsers  = _usersUsdc() - usersUsdcBefore;
+            uint256 toVault  = usdc.balanceOf(address(vault)) - vaultUsdcBefore;
+            usersRefundedUsdc     += toUsers + toVault;
+            claimableCreditedUsdc += toVault;
+            if (toVault != 0) fillsToBlacklisted++;
+            assertEq(_usersClaimable() - claimableBefore, toVault, "handler: claimable credit != USDC kept by vault");
             assertEq(vault.totalSupply(), supplyBefore, "handler: refund changed totalSupply");
+            _recordPayout(toUsers + toVault, expected, false);
         } catch Error(string memory reason) {
             vm.stopPrank();
             cancelProcessReverts++;
             lastCancelProcessRevert = reason;
+            _recordRevert(reason, false);
         } catch {
             vm.stopPrank();
             cancelProcessReverts++;
             lastCancelProcessRevert = "<non-string revert>";
+            _recordRevert("<non-string revert: processPendingDepositCancellations>", false);
         }
     }
 
@@ -255,23 +313,48 @@ contract FlowsAdmin is FlowsUser {
         uint256          head            = vault.firstPendingRedeemId();
         uint256[] memory sharesBefore    = _snapshotRedeemQueue(head);
         uint256          usersUsdcBefore = _usersUsdc();
+        uint256          vaultUsdcBefore = usdc.balanceOf(address(vault));
+        uint256          claimableBefore = _usersClaimable();
 
         // The call is wrapped: spUSDC's `withdraw` burns ceil(assets*RAY/chi_s) shares per fill,
         // so a multi-entry fill bounded by the vault's spUSDC *balance* (not spUSDC liquidity) can
-        // exceed the balance by up to one share per entry and revert. Observed, not asserted.
+        // exceed the balance by up to one share per entry and revert (C-1). Observed, not asserted.
         vm.startPrank(rebalancer);
         try vault.processPendingRedeems(maxShares, maxRequests) {
             vm.stopPrank();
-            _countRedeemFills(head, sharesBefore);
-            usersRedeemedUsdc += _usersUsdc() - usersUsdcBefore;
+            uint256 expected = _countRedeemFills(head, sharesBefore);
+            uint256 toUsers  = _usersUsdc() - usersUsdcBefore;
+            uint256 toVault  = usdc.balanceOf(address(vault)) - vaultUsdcBefore;
+            usersRedeemedUsdc     += toUsers + toVault;
+            claimableCreditedUsdc += toVault;
+            if (toVault != 0) fillsToBlacklisted++;
+            assertEq(_usersClaimable() - claimableBefore, toVault, "handler: claimable credit != USDC kept by vault");
+            _recordPayout(toUsers + toVault, expected, true);
         } catch Error(string memory reason) {
             vm.stopPrank();
             lastRedeemProcessRevert = reason;
-            if (keccak256(bytes(reason)) == keccak256("SparkVault/insufficient-balance")) {
+            if (_recordRevert(reason, _eq(reason, "SparkVault/insufficient-balance"))) {
                 redeemProcessReverts++;
             } else {
                 redeemProcessRevertsOther++;
             }
+        } catch {
+            vm.stopPrank();
+            lastRedeemProcessRevert = "<non-string revert>";
+            redeemProcessRevertsOther++;
+            _recordRevert("<non-string revert: processPendingRedeems>", false);
+        }
+    }
+
+    // Invariant Y bookkeeping: what a processing call paid vs the per-entry floor conversions.
+    function _recordPayout(uint256 paid, uint256 expected, bool redeem) internal {
+        uint256 excess = paid > expected ? paid - expected : 0;
+        if (redeem) {
+            if (paid != expected) redeemPayoutMismatches++;
+            if (excess > redeemPayoutMaxExcess) redeemPayoutMaxExcess = excess;
+        } else {
+            if (paid != expected) cancelPayoutMismatches++;
+            if (excess > cancelPayoutMaxExcess) cancelPayoutMaxExcess = excess;
         }
     }
 
@@ -279,17 +362,22 @@ contract FlowsAdmin is FlowsUser {
     /*** TAKER_ROLE: spUSDC out of and back into the vault                                      ***/
     /**********************************************************************************************/
 
+    // `take` is not pause-gated and not ring-fenced: it can move the backing of queued deposits
+    // and queued cancels out of the vault (F-2). Invariant W only tolerates the gap after this.
     function take(uint256 savingsShares, uint256 seed) public counted("take") {
         uint256 balance = spUsdc.balanceOf(address(vault));
         if (balance == 0) return;
 
         savingsShares = seed % 4 == 0 ? balance : _bound(savingsShares, 0, balance);
+        if (savingsShares == 0) return;
 
         vm.startPrank(taker);
         vault.take(savingsShares);
         vm.stopPrank();
 
         takerOutstandingSpUsdc += savingsShares;
+        takeCalled = true;
+        takes++;
     }
 
     // Returns taken spUSDC by plain transfer. The taker mints what it does not hold (USDC minted
