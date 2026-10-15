@@ -356,20 +356,20 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         _processPendingDeposits(maxSavingsShares_, maxRequests_);
     }
 
-    function processPendingRedeems(uint256 maxShares_, uint256 maxRequests_)
-        external
-        onlyRole(REBALANCER_ROLE)
-        whenNotPaused
-    {
-        _processPendingRedeems(maxShares_, maxRequests_);
-    }
-
     function processPendingDepositCancellations(uint256 maxSavingsShares_, uint256 maxRequests_)
         external
         onlyRole(REBALANCER_ROLE)
         whenNotPaused
     {
         _processPendingDepositCancellations(maxSavingsShares_, maxRequests_);
+    }
+
+    function processPendingRedeems(uint256 maxShares_, uint256 maxRequests_)
+        external
+        onlyRole(REBALANCER_ROLE)
+        whenNotPaused
+    {
+        _processPendingRedeems(maxShares_, maxRequests_);
     }
 
     function setRedeemFeeRate(uint256 feeRate_) external onlyRole(REDEEM_FEE_SETTER_ROLE) {
@@ -386,21 +386,34 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     /*** Request functions                                                                      ***/
     /**********************************************************************************************/
 
-    function requestDeposit(uint256 assets_, address recipient_)
-        external
-        whenNotPaused
-        returns (uint256 requestId_)
-    {
-        return _requestDeposit(assets_, recipient_);
-    }
-
     function requestDeposit(uint256 assets_, address recipient_, uint16 referral_)
         external
         whenNotPaused
         returns (uint256 requestId_)
     {
+        require(recipient_ != address(0),    "SparkPrimeVault/zero-recipient");
+        require(recipient_ != address(this), "SparkPrimeVault/vault-recipient");
+        require(assets_ >= minDeposit,       "SparkPrimeVault/below-minimum");
+
+        drip();
+
+        SafeERC20.safeTransferFrom(IERC20OZ(asset), msg.sender, address(this), assets_);
+
+        uint256 savingsShares_ = IERC4626Like(savings).deposit(assets_, address(this));
+
+        requestId_ = _depositRequests.length;
+
+        _depositRequests.push(Request(msg.sender, recipient_, savingsShares_));
+
+        pendingDepositSavingsShares += savingsShares_;
+
         emit Referral(referral_, recipient_, assets_);
-        return _requestDeposit(assets_, recipient_);
+        emit DepositRequest(msg.sender, recipient_, requestId_, assets_, savingsShares_);
+
+        // Fill this request, only while no nonzero requests are queued ahead.
+        if (pendingDepositSavingsShares == savingsShares_) {
+            _processPendingDeposits(type(uint256).max, type(uint256).max);
+        }
     }
 
     function requestDepositCancellation(uint256 requestId_, address recipient_)
@@ -414,7 +427,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         Request memory request_ = _depositRequests[requestId_];
 
         require(request_.shares != 0,         "SparkPrimeVault/no-request");
-        require(msg.sender != request_.owner, "SparkPrimeVault/not-authorized");
+        require(msg.sender == request_.owner, "SparkPrimeVault/not-authorized");
 
         delete _depositRequests[requestId_];
 
@@ -426,16 +439,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         pendingDepositSavingsShares          -= request_.shares;
         pendingCancelledDepositSavingsShares += request_.shares;
-
-        if (requestId_ == firstPendingDepositId) {
-            // Advance head past any cancelled/dead requests.
-            while (
-                firstPendingDepositId < _depositRequests.length &&
-                _depositRequests[firstPendingDepositId].shares == 0
-            ) {
-                unchecked { ++firstPendingDepositId; }
-            }
-        }
 
         emit DepositCancellationRequest(requestId_, newRequestId_, recipient_);
     }
@@ -814,46 +817,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     /**********************************************************************************************/
-    /*** Request internal helper functions                                                      ***/
-    /**********************************************************************************************/
-
-    function _requestDeposit(uint256 assets_, address recipient_)
-        internal
-        returns (uint256 requestId_)
-    {
-        require(recipient_ != address(0),    "SparkPrimeVault/zero-recipient");
-        require(recipient_ != address(this), "SparkPrimeVault/vault-recipient");
-        require(assets_ >= minDeposit,       "SparkPrimeVault/below-minimum");
-
-        drip();
-
-        SafeERC20.safeTransferFrom(IERC20OZ(asset), msg.sender, address(this), assets_);
-
-        uint256 savingsShares_ = IERC4626Like(savings).deposit(assets_, address(this));
-
-        requestId_ = _depositRequests.length;
-
-        _depositRequests.push(Request(msg.sender, recipient_, savingsShares_));
-
-        pendingDepositSavingsShares += savingsShares_;
-
-        emit DepositRequest(msg.sender, recipient_, requestId_, assets_, savingsShares_);
-
-        // Advance head past any cancelled/dead requests.
-        while (
-            firstPendingDepositId < requestId_ &&
-            _depositRequests[firstPendingDepositId].shares == 0
-        ) {
-            unchecked { ++firstPendingDepositId; }
-        }
-
-        // Fill this request, only while nobody is queued ahead.
-        if (firstPendingDepositId == requestId_) {
-            _processPendingDeposits(type(uint256).max, 1);
-        }
-    }
-
-    /**********************************************************************************************/
     /*** Queue internal helper functions                                                        ***/
     /**********************************************************************************************/
 
@@ -934,8 +897,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         firstPendingDepositCancellationId = i_;
     }
 
-    // Pays queued redeems FIFO, burning up to `maxShares_` held shares within the available
-    // liquidity.
     function _processPendingRedeems(uint256 maxShares_, uint256 maxRequests_) internal {
         drip();
 

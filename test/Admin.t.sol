@@ -46,7 +46,7 @@ contract AdjustTotalAssetsTests is TestBase {
 
         vm.startPrank(user);
         usdc.approve(address(vault), assets);
-        vault.requestDeposit(assets, user);
+        vault.requestDeposit(assets, user, 0);
         vm.stopPrank();
     }
 
