@@ -98,6 +98,10 @@ contract Init is Test {
     bool    public takeCalled;             // invariant W: backing gap is only allowed after take()
     uint256 public takes;
     uint256 public maxBackingGapSpUsdc;    // max(pendingDeposit + pendingCancelled - held) seen
+    uint256 public gapOpenedByTake;        // calls in which `take` pushed held below the queues
+    uint256 public gapOpenedByRedeems;     // ... `processPendingRedeems` did (R5-1, not ring-fenced)
+    bool    public gapOpenedElsewhere;     // any other flow did (must stay false)
+    string  public gapOpenedIn;
 
     // spPRIME share provenance per holder (invariant J)
     mapping (address user => uint256) public ghostMinted;
@@ -242,19 +246,25 @@ contract Init is Test {
     modifier counted(string memory name_) {
         if (calls[name_] == 0) callNames.push(name_);
         calls[name_]++;
-        uint256 escrowBefore = vault.balanceOf(address(vault));
-        uint256[3] memory headsBefore = _heads();
+        uint256[5] memory before = _snapshot();
         _;
-        _chiCheck();
-        _escrowCheck(name_, escrowBefore);
-        _headCheck(name_, headsBefore);
-        _backingGapCheck();
+        _afterCall(name_, before);
     }
 
-    function _heads() internal view returns (uint256[3] memory h) {
-        h[0] = vault.firstPendingDepositId();
-        h[1] = vault.firstPendingDepositCancellationId();
-        h[2] = vault.firstPendingRedeemId();
+    // [escrow, deposit head, cancellation head, redeem head, backing gap]
+    function _snapshot() internal view returns (uint256[5] memory s) {
+        s[0] = vault.balanceOf(address(vault));
+        s[1] = vault.firstPendingDepositId();
+        s[2] = vault.firstPendingDepositCancellationId();
+        s[3] = vault.firstPendingRedeemId();
+        s[4] = _backingGap();
+    }
+
+    function _afterCall(string memory name_, uint256[5] memory before) internal {
+        _chiCheck();
+        _escrowCheck(name_, before[0]);
+        _headCheck(name_, [before[1], before[2], before[3]]);
+        _backingGapCheck(name_, before[4] != 0);
     }
 
     // Invariant U bookkeeping: `balanceOf(vault)` may only decrease inside processPendingRedeems
@@ -272,21 +282,32 @@ contract Init is Test {
 
     // Invariant V bookkeeping: no head ever moves backwards.
     function _headCheck(string memory name_, uint256[3] memory before) internal {
-        uint256[3] memory after_ = _heads();
-        for (uint256 i = 0; i < 3; i++) {
-            if (after_[i] < before[i]) {
-                headMovedBackwards   = true;
-                headMovedBackwardsIn = name_;
-            }
+        if (
+            vault.firstPendingDepositId()             < before[0] ||
+            vault.firstPendingDepositCancellationId() < before[1] ||
+            vault.firstPendingRedeemId()              < before[2]
+        ) {
+            headMovedBackwards   = true;
+            headMovedBackwardsIn = name_;
         }
     }
 
-    // Invariant W bookkeeping: the largest shortfall of the vault's spUSDC against what the two
-    // spUSDC-denominated queues are owed, observed after any handler call.
-    function _backingGapCheck() internal {
+    // Invariant W bookkeeping: the shortfall of the vault's spUSDC against what the two
+    // spUSDC-denominated queues are owed (0 when covered), the largest one observed, and which
+    // flow opened a gap that was not there before the call.
+    function _backingGap() internal view returns (uint256) {
         uint256 owed = vault.pendingDepositSavingsShares() + vault.pendingCancelledDepositSavingsShares();
         uint256 held = spUsdc.balanceOf(address(vault));
-        if (owed > held && owed - held > maxBackingGapSpUsdc) maxBackingGapSpUsdc = owed - held;
+        return owed > held ? owed - held : 0;
+    }
+
+    function _backingGapCheck(string memory name_, bool gapBefore) internal {
+        uint256 gap = _backingGap();
+        if (gap > maxBackingGapSpUsdc) maxBackingGapSpUsdc = gap;
+        if (gap == 0 || gapBefore) return;
+        if      (_eq(name_, "take"))                  gapOpenedByTake++;
+        else if (_eq(name_, "processPendingRedeems")) gapOpenedByRedeems++;
+        else { gapOpenedElsewhere = true; gapOpenedIn = name_; }
     }
 
     // No handler moves time except `warp`, so nowChi() may only change inside the warp (up) and

@@ -281,13 +281,18 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
     }
 
     // W. The vault's spUSDC covers the two spUSDC-denominated queues (pending deposits + pending
-    //    cancels) unless `take()` was called (deposit-queue backing is not ring-fenced, F-2). The
-    //    handler keeps the largest gap seen for the report.
-    function invariant_W_spUsdcCoversQueuesUnlessTaken() public view {
-        if (handler.takeCalled()) return;
+    //    cancels) unless `take()` (F-2) or `processPendingRedeems` (R5-1: its budget is the whole
+    //    spUSDC balance, queue backing included) opened the gap; no other flow ever does. The
+    //    handler keeps the largest gap seen and which flow opened each one for the report.
+    function invariant_W_spUsdcCoversQueuesUnlessTakenOrRedeemed() public view {
+        assertFalse(
+            handler.gapOpenedElsewhere(),
+            string.concat("W: a backing gap was opened by ", handler.gapOpenedIn())
+        );
+        if (handler.takeCalled() || handler.gapOpenedByRedeems() != 0) return;
         uint256 owed = vault.pendingDepositSavingsShares() + vault.pendingCancelledDepositSavingsShares();
-        assertGe(spUsdc.balanceOf(address(vault)), owed, "W: vault spUSDC below queued spUSDC without take()");
-        assertEq(handler.maxBackingGapSpUsdc(), 0, "W: backing gap recorded without take()");
+        assertGe(spUsdc.balanceOf(address(vault)), owed, "W: vault spUSDC below queued spUSDC without take() / redeem fill");
+        assertEq(handler.maxBackingGapSpUsdc(), 0, "W: backing gap recorded without take() / redeem fill");
     }
 
     // M. Zero-share fills (F-4) are counted, not asserted; see afterInvariant().
@@ -378,10 +383,13 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
 
     // Z. From any reachable state: unpause, un-blacklist every holder, bring every taken spUSDC
     //    share back, make spUSDC fully liquid, open the capacity, drain the three queues, then
-    //    claim for every holder. Afterwards no claimable is left, the vault holds zero USDC, the
-    //    deposit and cancellation queues are empty, and (when nothing fictitious inflated the
-    //    notional and the rate order held) the redeem queue is empty up to the C-1 strand bound.
-    //    Runs on a non-committing call after every handler call, so it never leaks into the run.
+    //    claim for every holder. Afterwards no claimable is left, the vault holds zero USDC and
+    //    the deposit queue is empty. While the rate order held, what the cancellation and redeem
+    //    queues are still owed is at most the deficit ledger (fictitious gains, invariant H) plus
+    //    the C-1 strand bound; with no fictitious gain both queues are empty up to that bound.
+    //    (R5-1: redeem fills spend the cancellation-queue backing, so the unpaid part can sit in
+    //    either queue.) Runs on a non-committing call after every handler call, so it never
+    //    leaks into the run.
     function invariant_Z_settleEverythingPaysEveryClaimable() public {
         uint256 n = _holders();
 
@@ -405,8 +413,6 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
 
         // Cancellations: budget is maxRedeem(vault) == vault balance once spUSDC is liquid.
         _processCancelledDeposits(type(uint256).max, type(uint256).max);
-        assertEq(vault.pendingCancelledDepositSavingsShares(), 0,                            "Z: cancellation queue not drained");
-        assertEq(vault.firstPendingDepositCancellationId(),    handler.cancelledQueueLength(), "Z: cancellation head not at end");
 
         // Redeems: one batched walk, falling back to one entry per call if the C-1 ceil-burn
         // revert fires, until the head stops moving.
@@ -425,13 +431,22 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
         }
         assertEq(usdc.balanceOf(address(vault)), 0, "Z: vault still holds USDC after settling");
 
-        // Redeem queue: empty, or (only when the notional may exceed backing) short by at most
-        // the ceil-burn strand of every fill ever made.
-        uint256 leftShares = vault.pendingRedeemShares();
-        if (handler.rateOrderBroken() || handler.ghostDeficitUsdc() > 0) return;
+        // Unpaid remainder (USDC): cancellation shares at spUSDC's index plus redeem shares at the
+        // vault's index. Bounded by the deficit ledger plus the ceil-burn strand of every fill.
+        if (handler.rateOrderBroken()) return;
+        uint256 unpaid =
+            spUsdc.convertToAssets(vault.pendingCancelledDepositSavingsShares())
+            + vault.convertToAssets(vault.pendingRedeemShares());
         uint256 chiS    = spUsdc.nowChi();
         uint256 epsilon = (handler.redeemFills() + localFills) * ((chiS + RAY - 1) / RAY) + 2;
-        assertLe(vault.convertToAssets(leftShares), epsilon, "Z: redeem queue not payable after settling");
+        int256  deficit = handler.ghostDeficitUsdc();
+        if (deficit <= 0) {
+            assertEq(vault.pendingCancelledDepositSavingsShares(), 0,                            "Z: cancellation queue not drained without a fictitious gain");
+            assertEq(vault.firstPendingDepositCancellationId(),    handler.cancelledQueueLength(), "Z: cancellation head not at end");
+            assertLe(unpaid, epsilon, "Z: redeem queue not payable after settling");
+        } else {
+            assertLe(unpaid, uint256(deficit) + epsilon, "Z: unpaid remainder exceeds the deficit ledger");
+        }
     }
 
     function _drainRedeems() internal returns (uint256 fills) {
@@ -492,6 +507,67 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
         assertEq(usdc.balanceOf(alice),        99);
         assertEq(_vaultSpUsdc(),               1);
         assertEq(vault.pendingRedeemShares(),  11);
+    }
+
+    // R5-1 (round 5, new). `_processPendingRedeems` (`:900`) budgets `remaining_` by
+    // `convertToShares(availableLiquidAssets())` (`:903`), i.e. `spUSDC.maxWithdraw(vault)`
+    // (`:789`): the vault's WHOLE spUSDC balance, including the shares that back queued deposits
+    // (`pendingDepositSavingsShares`) and queued cancellations
+    // (`pendingCancelledDepositSavingsShares`). Nothing is ring-fenced, so whenever the notional
+    // `totalAssets()` exceeds the real backing (a positive `adjustTotalAssets`, spPRIME VSR above
+    // the spUSDC VSR, or capital out with `take`), redeemers are paid with the cancellers' and
+    // depositors' spUSDC and the cancellation queue can no longer be paid in full.
+    //
+    // Concrete numbers (harness indexes): alice deposits 1,000 USDC (instant fill, 990,405,183
+    // shares backed by 954,532,691 spUSDC worth 999,999,999 USDC). The admin pauses and calls
+    // `adjustTotalAssets(+100e6)` (totalAssets 1,099,999,997; no USDC arrives). alice queues a
+    // redeem of all her shares. Capacity is set to totalSupply, so bob's 500 USDC deposit queues
+    // (477,266,345 spUSDC); bob cancels it. `processPendingRedeems`: budget = 1,350,552,523
+    // shares (maxWithdraw 1,499,999,999 USDC, the whole balance), alice is paid 1,099,999,997
+    // USDC and the vault keeps 381,813,078 spUSDC against 477,266,345 owed to bob.
+    // `processPendingDepositCancellations` pays bob 400,000,001 USDC and stops with 95,453,267
+    // spUSDC still pending at the head: bob is short 99,999,997 USDC and the vault holds 0 spUSDC.
+    // The fictitious 100 USDC gain was paid to alice out of bob's refund.
+    //
+    // This test PASSES by asserting the shortfall; it is a proof, not a regression.
+    function test_BUG_processPendingRedeemsSpendsCancellationQueueBacking() public {
+        address alice = makeAddr("alice");
+        address bob   = makeAddr("bob");
+
+        _deposit(alice, 1_000e6);
+        assertEq(vault.balanceOf(alice), 990_405_183);
+        assertEq(_vaultSpUsdc(),         954_532_691);
+        assertEq(spUsdc.convertToAssets(_vaultSpUsdc()), 999_999_999);
+
+        _adjustTotalAssetsWhilePaused(int256(100e6));
+        assertEq(vault.totalAssets(), 1_099_999_997);
+
+        _requestRedeem(alice, vault.balanceOf(alice));
+
+        _setCapacity(vault.totalSupply());
+        uint256 id = _deposit(bob, 500e6);
+        assertEq(vault.pendingDepositSavingsShares(), 477_266_345);
+        vm.prank(bob);
+        vault.requestDepositCancellation(id, bob);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 477_266_345);
+        assertEq(_vaultSpUsdc(), 1_431_799_036);
+
+        // The redeem budget is the whole balance, bob's backing included.
+        assertEq(spUsdc.maxWithdraw(address(vault)), 1_499_999_999);
+        assertEq(vault.convertToShares(spUsdc.maxWithdraw(address(vault))), 1_350_552_523);
+
+        _processRedeems(type(uint256).max, type(uint256).max);
+        assertEq(usdc.balanceOf(alice),       1_099_999_997);
+        assertEq(vault.pendingRedeemShares(), 0);
+        assertEq(_vaultSpUsdc(),              381_813_078);
+        assertLt(_vaultSpUsdc(), vault.pendingCancelledDepositSavingsShares());
+
+        _processCancelledDeposits(type(uint256).max, type(uint256).max);
+        assertEq(usdc.balanceOf(bob),                          400_000_001);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 95_453_267);
+        assertEq(vault.firstPendingDepositCancellationId(),    0);
+        assertEq(_vaultSpUsdc(),                               0);
+        assertEq(spUsdc.convertToAssets(vault.pendingCancelledDepositSavingsShares()), 99_999_997);
     }
 
     // N-2 (round 2) stays fixed: `_processPendingDepositCancellations` sizes `remaining_` by
@@ -605,6 +681,8 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
         console.log("takes                        ", handler.takes());
         console.log("takerOutstandingSpUsdc       ", handler.takerOutstandingSpUsdc());
         console.log("maxBackingGapSpUsdc (W)      ", handler.maxBackingGapSpUsdc());
+        console.log("gapOpenedByTake (W)          ", handler.gapOpenedByTake());
+        console.log("gapOpenedByRedeems (W, R5-1) ", handler.gapOpenedByRedeems());
         console.log("capacityBelowSupplyEvents (X)", handler.capacityBelowSupplyEvents());
         console.log("unexpectedReverts (AB)       ", handler.unexpectedReverts());
         console.log("totalSupply                  ", vault.totalSupply());
