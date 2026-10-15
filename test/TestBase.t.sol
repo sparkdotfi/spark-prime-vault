@@ -39,13 +39,13 @@ abstract contract TestBase is Test {
 
     struct PendingRequestsState {
         uint256 pendingShareValue;  // USDC value of spUSDC shares (deposit queue) or spPrime shares (redeem queue)
-        uint256 length;             // requests from firstPendingId to the end, cancelled included
-        uint256 firstPendingId;     // first unfilled request id
+        uint256 length;             // Requests from firstPendingId to the end, cancelled included
+        uint256 firstPendingId;     // First unfilled request id
     }
 
     struct VaultState {
-        uint256 rho;                     // last chi update timestamp
-        uint256 chi;                     // rate accumulator [ray]
+        uint256 rho;                     // Last chi update timestamp
+        uint256 chi;                     // Rate accumulator [ray]
         uint256 totalAssets;             // USDC value of supply
         uint256 availableCapacityValue;  // USDC value of spPrime shares left to mint
         uint256 availableLiquidAssets;   // USDC the vault can withdraw from spUSDC now (maxWithdraw)
@@ -55,7 +55,7 @@ abstract contract TestBase is Test {
     }
 
     struct AccountBalances {
-        address account;            // account being checked
+        address account;            // Account being checked
         uint256 assets;             // USDC held
         uint256 shareValue;         // USDC value of spPrime held
         uint256 savingsShareValue;  // USDC value of spUSDC held
@@ -153,15 +153,15 @@ abstract contract TestBase is Test {
             redeemRequests              : redeemRequests
         });
 
-        vm.label(address(spPrime), "spPrime");
-        vm.label(address(spUSDC), "spUSDC");
-        vm.label(address(usdc), "usdc");
-        vm.label(address(admin), "admin");
-        vm.label(address(guardian), "guardian");
-        vm.label(address(rebalancer), "rebalancer");
+        vm.label(address(admin),           "admin");
+        vm.label(address(guardian),        "guardian");
+        vm.label(address(rebalancer),      "rebalancer");
         vm.label(address(redeemFeeSetter), "redeemFeeSetter");
-        vm.label(address(taker), "taker");
-        vm.label(address(vsrSetter), "vsrSetter");
+        vm.label(address(spPrime),         "spPrime");
+        vm.label(address(spUSDC),          "spUSDC");
+        vm.label(address(taker),           "taker");
+        vm.label(address(usdc),            "usdc");
+        vm.label(address(vsrSetter),       "vsrSetter");
     }
 
     function _getBlock() internal pure returns (uint256) {
@@ -259,9 +259,9 @@ abstract contract TestBase is Test {
         );
 
         assertEq(
-            spPrime.getPendingDepositRequests().
-            length, vaultState.depositRequests.length,
-            "length, vaultState.depositRequests.length"
+            spPrime.getPendingDepositRequests().length,
+            vaultState.depositRequests.length,
+            "vaultState.depositRequests.length"
         );
 
         assertEq(
@@ -279,9 +279,9 @@ abstract contract TestBase is Test {
         );
 
         assertEq(
-            spPrime.getPendingDepositCancellationRequests().
-            length, vaultState.depositCancellationRequests.length,
-            "length, vaultState.depositCancellationRequests.length"
+            spPrime.getPendingDepositCancellationRequests().length,
+            vaultState.depositCancellationRequests.length,
+            "vaultState.depositCancellationRequests.length"
         );
 
         assertEq(
@@ -299,9 +299,9 @@ abstract contract TestBase is Test {
         );
 
         assertEq(
-            spPrime.getPendingRedeemRequests().
-            length, vaultState.redeemRequests.length,
-            "length, vaultState.redeemRequests.length"
+            spPrime.getPendingRedeemRequests().length,
+            vaultState.redeemRequests.length,
+            "vaultState.redeemRequests.length"
         );
 
         assertEq(

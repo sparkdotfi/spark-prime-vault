@@ -79,9 +79,9 @@ contract ERC20Tests is TokenFuzzChecks {
     )
         external
     {
-        amount     = bound(amount,   0,               1e36);
+        amount     = bound(amount,   0,                      1e36);
         deadline   = bound(deadline, vm.getBlockTimestamp(), vm.getBlockTimestamp() + 100 days);
-        nonce      = bound(nonce,    0,               type(uint256).max);
+        nonce      = bound(nonce,    0,                      type(uint256).max);
 
         checkBulkPermitFuzz({
             _token        : address(spPrime),

@@ -57,7 +57,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         spPrime.requestDeposit(MINIMUM_DEPOSIT, user, 0);
     }
 
-    function test_requestDeposit_notEnoughAllowanceBoundary() external {
+    function test_requestDeposit_insufficientAllowanceBoundary() external {
         deal(address(usdc), user, 1_000_000e6 + 1);
 
         vm.prank(user);
@@ -71,7 +71,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         spPrime.requestDeposit(1_000_000e6, user, 0);
     }
 
-    function test_requestDeposit_notEnoughBalanceBoundary() external {
+    function test_requestDeposit_insufficientBalanceBoundary() external {
         deal(address(usdc), user, 1_000_000e6);
 
         vm.prank(user);
@@ -147,15 +147,15 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         assertEq(requestId, 1);
 
-        _assertDepositRequest(1, user, user, 800_000e6 - 500_000e6);
+        _assertDepositRequest(1, user, user, 300_000e6);
 
-        vaultState.totalAssets            += expectedConvertedAssets;
-        vaultState.availableCapacityValue = 2;
+        vaultState.totalAssets            += 500_000e6 - 1;
+        vaultState.availableCapacityValue  = 2;
         vaultState.availableLiquidAssets  += 800_000e6;
 
-        vaultState.depositRequests.pendingShareValue += 800_000e6 - 500_000e6;
-        vaultState.depositRequests.length            = 1;
-        vaultState.depositRequests.firstPendingId    = 1;
+        vaultState.depositRequests.pendingShareValue += 300_000e6;
+        vaultState.depositRequests.length             = 1;
+        vaultState.depositRequests.firstPendingId     = 1;
 
         userBalances.shareValue += 500_000e6 - 1;
 
