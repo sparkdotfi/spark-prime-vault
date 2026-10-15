@@ -24,8 +24,8 @@ contract SparkPrimeVaultMathHarness is SparkPrimeVault {
 
 }
 
-/// @dev Rounding campaign for `SparkPrimeVault`, round 3 (src = `refactor/more-simplifying` @
-///      ff828d2). Every rounding site R1..R14 gets a direction proof against the
+/// @dev Rounding campaign for `SparkPrimeVault`, round 5 (src = `master` @ 0ebb452; rounds 2-4
+///      were ff828d2 / bf93b0d). Every rounding site R1..R14 gets a direction proof against the
 ///      exact rational value, computed in the test with cross-multiplication so nothing is
 ///      rounded on the reference side. Indexes are randomised (VSR in bounds, random warp, drip)
 ///      unless a test says "harness chis", which means the ugly setUp values chi_s ~1.0476e27
@@ -133,19 +133,49 @@ contract RoundingTest is LocalTestBase {
         }
     }
 
+    /// @dev `adjustTotalAssets(-loss)` as admin; the vault must already be paused.
+    function _realizeLoss(uint256 loss) internal {
+        vm.prank(admin);
+        vault.adjustTotalAssets(-int256(loss));
+    }
+
+    /// @dev `adjustTotalAssets(+gain)` as admin; the vault must already be paused.
+    function _realizeGain(uint256 gain) internal {
+        vm.prank(admin);
+        vault.adjustTotalAssets(int256(gain));
+    }
+
     function _realizeInParts(uint256 total, uint256 k, uint256 split) internal {
         uint256[] memory parts = _parts(total, k, split);
         for (uint256 i = 0; i < k; ++i) _realizeLoss(parts[i]);
     }
 
-    function _realizeGain(uint256 gain) internal {
-        vm.prank(admin);
-        vault.realizeGain(gain);
-    }
-
     function _realizeGainInParts(uint256 total, uint256 k, uint256 split) internal {
         uint256[] memory parts = _parts(total, k, split);
         for (uint256 i = 0; i < k; ++i) _realizeGain(parts[i]);
+    }
+
+    /// @dev Sets `chi` directly through storage so a property can be fuzzed at any pair of indexes,
+    ///      including ones no sequence of drips and adjustments would land on exactly. Prime vault:
+    ///      slot 8, alone (`decimals` and `rho` share slot 7). spUSDC: slot 3, packed after `rho`
+    ///      (uint64) at offset 8 bytes. `rho` is kept in both cases.
+    function _storeChi(address who, uint256 slot, uint256 offsetBits, uint256 newChi) internal {
+        require(newChi < 2 ** 192, "chi does not fit");
+        uint256 raw  = uint256(vm.load(who, bytes32(slot)));
+        uint256 mask = ((2 ** 192) - 1) << offsetBits;
+        vm.store(who, bytes32(slot), bytes32((raw & ~mask) | (newChi << offsetBits)));
+    }
+
+    function _setPrimeChi(uint256 newChi) internal {
+        _storeChi(address(vault), 8, 0, newChi);
+        assertEq(vault.chi(), newChi, "storeChi: prime chi");
+        assertEq(vault.nowChi(), newChi, "storeChi: prime nowChi");
+    }
+
+    function _setSpUsdcChi(uint256 newChi) internal {
+        _storeChi(address(spUsdc), 3, 64, newChi);
+        assertEq(spUsdc.chi(), newChi, "storeChi: spUSDC chi");
+        assertEq(spUsdc.nowChi(), newChi, "storeChi: spUSDC nowChi");
     }
 
     /// @dev Leaves alice holding exactly `n` spPRIME shares (harness chis): deposits enough for
@@ -168,13 +198,13 @@ contract RoundingTest is LocalTestBase {
             abi.encodeCall(SparkPrimeVault.initialize, (address(spUsdc), "fresh", "fresh", admin))
         )));
         vm.startPrank(admin);
-        fresh.grantRole(SETTER_ROLE, vsrSetter);
+        fresh.grantRole(VSR_SETTER_ROLE, vsrSetter);
         fresh.setVSRBounds(RAY, MAX_VSR);
         vm.stopPrank();
     }
 
     /**********************************************************************************************/
-    /*** R1  _requestDeposit:771  spUSDC.deposit  floor(assets * RAY / chi_s)                     ***/
+    /*** R1  requestDeposit:402  spUSDC.deposit  floor(assets * RAY / chi_s)                     ***/
     /**********************************************************************************************/
 
     function testFuzz_R1_spUsdcDeposit_roundsInFavourOfSpUsdc(
@@ -217,7 +247,7 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R2  _processPendingDeposits:805  spUSDC.convertToShares(convertToAssets(capacity))         ***/
+    /*** R2  _processPendingDeposits:829  spUSDC.convertToShares(convertToAssets(capacity))         ***/
     /**********************************************************************************************/
 
     /// @dev The admitted spUSDC amount is floor(floor(A * c_p) / c_s): at most 1 + 1/c_s below
@@ -251,8 +281,8 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R3  _processPendingDeposits:823  spUSDC.convertToAssets  floor(s * chi_s / RAY)            ***/
-    /*** R4  _processPendingDeposits:824  convertToShares         floor(assets * RAY / chi_p)       ***/
+    /*** R3  _processPendingDeposits:845  spUSDC.convertToAssets  floor(s * chi_s / RAY)            ***/
+    /*** R4  _processPendingDeposits:846  convertToShares         floor(assets * RAY / chi_p)       ***/
     /**********************************************************************************************/
 
     function testFuzz_R3_R4_fillConversion_roundsInFavourOfVault(
@@ -289,7 +319,7 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R5  requestRedeem:457  shares_ >= minRedeem  (minRedeem in SHARES: no rounding)        ***/
+    /*** R5  requestRedeem:453  shares_ >= minRedeem  (minRedeem in SHARES: no rounding)        ***/
     /**********************************************************************************************/
 
     /// @dev The minimum is now compared in shares, so the check is exact: `minRedeem` passes,
@@ -367,12 +397,12 @@ contract RoundingTest is LocalTestBase {
         assertEq(vault.pendingRedeemShares(), 0);
         assertEq(vault.totalSupply(), 0);
 
-        // Redeem requests are final (no cancel at bf93b0d); the dead entry is skipped by the
-        // planner (`:896` continue) and cannot be repointed (`:513` no-request).
+        // Redeem requests are final (no cancel at 0ebb452); the dead entry is skipped by the
+        // planner (`:911` continue) and cannot be repointed (`:513` no-request).
         vm.prank(bob);
         vm.expectRevert("SparkPrimeVault/no-request");
         vault.updateRedeemRecipient(id, bob);
-        // No spUSDC in the vault: `remaining_ == 0` skips the loop (`:891`) and the dead head is
+        // No spUSDC in the vault: `remaining_ == 0` skips the loop (`:908`) and the dead head is
         // not walked. Dead redeem entries only advance the head once there is liquidity.
         _processRedeems(type(uint256).max, type(uint256).max);
         assertEq(vault.firstPendingRedeemId(), 0);
@@ -382,7 +412,7 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R6  requestRedeem:464  _divUp(shares * redeemFee, WAD)                                  ***/
+    /*** R6  requestRedeem:460  _divUp(shares * redeemFee, WAD)                                  ***/
     /**********************************************************************************************/
 
     /// @dev With `minRedeem` now in shares (and 0 by default) the ceil has a visible edge: for
@@ -457,7 +487,7 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R7  _processPendingRedeems:886  convertToShares(availableLiquidAssets())  floor            ***/
+    /*** R7  _processPendingRedeems:903  convertToShares(availableLiquidAssets())  floor            ***/
     /**********************************************************************************************/
 
     function testFuzz_R7_liquidityClamp_roundsInFavourOfVault(
@@ -498,8 +528,8 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R8  _processPendingRedeems:899  convertToAssets(shares)  floor                             ***/
-    /*** R9  _processPendingRedeems:909  spUSDC.withdraw(assets)  burns ceil(assets * RAY / chi_s)  ***/
+    /*** R8  _processPendingRedeems:914  convertToAssets(shares)  floor                             ***/
+    /*** R9  _processPendingRedeems:922 / _withdrawSavings:952  spUSDC.withdraw(assets)  burns ceil(assets * RAY / chi_s)  ***/
     /**********************************************************************************************/
 
     function testFuzz_R8_R9_redeemFill_floorPayoutCeilBurn(
@@ -591,8 +621,8 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R10 _processPendingDepositCancellations:869  spUSDC.redeem(shares)  floor(s * chi_s / RAY)   ***/
-    /***     budget :784  min(maxSavingsShares, spUSDC.maxRedeem(vault))                        ***/
+    /*** R10 _processPendingDepositCancellations:888 / _redeemSavings:939  spUSDC.redeem(shares)  floor(s * chi_s / RAY)   ***/
+    /***     budget :869-870  min(maxSavingsShares, spUSDC.maxRedeem(vault))                        ***/
     /***     maxRedeem = min(floor(L * RAY / chi_s), bal_s), L = USDC held by spUSDC            ***/
     /**********************************************************************************************/
 
@@ -887,7 +917,7 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R11 drip:620 / nowChi:748  _rpow(vsr, dt) * chi / RAY, _rpow half-up                    ***/
+    /*** R11 drip:637 / nowChi:811  _rpow(vsr, dt) * chi / RAY, _rpow half-up                    ***/
     /**********************************************************************************************/
 
     /// @dev The harness indexes equal the python mirror of `_rpow` (test/tables/drip_reference.py).
@@ -986,7 +1016,7 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R12 convertToAssets:730 / convertToShares:734  floor / floor                            ***/
+    /*** R12 convertToAssets:793 / convertToShares:797  floor / floor                            ***/
     /**********************************************************************************************/
 
     function testFuzz_R12_convertToAssets_roundsInFavourOfVault(
@@ -1040,8 +1070,9 @@ contract RoundingTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** R13 realizeLoss:378  chi = uint192(((totalAssets() - loss) * RAY) / totalSupply)       ***/
-    /***     requires :376  0 < loss < totalAssets()  and  :380  totalSupply != 0               ***/
+    /*** R13 adjustTotalAssets:289  chi = uint192((TA + delta) * RAY / S), delta < 0 (loss)      ***/
+    /***     requires :279 paused, :280 delta != 0, :286 TA + delta > 0, :291 chi != 0,         ***/
+    /***     :292 chi <= uint192.max; drip() first (:282); S == 0 panics (:289, div by zero)    ***/
     /**********************************************************************************************/
 
     /// @dev Direction. Two floors, both against holders: TA = floor(S chi / RAY), then
@@ -1050,9 +1081,9 @@ contract RoundingTest is LocalTestBase {
     ///      supply (S < RAY) that is TA' in {TA - L - 1, TA - L}: holders lose at least `loss`
     ///      and at most 1 wei more, and exactly 1 wei more unless S | (TA - L) RAY. In chi units
     ///      the over-reduction is < RAY / S + 1. chi' <= chi always (uint192 cast cannot truncate).
-    ///      Round 3: the admissible range is `0 < loss < TA` (`invalid-loss` otherwise), the
-    ///      characterisation is unchanged on it.
-    function testFuzz_R13_realizeLoss_floorsAgainstHolders_overRealisesAtMostOneWei(
+    ///      Round 5: `adjustTotalAssets(-L)` on 0ebb452, admissible range `0 < L < TA`
+    ///      (`loss-too-high` at `:286` otherwise), characterisation unchanged.
+    function testFuzz_R13_adjustTotalAssets_loss_floorsAgainstHolders_overRealisesAtMostOneWei(
         uint256 assets, uint256 loss, uint256 vsrS, uint256 vsrP, uint256 secs
     ) public {
         assets = bound(assets, 1, 1e15);
@@ -1094,8 +1125,8 @@ contract RoundingTest is LocalTestBase {
     /// @dev Both outcomes occur. Harness chis, 1_000_000e6 deposited (S = 990_405_184_109, coprime
     ///      to 10, TA = 999_999_999_998): loss 1 drops totalAssets by 2, loss 999_999_999 by
     ///      1_000_000_000 (generic case). The only loss with an exact drop is TA - S =
-    ///      9_594_815_889 (lands chi exactly on RAY); TA itself (chi 0 in round 2) is now rejected.
-    function test_R13_realizeLoss_harnessExamples() public {
+    ///      9_594_815_889 (lands chi exactly on RAY); TA itself is rejected (`loss-too-high`).
+    function test_R13_adjustTotalAssets_loss_harnessExamples() public {
         _deposit(alice, 1_000_000e6);
         assertEq(vault.totalSupply(),  990_405_184_109);
         assertEq(vault.totalAssets(),  999_999_999_998);
@@ -1105,6 +1136,8 @@ contract RoundingTest is LocalTestBase {
 
         uint256 snapshot = vm.snapshotState();
 
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.TotalAssetsAdjusted(1009687768240663846587628160, -1);
         _realizeLoss(1);
         assertEq(vault.totalAssets(), 999_999_999_996);              // loss 1, drop 2
         assertEq(vault.chi(), 1009687768240663846587628160);
@@ -1124,25 +1157,27 @@ contract RoundingTest is LocalTestBase {
     }
 
     /// @dev With S = 1 share, TA = floor(chi / RAY) = 1 for chi in [RAY, 2 RAY), so no loss passes
-    ///      `0 < loss < totalAssets()`: a single-share vault cannot realise any loss (round 2: a
-    ///      1-wei loss zeroed chi; the new bound removes that brick and with it every loss). The
-    ///      smallest supply that can realise one is S = 2 (TA = 2): loss 1 gives chi = RAY / 2
-    ///      exactly (2 | RAY), totalAssets 1, drop exactly 1.
-    function test_R13_realizeLoss_singleShareSupply_noLossIsPossible() public {
+    ///      `TA + delta > 0`: a single-share vault cannot realise any loss. The smallest supply
+    ///      that can realise one is S = 2 (TA = 2): loss 1 gives chi = RAY / 2 exactly (2 | RAY),
+    ///      totalAssets 1, drop exactly 1.
+    function test_R13_adjustTotalAssets_singleShareSupply_noLossIsPossible() public {
         _trimSupplyTo(1);
         assertEq(vault.totalSupply(), 1);
         assertEq(vault.totalAssets(), 1);           // floor(1 * 1.0097) = 1
 
         _pause();
-        for (uint256 loss = 0; loss <= 2; ++loss) {
-            vm.prank(redeemFeeSetter);
-            vm.expectRevert("SparkPrimeVault/invalid-loss");
-            vault.realizeLoss(loss);
+        vm.prank(admin);
+        vm.expectRevert("SparkPrimeVault/delta-total-assets-zero");
+        vault.adjustTotalAssets(0);
+        for (int256 loss = 1; loss <= 2; ++loss) {
+            vm.prank(admin);
+            vm.expectRevert("SparkPrimeVault/loss-too-high");
+            vault.adjustTotalAssets(-loss);
         }
         assertEq(vault.totalAssets(), 1);
     }
 
-    function test_R13_realizeLoss_twoShareSupply_oneWeiLossHalvesChi() public {
+    function test_R13_adjustTotalAssets_twoShareSupply_oneWeiLossHalvesChi() public {
         _trimSupplyTo(2);
         assertEq(vault.totalSupply(), 2);
         assertEq(vault.totalAssets(), 2);
@@ -1152,16 +1187,17 @@ contract RoundingTest is LocalTestBase {
 
         assertEq(vault.chi(), RAY / 2);
         assertEq(vault.totalAssets(), 1);
-        vm.prank(redeemFeeSetter);
-        vm.expectRevert("SparkPrimeVault/invalid-loss");
-        vault.realizeLoss(1);                       // TA is 1 again: nothing more can be lost
+        vm.prank(admin);
+        vm.expectRevert("SparkPrimeVault/loss-too-high");
+        vault.adjustTotalAssets(-1);                // TA is 1 again: nothing more can be lost
     }
 
-    /// @dev Boundary: `loss >= totalAssets()` and `loss == 0` revert `invalid-loss` (round 2 let
-    ///      `loss == TA` through and left chi == 0, bricking `convertToShares`). The largest
-    ///      succeeding loss is `totalAssets() - 1`; it leaves chi == floor(RAY / S), which is >= 1
-    ///      for a 6-decimal supply (S < RAY), and totalAssets() in {0, 1}. chi can no longer reach 0.
-    function testFuzz_R13_realizeLoss_largestSucceedingLossIsTotalAssetsMinusOne(
+    /// @dev Boundary: `loss >= totalAssets()` reverts `loss-too-high` (`:286`), `loss == 0` reverts
+    ///      `delta-total-assets-zero` (`:280`). The largest succeeding loss is `totalAssets() - 1`;
+    ///      it leaves chi == floor(RAY / S), which is >= 1 for a 6-decimal supply (S < RAY), and
+    ///      totalAssets() in {0, 1}. `chi-too-low` (`:291`) is unreachable while S < RAY (C-3: no
+    ///      loss floor, one call wipes the holders down to 1 wei of notional).
+    function testFuzz_BUG_C3_adjustTotalAssets_largestLossIsTotalAssetsMinusOne_noFloor(
         uint256 assets, uint256 vsrS, uint256 vsrP, uint256 secs
     ) public {
         assets = bound(assets, 1, 1e15);
@@ -1174,17 +1210,17 @@ contract RoundingTest is LocalTestBase {
 
         _pause();
 
-        vm.prank(redeemFeeSetter);
-        vm.expectRevert("SparkPrimeVault/invalid-loss");
-        vault.realizeLoss(ta + 1);
+        vm.prank(admin);
+        vm.expectRevert("SparkPrimeVault/loss-too-high");
+        vault.adjustTotalAssets(-int256(ta + 1));
 
-        vm.prank(redeemFeeSetter);
-        vm.expectRevert("SparkPrimeVault/invalid-loss");
-        vault.realizeLoss(ta);
+        vm.prank(admin);
+        vm.expectRevert("SparkPrimeVault/loss-too-high");
+        vault.adjustTotalAssets(-int256(ta));
 
-        vm.prank(redeemFeeSetter);
-        vm.expectRevert("SparkPrimeVault/invalid-loss");
-        vault.realizeLoss(0);
+        vm.prank(admin);
+        vm.expectRevert("SparkPrimeVault/delta-total-assets-zero");
+        vault.adjustTotalAssets(0);
 
         if (ta == 1) {
             assertEq(supply, 1);                           // TA >= S, so TA == 1 forces S == 1
@@ -1196,28 +1232,75 @@ contract RoundingTest is LocalTestBase {
         assertGe(vault.chi(), 1);
         assertEq(vault.totalAssets(), supply * (RAY / supply) / RAY);  // 0 or 1
         assertEq(vault.convertToShares(1), RAY / (RAY / supply));      // no division by zero
+        assertEq(vault.assetsOf(alice), vault.totalAssets());          // alice: <= 1 wei left
     }
 
-    /// @dev `totalSupply == 0`: `totalAssets()` is 0, so `loss_ < 0` is false for every loss and
-    ///      the call reverts `invalid-loss` before the `no-shares` check. `no-shares` is unreachable
-    ///      in `realizeLoss`: S == 0 implies TA == 0 implies `invalid-loss`, and S != 0 passes it.
-    ///      (It is reachable in `realizeGain`, R14.)
-    function testFuzz_R13_realizeLoss_zeroSupply_revertsInvalidLoss_noSharesUnreachable(uint256 loss)
-        public
-    {
+    /// @dev `chi-too-low` (`:291`) needs `(TA + delta) * RAY < S`, i.e. S > RAY = 1e27 shares
+    ///      (1e21 USDC at 6 decimals). Reachable only with such a supply: lose everything but
+    ///      1 wei and the quotient floors to 0. With S == RAY exactly, chi lands on 1.
+    function test_R13_adjustTotalAssets_chiTooLow_onlyAboveRaySupply() public {
+        _setCapacity(type(uint256).max / (2 * vault.nowChi()));
+        _deposit(alice, 1.1e27);                    // 1.1e21 USDC
+        uint256 supply = vault.totalSupply();
+        assertGt(supply, RAY);
+        uint256 ta = vault.totalAssets();
+
+        _pause();
+        vm.prank(admin);
+        vm.expectRevert("SparkPrimeVault/chi-too-low");
+        vault.adjustTotalAssets(-int256(ta - 1));
+
+        // TA - delta = ceil(S / RAY) is the smallest surviving notional: chi = 1
+        uint256 minTa = _divUp(supply, RAY);
+        _realizeLoss(ta - minTa);
+        assertEq(vault.chi(), 1);
+        assertEq(vault.totalAssets(), supply / RAY);
+    }
+
+    /// @dev `totalSupply == 0`: `totalAssets()` is 0, so every loss reverts `loss-too-high` and
+    ///      every gain reaches `:289` and panics with a division by zero (the NOTE at `:288`
+    ///      assumes it never happens); a gain above C = floor(2^256 / RAY) overflows the product
+    ///      first (0x11). A `delta` of 0 is rejected before either.
+    function testFuzz_R13_adjustTotalAssets_zeroSupply_lossRevertsGainPanics(int256 delta) public {
         assertEq(vault.totalSupply(), 0);
         assertEq(vault.totalAssets(), 0);
         _pause();
 
-        vm.prank(redeemFeeSetter);
-        vm.expectRevert("SparkPrimeVault/invalid-loss");
-        vault.realizeLoss(loss);
+        vm.prank(admin);
+        if (delta == 0) {
+            vm.expectRevert("SparkPrimeVault/delta-total-assets-zero");
+        } else if (delta < 0) {
+            vm.expectRevert("SparkPrimeVault/loss-too-high");
+        } else if (uint256(delta) > type(uint256).max / RAY) {
+            vm.expectRevert(stdError.arithmeticError);
+        } else {
+            vm.expectRevert(stdError.divisionError);
+        }
+        vault.adjustTotalAssets(delta);
     }
 
-    /// @dev No truncation: chi' <= (TA - L) RAY / S <= TA RAY / S <= chi < 2^192, for any loss
-    ///      in the admissible range. Checked over random chis up to 10 years at 100% APY
-    ///      (chi ~ 1e30) and the full loss range.
-    function testFuzz_R13_realizeLoss_castNeverTruncates(
+    /// @dev `int256` edges: `type(int256).min` is a loss larger than any notional and reverts
+    ///      `loss-too-high` (no signed overflow: TA >= 0); `type(int256).max` overflows the signed
+    ///      add at `:284` for any TA > 0 (panic 0x11) and is `chi-too-high` at TA == 0 only
+    ///      through the division by zero. The largest admissible gain is bounded by the uint256
+    ///      product at `:289` long before (see R14).
+    function test_R13_adjustTotalAssets_int256Edges() public {
+        _deposit(alice, 1_000e6);
+        _pause();
+
+        vm.prank(admin);
+        vm.expectRevert("SparkPrimeVault/loss-too-high");
+        vault.adjustTotalAssets(type(int256).min);
+
+        vm.prank(admin);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.adjustTotalAssets(type(int256).max);
+    }
+
+    /// @dev No truncation on a loss: chi' <= (TA - L) RAY / S <= TA RAY / S <= chi < 2^192, for
+    ///      any loss in the admissible range, so the `chi-too-high` check at `:292` never fires
+    ///      for `delta < 0`. Checked over random chis up to 10 years at 100% APY (chi ~ 1e30).
+    function testFuzz_R13_adjustTotalAssets_loss_castNeverTruncates(
         uint256 assets, uint256 loss, uint256 vsrS, uint256 vsrP, uint256 secs
     ) public {
         assets = bound(assets, 1, 1e15);
@@ -1239,10 +1322,10 @@ contract RoundingTest is LocalTestBase {
         assertEq(uint256(vault.chi()), wide);
     }
 
-    /// @dev Path dependence: k losses summing to L never leave MORE than one loss of L (floor is
-    ///      monotone and S chi_i / RAY <= TA_{i-1} - l_{i-1}), and at most k wei less:
-    ///      0 <= TA_single - TA_k <= k. In chi units the gap is < k (RAY / S + 1).
-    function testFuzz_R13_realizeLoss_sequenceVsSingle_pathDependenceBound(
+    /// @dev Path dependence (V2-12, still open): k losses summing to L never leave MORE than one
+    ///      loss of L (floor is monotone and S chi_i / RAY <= TA_{i-1} - l_{i-1}), and at most k
+    ///      wei less: 0 <= TA_single - TA_k <= k. In chi units the gap is < k (RAY / S + 1).
+    function testFuzz_BUG_V2_12_adjustTotalAssets_loss_sequenceVsSingle_driftsAtMostKWei(
         uint256 assets, uint256 total, uint256 k, uint256 split, uint256 vsrS, uint256 vsrP, uint256 secs
     ) public {
         assets = bound(assets, 1, 1e15);
@@ -1273,10 +1356,92 @@ contract RoundingTest is LocalTestBase {
         assertLe(taSingle - taSeq, k, "R13 path: sequence over-realised more than k wei");
     }
 
+    /// @dev V2-12, exact at the harness: each `adjustTotalAssets` call floors once more. 1e6 USDC
+    ///      of loss in one call drops totalAssets by 1_000_001 (1 wei of drift); the same loss in
+    ///      six calls of 1e6 / 6 (166_666 x 5 + 166_670) drops it by 1_000_006: one wei per call.
+    ///      The drift is pure floor, it never favours the holders.
+    function test_BUG_V2_12_adjustTotalAssets_oneWeiDriftPerCall_harness() public {
+        _deposit(alice, 1_000_000e6);
+        uint256 ta = vault.totalAssets();
+        assertEq(ta, 999_999_999_998);
+        _pause();
+
+        uint256 snapshot = vm.snapshotState();
+        _realizeLoss(1_000_000);
+        assertEq(ta - vault.totalAssets(), 1_000_001);
+        vm.revertToState(snapshot);
+
+        for (uint256 i = 0; i < 5; ++i) _realizeLoss(166_666);
+        _realizeLoss(166_670);
+        assertEq(ta - vault.totalAssets(), 1_000_006);
+    }
+
+    /// @dev Loss then gain of the same amount is not the identity: TA1 in {TA - L - 1, TA - L},
+    ///      then TA2 in {TA1 + L - 1, TA1 + L}, so the round trip ends in [TA - 2, TA] and chi''
+    ///      <= chi. Fuzzed over random chis and losses; exact harness numbers in the next test.
+    function testFuzz_R13_R14_adjustTotalAssets_lossGainRoundTrip_losesAtMostTwoWei(
+        uint256 assets, uint256 loss, uint256 vsrS, uint256 vsrP, uint256 secs
+    ) public {
+        assets = bound(assets, 1, 1e15);
+        (, uint256 chiP) = _randomChis(vsrS, vsrP, secs);
+
+        _deposit(alice, assets);
+        uint256 supply = vault.totalSupply();
+        vm.assume(supply != 0);
+        uint256 ta = vault.totalAssets();
+        vm.assume(ta >= 2);
+        loss = bound(loss, 1, ta - 1);
+
+        _pause();
+        _realizeLoss(loss);
+        uint256 ta1 = vault.totalAssets();
+        _realizeGain(loss);
+
+        uint256 ta2 = vault.totalAssets();
+        assertLe(ta2, ta, "round trip: holders gained");
+        assertLe(ta - ta2, 2, "round trip: lost more than 2 wei");
+        assertLe(vault.chi(), chiP, "round trip: chi grew");
+        assertEq(ta - ta2, (ta - ta1 - loss) + (ta1 + loss - ta2), "round trip: drift is the two floors");
+    }
+
+    /// @dev Harness, 1_000_000e6 deposited (TA = 999_999_999_998, S = 990_405_184_109): loss 1
+    ///      drops TA to 999_999_999_996 (chi 1009687768242461209408770821 ->
+    ///      1009687768240663846587628160); gain 1 then recomputes floor((999_999_999_997) RAY / S),
+    ///      the very same chi: the gain is absorbed entirely by the floor, 2 wei lost in total.
+    ///      Loss 999_999_999 then gain 999_999_999 ends at 999_999_999_996 as well. The exact-drop
+    ///      loss TA - S round-trips to 999_999_999_997: 1 wei lost (only the gain floors).
+    function test_R13_R14_adjustTotalAssets_lossGainRoundTrip_harnessExact() public {
+        _deposit(alice, 1_000_000e6);
+        uint256 chi0 = vault.chi();
+        assertEq(chi0, 1009687768242461209408770821);
+        _pause();
+
+        uint256 snapshot = vm.snapshotState();
+
+        _realizeLoss(1);
+        assertEq(vault.chi(), 1009687768240663846587628160);
+        _realizeGain(1);
+        assertEq(vault.chi(), 1009687768240663846587628160);          // unchanged by the gain
+        assertEq(vault.totalAssets(), 999_999_999_996);
+        assertLt(vault.chi(), chi0);
+        vm.revertToState(snapshot);
+
+        _realizeLoss(999_999_999);
+        _realizeGain(999_999_999);
+        assertEq(vault.totalAssets(), 999_999_999_996);
+        vm.revertToState(snapshot);
+
+        _realizeLoss(999_999_999_998 - 990_405_184_109);
+        assertEq(vault.chi(), RAY);
+        _realizeGain(999_999_999_998 - 990_405_184_109);
+        assertEq(vault.totalAssets(), 999_999_999_997);
+    }
+
     /// @dev Consequence for R8/R12: after a loss chi can be below RAY, so `convertToAssets(s) >= s`
     ///      no longer holds and a small redeem pays floor(s c_p) == 0 while the shares are burned.
     ///      Harness: lose all but 1 wei of a 1_000_000e6 position, chi ~ 1e15; redeeming 1e9 shares
-    ///      pays 0 USDC (and burns 0 spUSDC: `withdraw(0)`).
+    ///      pays 0 USDC (and burns 0 spUSDC: `withdraw(0)`). The region is exact: any
+    ///      `s < ceil(RAY / chi)` pays 0; `s = ceil(RAY / chi)` = 990_405_184_110 pays 1 wei.
     function test_R13_afterLoss_chiBelowRay_smallRedeemPaysZero() public {
         _deposit(alice, 1_000_000e6);
         uint256 ta = vault.totalAssets();
@@ -1285,8 +1450,15 @@ contract RoundingTest is LocalTestBase {
         _realizeLoss(ta - 1);
         _unpause();
 
-        assertLt(vault.chi(), RAY);
+        uint256 chi = vault.chi();
+        assertLt(chi, RAY);
+        assertEq(chi, 1_009_687_768_243_692);                         // floor(RAY / S)
         assertEq(vault.convertToAssets(1e9), 0);
+        uint256 sMin = _divUp(RAY, chi);
+        assertEq(sMin, 990_405_184_110);                              // S + 1
+        assertEq(vault.convertToAssets(sMin - 1), 0);
+        assertEq(vault.convertToAssets(sMin),     1);
+        assertGt(sMin, vault.totalSupply());        // nobody holds enough shares to be paid 1 wei
 
         uint256 spBefore = _vaultSpUsdc();
         _requestRedeem(alice, 1e9);
@@ -1298,10 +1470,42 @@ contract RoundingTest is LocalTestBase {
         assertEq(_vaultSpUsdc(), spBefore);
     }
 
+    /// @dev Fuzzed form of the zero-payout region after a loss: for any chi < RAY a redeem of
+    ///      `s < ceil(RAY / chi)` shares burns the shares and pays 0, and one of exactly
+    ///      `ceil(RAY / chi)` pays 1 wei. Both the shares and the fee are gone for nothing.
+    function testFuzz_R13_afterLoss_zeroPayoutRegion_isExact(uint256 loss, uint256 s, uint256 vsrS, uint256 secs)
+        public
+    {
+        _randomChis(vsrS, RAY, secs);
+        _deposit(alice, 1_000_000e6);
+        uint256 ta = vault.totalAssets();
+        uint256 supply = vault.totalSupply();
+        loss = bound(loss, ta - supply + 1, ta - 1);   // chi lands strictly below RAY
+        _pause();
+        _realizeLoss(loss);
+        _unpause();
+        uint256 chi = vault.chi();
+        assertLt(chi, RAY);
+
+        uint256 sMin = _divUp(RAY, chi);
+        assertGe(sMin, 2);
+        assertEq(vault.convertToAssets(sMin - 1), 0);
+        assertEq(vault.convertToAssets(sMin),     1);
+
+        s = bound(s, 1, sMin - 1);
+        if (s > supply) return;
+
+        uint256 spBefore = _vaultSpUsdc();
+        _requestRedeem(alice, s);
+        _processRedeems(type(uint256).max, 1);
+        assertEq(usdc.balanceOf(alice), 0, "paid for a redeem below the zero region");
+        assertEq(vault.totalSupply(), supply - s);
+        assertEq(_vaultSpUsdc(), spBefore);
+    }
 
     /**********************************************************************************************/
-    /*** R14 realizeGain:302  chi = uint192(((totalAssets() + gain) * RAY) / totalSupply)       ***/
-    /***     requires :298  gain > 0  and  :304  totalSupply != 0; drip() first; no pause check   ***/
+    /*** R14 adjustTotalAssets:289  chi = uint192((TA + delta) * RAY / S), delta > 0 (gain)      ***/
+    /***     same requires; :292 `chi-too-high` now rejects a uint192 wrap (fixed, was a BUG)    ***/
     /**********************************************************************************************/
 
     /// @dev Direction. The same two floors as R13, again against holders: TA = floor(S chi / RAY),
@@ -1310,7 +1514,7 @@ contract RoundingTest is LocalTestBase {
     ///      TA' in {TA + G - 1, TA + G}, exactly TA + G iff S | (TA + G) RAY. In chi units the
     ///      credit is <= the exact G RAY / S and less than RAY / S + 1 units short. chi' >= chi for
     ///      every G >= 1 because (TA + 1) RAY > S chi.
-    function testFuzz_R14_realizeGain_floorsAgainstHolders_underCreditsAtMostOneWei(
+    function testFuzz_R14_adjustTotalAssets_gain_floorsAgainstHolders_underCreditsAtMostOneWei(
         uint256 assets, uint256 gain, uint256 vsrS, uint256 vsrP, uint256 secs
     ) public {
         assets = bound(assets, 1, 1e15);
@@ -1324,6 +1528,7 @@ contract RoundingTest is LocalTestBase {
         uint256 ta = vault.totalAssets();
         gain = bound(gain, 1, 1e24);
 
+        _pause();
         _realizeGain(gain);
 
         uint256 chiNew = vault.chi();
@@ -1350,14 +1555,17 @@ contract RoundingTest is LocalTestBase {
     ///      raises totalAssets by 0, gain 2 by 1, gain 999_999_999 by 999_999_998 (generic case:
     ///      gain - 1). Exact only when S | TA + G, e.g. G = 2S - TA = 980_810_368_220 lands chi on
     ///      exactly 2 RAY.
-    function test_R14_realizeGain_harnessExamples() public {
+    function test_R14_adjustTotalAssets_gain_harnessExamples() public {
         _deposit(alice, 1_000_000e6);
         assertEq(vault.totalSupply(), 990_405_184_109);
         assertEq(vault.totalAssets(), 999_999_999_998);
         uint256 chi0 = vault.chi();
+        _pause();
 
         uint256 snapshot = vm.snapshotState();
 
+        vm.expectEmit(address(vault));
+        emit SparkPrimeVault.TotalAssetsAdjusted(1009687768242683222124115546, 1);
         _realizeGain(1);
         assertEq(vault.totalAssets(), 999_999_999_998);              // gain 1, rise 0
         assertEq(vault.chi(), 1009687768242683222124115546);
@@ -1377,11 +1585,13 @@ contract RoundingTest is LocalTestBase {
         assertEq(vault.totalAssets(), 2 * 990_405_184_109);
     }
 
-    /// @dev No pause check, admin only, `drip()` first: the gain is added on top of the accrued
-    ///      index, paused or not. 365 days at 5% un-dripped, then gain 1 while paused: chi is
+    /// @dev R3-1 fixed: `adjustTotalAssets` requires `paused` (`:279`), and while paused
+    ///      `requestDeposit` / `requestRedeem` / the three planners revert `paused`, so no request
+    ///      can be placed between the adjustment and the next block. `drip()` runs first (`:282`):
+    ///      365 days at 5% un-dripped, then gain 1 while paused: chi is
     ///      floor((TA_accrued + 1) RAY / S) with TA_accrued from `nowChi()` before the call, and
-    ///      rho moves to now.
-    function test_R14_realizeGain_dripsFirst_worksPausedAndUnpaused() public {
+    ///      rho moves to now. Not admin: AccessControl revert.
+    function test_fixed_R3_1_adjustTotalAssets_requiresPause_dripsFirst() public {
         _deposit(alice, 1_000_000e6);
         uint256 supply = vault.totalSupply();
 
@@ -1390,44 +1600,76 @@ contract RoundingTest is LocalTestBase {
         uint256 taAccrued = vault.totalAssets();                      // via nowChi(), not dripped
         assertGt(taAccrued, 999_999_999_998);
 
+        vm.prank(admin);
+        vm.expectRevert("SparkPrimeVault/not-paused");
+        vault.adjustTotalAssets(1);
+
         _pause();
         _realizeGain(1);
         assertEq(vault.chi(), (taAccrued + 1) * RAY / supply);
         assertEq(vault.rho(), block.timestamp);
 
-        _unpause();
-        uint256 ta = vault.totalAssets();
-        _realizeGain(5);
-        assertEq(vault.chi(), (ta + 5) * RAY / supply);
+        _fund(bob, 1e6);
+        vm.prank(bob);
+        vm.expectRevert("SparkPrimeVault/paused");
+        vault.requestDeposit(1e6, bob, 0);
+        vm.prank(alice);
+        vm.expectRevert("SparkPrimeVault/paused");
+        vault.requestRedeem(1, alice);
+        vm.prank(rebalancer);
+        vm.expectRevert("SparkPrimeVault/paused");
+        vault.processPendingDeposits(type(uint256).max, type(uint256).max);
+        vm.prank(rebalancer);
+        vm.expectRevert("SparkPrimeVault/paused");
+        vault.processPendingRedeems(type(uint256).max, type(uint256).max);
 
         vm.prank(redeemFeeSetter);
         vm.expectRevert();
-        vault.realizeGain(1);                                          // DEFAULT_ADMIN_ROLE only
+        vault.adjustTotalAssets(1);                                   // DEFAULT_ADMIN_ROLE only
     }
 
-    function test_R14_realizeGain_zeroGain_revertsInvalidGain() public {
+    /// @dev R3-1 residual, quantified: the pause is a separate GUARDIAN tx, so a deposit landing
+    ///      between "gain public" and "pause" still captures its pro-rata share of the gain. Harness:
+    ///      alice 1_000_000e6, bob 1_000_000e6 one block before the pause, gain 50_000e6 (5%):
+    ///      the vault realises 49_999_999_999 (R14 floor) and bob's notional rises by exactly
+    ///      25_000_000_000, half the nominal gain (each `assetsOf` floors on its own, so the two
+    ///      halves sum to 1 wei more than `totalAssets()` moved). A bob who deposits after the
+    ///      unpause gets 0 of it: the window is the gap between the public payload and `pause()`.
+    function test_R3_1_depositBeforePause_capturesProRataGain_quantified() public {
+        _deposit(alice, 1_000_000e6);
+        _deposit(bob,   1_000_000e6);
+        uint256 bobBefore = vault.assetsOf(bob);
+        uint256 taBefore  = vault.totalAssets();
+
+        _pause();
+        _realizeGain(50_000e6);
+        _unpause();
+
+        uint256 realised = vault.totalAssets() - taBefore;
+        assertEq(realised, 49_999_999_999);                            // gain - 1 (R14 floor)
+        assertEq(vault.assetsOf(bob) - bobBefore, 25_000_000_000);
+        assertEq(vault.assetsOf(alice) - bobBefore, 25_000_000_000);
+        assertEq(vault.balanceOf(alice), vault.balanceOf(bob));
+
+        uint256 taAfter = vault.totalAssets();
+        _deposit(makeAddr("late"), 1_000_000e6);
+        assertEq(vault.assetsOf(makeAddr("late")), 999_999_999_998);  // no share of the gain (one more floor at the higher chi)
+        assertEq(vault.totalAssets() - taAfter, 999_999_999_999);
+    }
+
+    function test_R14_adjustTotalAssets_zeroDelta_reverts() public {
         _deposit(alice, 1_000e6);
+        _pause();
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/invalid-gain");
-        vault.realizeGain(0);
-    }
-
-    /// @dev Unlike R13, `no-shares` is reachable here: with S == 0 any positive gain passes the
-    ///      first check and hits the supply check (the division by zero is never reached).
-    function testFuzz_R14_realizeGain_zeroSupply_revertsNoShares(uint256 gain) public {
-        gain = bound(gain, 1, type(uint256).max);
-        assertEq(vault.totalSupply(), 0);
-
-        vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/no-shares");
-        vault.realizeGain(gain);
+        vm.expectRevert("SparkPrimeVault/delta-total-assets-zero");
+        vault.adjustTotalAssets(0);
     }
 
     /// @dev Path dependence: k gains summing to G credit no more than one gain of G
     ///      (TA_{i} <= TA_{i-1} + g_i, so TA_{k-1} + g_k <= TA + G and the floor is monotone) and at
     ///      most k wei less: 0 <= TA_single - TA_k <= k, (chi_single - chi_k) S < k (RAY + S). One
     ///      aggregated gain is better for holders than a stream of small ones.
-    function testFuzz_R14_realizeGain_sequenceVsSingle_pathDependenceBound(
+    function testFuzz_BUG_V2_12_adjustTotalAssets_gain_sequenceVsSingle_driftsAtMostKWei(
         uint256 assets, uint256 total, uint256 k, uint256 split, uint256 vsrS, uint256 vsrP, uint256 secs
     ) public {
         assets = bound(assets, 1, 1e15);
@@ -1438,6 +1680,7 @@ contract RoundingTest is LocalTestBase {
         uint256 supply = vault.totalSupply();
         vm.assume(supply != 0);
         total = bound(total, k, 1e24);
+        _pause();
 
         uint256 snapshot = vm.snapshotState();
         _realizeGain(total);
@@ -1457,7 +1700,7 @@ contract RoundingTest is LocalTestBase {
     /// @dev Three thresholds on `gain`, in this order for every supply (because RAY > 2^64):
     ///        G_drip  = ceil((C + 1) S / RAY) - 1 - TA,  C = floor((2^256 - 1) / RAY)
     ///                  largest gain after which `drip()` still works at VSR == RAY
-    ///        G_trunc = ceil(2^192 S / RAY) - TA         smallest gain whose quotient wraps in uint192
+    ///        G_trunc = ceil(2^192 S / RAY) - TA         smallest gain rejected `chi-too-high`
     ///        G_ovf   = C - TA                            largest gain whose product fits uint256
     ///      Harness (S = 990_405_184_109, TA = 999_999_999_998):
     ///        G_drip  = 114_681_085_459_449_903_921_528_244_645_760_028                 (1.1468e35)
@@ -1472,8 +1715,9 @@ contract RoundingTest is LocalTestBase {
         gOvf   = c - ta;
     }
 
-    /// @dev uint256: `(TA + G) * RAY` overflows (panic 0x11) iff TA + G > C, i.e. G > G_ovf.
-    function testFuzz_R14_realizeGain_uint256OverflowThreshold(
+    /// @dev uint256: `(TA + G) * RAY` overflows (panic 0x11) iff TA + G > C, i.e. G > G_ovf. At
+    ///      G_ovf the product fits but the quotient is >= 2^192: `chi-too-high`.
+    function testFuzz_R14_adjustTotalAssets_uint256OverflowThreshold(
         uint256 assets, uint256 vsrS, uint256 vsrP, uint256 secs
     ) public {
         assets = bound(assets, 1, 1e15);
@@ -1487,20 +1731,22 @@ contract RoundingTest is LocalTestBase {
         (uint256 gDrip, uint256 gTrunc, uint256 gOvf) = _gainThresholds(supply, ta);
         assertLt(gDrip, gTrunc);
         assertLt(gTrunc, gOvf);
+        _pause();
 
         vm.prank(admin);
         vm.expectRevert(stdError.arithmeticError);
-        vault.realizeGain(gOvf + 1);
+        vault.adjustTotalAssets(int256(gOvf + 1));
 
-        _realizeGain(gOvf);                                            // fits; wraps in uint192
-        assertEq(uint256(vault.chi()), ((ta + gOvf) * RAY / supply) % (2 ** 192));
+        vm.prank(admin);
+        vm.expectRevert("SparkPrimeVault/chi-too-high");
+        vault.adjustTotalAssets(int256(gOvf));
     }
 
-    /// @dev uint192: for G < G_trunc the quotient is < 2^192 and chi stores it exactly; at G_trunc
-    ///      the cast wraps silently and chi becomes `quotient mod 2^192`, far below the intended
-    ///      value. (Every such G is already > G_drip, so `drip()` is bricked anyway unless the wrap
-    ///      lands below C, see the BUG test.)
-    function testFuzz_R14_realizeGain_uint192TruncationThreshold(
+    /// @dev FIXED (was `test_BUG_realizeGain_uint192TruncationCollapsesChi`): for G < G_trunc the
+    ///      quotient is < 2^192 and chi stores it exactly; at G_trunc and above the call reverts
+    ///      `chi-too-high` (`:292`) instead of wrapping. The harness gain that used to collapse chi
+    ///      to ~RAY (quotient 2^192 + RAY + 458_233_707_431_279) is rejected.
+    function testFuzz_fixed_adjustTotalAssets_uint192WrapRevertsChiTooHigh(
         uint256 assets, uint256 vsrS, uint256 vsrP, uint256 secs
     ) public {
         assets = bound(assets, 1, 1e15);
@@ -1512,6 +1758,7 @@ contract RoundingTest is LocalTestBase {
         uint256 ta = vault.totalAssets();
 
         (, uint256 gTrunc,) = _gainThresholds(supply, ta);
+        _pause();
 
         uint256 snapshot = vm.snapshotState();
 
@@ -1523,50 +1770,38 @@ contract RoundingTest is LocalTestBase {
 
         wide = (ta + gTrunc) * RAY / supply;
         assertGe(wide, 2 ** 192);
-        _realizeGain(gTrunc);
-        assertEq(uint256(vault.chi()), wide % (2 ** 192));
-        assertLt(uint256(vault.chi()), wide, "R14: cast did not wrap");
+        vm.prank(admin);
+        vm.expectRevert("SparkPrimeVault/chi-too-high");
+        vault.adjustTotalAssets(int256(gTrunc));
+        assertEq(uint256(vault.chi()), vault.nowChi());
     }
 
-    /// @dev BUG · Low (admin only). Past G_trunc the wrap can land chi anywhere in [0, 2^192), and
-    ///      in particular back below C where `drip()` works again: the vault stays alive with a
-    ///      collapsed index. Harness: G = ceil((2^192 + RAY) S / RAY) - TA =
-    ///      6_216_874_099_906_568_962_213_193_772_735_334_179_364_221 gives quotient 2^192 + RAY +
-    ///      458_233_707_431_279, stored chi = 1_000_000_000_000_458_233_707_431_279 (~RAY):
-    ///      totalAssets() falls from 999_999_999_998 to 990_405_184_109 after a "gain", drip works,
-    ///      `GainRealized` reports the collapsed chi. A wrap to exactly 0 is also possible
-    ///      (quotient = m 2^192), bricking `convertToShares`.
-    function test_BUG_realizeGain_uint192TruncationCollapsesChi() public {
+    function test_fixed_adjustTotalAssets_uint192WrapRevertsChiTooHigh_harness() public {
         _deposit(alice, 1_000_000e6);
         uint256 supply = vault.totalSupply();
         uint256 ta     = vault.totalAssets();
 
         uint256 gain = _divUp((2 ** 192 + RAY) * supply, RAY) - ta;
         assertEq(gain, 6_216_874_099_906_568_962_213_193_772_735_334_179_364_221);
+        assertEq((ta + gain) * RAY / supply - 2 ** 192, 1_000_000_000_000_458_233_707_431_279);
 
-        uint256 quotient = (ta + gain) * RAY / supply;
-        assertEq(quotient - 2 ** 192, 1_000_000_000_000_458_233_707_431_279);
-
-        vm.expectEmit(address(vault));
-        emit SparkPrimeVault.GainRealized(uint192(quotient), gain);
-        _realizeGain(gain);
-
-        assertEq(vault.chi(), 1_000_000_000_000_458_233_707_431_279);
-        assertEq(vault.totalAssets(), 990_405_184_109);               // was 999_999_999_998
-        assertLt(vault.totalAssets(), ta);
-
-        _warpAndDrip(365 days);                                        // drip alive
-        assertEq(vault.chi(), 1_000_000_000_000_458_233_707_431_279); // VSR == RAY
+        _pause();
+        vm.prank(admin);
+        vm.expectRevert("SparkPrimeVault/chi-too-high");
+        vault.adjustTotalAssets(int256(gain));
+        assertEq(vault.totalAssets(), ta);
     }
 
-    /// @dev BUG · Low (admin only). `drip()` computes `_rpow(vsr, dt) * chi`, which must stay below
-    ///      2^256: chi <= floor((2^256 - 1) / rpow). At VSR == RAY that is chi <= C ~ 1.158e50 for
-    ///      any dt. G_drip is the largest gain keeping chi <= C; one more wei pushes chi over it
-    ///      and every call that drips (deposits, redeems, queue processing, setVSR, realizeLoss,
-    ///      realizeGain, nowChi-based views) panics as soon as block.timestamp > rho. Only an
-    ///      upgrade can recover. Deposits die earlier through CAP-1: `availableCapacity() * chi`
-    ///      overflows once chi > type(uint256).max / availableCapacity() (3.4e38 at the harness cap).
-    function testFuzz_BUG_realizeGain_dripOverflowThreshold_exact(
+    /// @dev BUG G-1/G-2 (open) · Low (admin only). `drip()` computes `_rpow(vsr, dt) * chi`, which
+    ///      must stay below 2^256: chi <= floor((2^256 - 1) / rpow). At VSR == RAY that is
+    ///      chi <= C ~ 1.158e50 for any dt. G_drip is the largest gain keeping chi <= C; one more
+    ///      wei pushes chi over it and every call that drips (deposits, redeems, queue processing,
+    ///      setVSR, adjustTotalAssets, nowChi-based views) panics as soon as block.timestamp > rho.
+    ///      `adjustTotalAssets` drips first (`:282`), so it cannot undo it: only an upgrade
+    ///      recovers. The `uint192` bound at `:292` (6.3e57) is 5.4e7 times too loose to prevent
+    ///      it. Deposits die earlier through CAP-1: `availableCapacity() * chi` overflows once
+    ///      chi > type(uint256).max / availableCapacity() (3.4e38 at the harness cap).
+    function testFuzz_BUG_G1_adjustTotalAssets_dripOverflowThreshold_exact(
         uint256 assets, uint256 dt, uint256 vsrS, uint256 vsrP, uint256 secs
     ) public {
         assets = bound(assets, 1, 1e15);
@@ -1581,11 +1816,13 @@ contract RoundingTest is LocalTestBase {
 
         (uint256 gDrip,,) = _gainThresholds(supply, ta);
         uint256 c = type(uint256).max / RAY;
+        _pause();
 
         uint256 snapshot = vm.snapshotState();
 
         _realizeGain(gDrip);
         assertLe(uint256(vault.chi()), c);
+        _unpause();
         _warp(dt);
         assertEq(vault.nowChi(), vault.chi());
         vault.drip();
@@ -1597,6 +1834,7 @@ contract RoundingTest is LocalTestBase {
 
         _realizeGain(gDrip + 1);
         assertGt(uint256(vault.chi()), c);
+        assertLe(uint256(vault.chi()), type(uint192).max);             // the :292 bound admits it
         _warp(dt);
 
         vm.expectRevert(stdError.arithmeticError);
@@ -1606,27 +1844,33 @@ contract RoundingTest is LocalTestBase {
         vm.expectRevert(stdError.arithmeticError);
         vault.totalAssets();
 
+        vm.prank(admin);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.adjustTotalAssets(-1);                                   // drip() first: cannot undo
+        vm.prank(admin);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.adjustTotalAssets(1);
+        vm.prank(vsrSetter);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.setVSR(RAY);
+
+        _unpause();
         _fund(bob, 1e6);
         vm.prank(bob);
         vm.expectRevert(stdError.arithmeticError);
         vault.requestDeposit(1e6, bob, 0);
-
-        _pause();
-        vm.prank(redeemFeeSetter);
+        vm.prank(alice);
         vm.expectRevert(stdError.arithmeticError);
-        vault.realizeLoss(1);
-        vm.prank(admin);
+        vault.requestRedeem(1, alice);
+        vm.prank(rebalancer);
         vm.expectRevert(stdError.arithmeticError);
-        vault.realizeGain(1);
-        vm.prank(vsrSetter);
-        vm.expectRevert(stdError.arithmeticError);
-        vault.setVSR(RAY);
+        vault.processPendingRedeems(type(uint256).max, type(uint256).max);
     }
 
     /// @dev Harness numbers for the drip threshold, and the VSR dependence: the same G_drip that is
     ///      safe forever at VSR == RAY bricks the vault 1 second after the VSR is raised, because
     ///      the bound is chi <= (2^256 - 1) / rpow(vsr, dt) and rpow(MAX_VSR, 1) > RAY.
-    function test_BUG_realizeGain_dripOverflow_oneWeiBricks_thresholdShrinksWithVsr() public {
+    function test_BUG_G1_adjustTotalAssets_dripOverflow_oneWeiBricks_thresholdShrinksWithVsr() public {
         _deposit(alice, 1_000_000e6);
         uint256 supply = vault.totalSupply();
         uint256 ta     = vault.totalAssets();
@@ -1635,6 +1879,7 @@ contract RoundingTest is LocalTestBase {
         assertEq(gDrip,  114_681_085_459_449_903_921_528_244_645_760_028);
         assertEq(gTrunc, 6_216_874_099_906_568_962_213_193_772_734_343_774_180_112);
         assertEq(gOvf,   115_792_089_237_316_195_423_570_985_008_687_907_852_269_984_665_642);
+        _pause();
 
         uint256 snapshot = vm.snapshotState();
 
@@ -1652,6 +1897,40 @@ contract RoundingTest is LocalTestBase {
 
         _setPrimeVsr(MAX_VSR);                                         // drips at dt == 0: fine
         assertGt(uint256(vault.chi()), type(uint256).max / MAX_VSR);  // over the 1-second bound
+        _warp(1);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.drip();
+    }
+
+    /// @dev The exact smallest `chi` that reverts `drip()` at VSR == RAY is C + 1 =
+    ///      115792089237316195423570985008687907853269984665641 (chi * RAY is the first product
+    ///      past 2^256 - 1); C itself drips for any dt. Set through storage so the value is exact
+    ///      (an `adjustTotalAssets` lands on a multiple-free quotient, e.g. gDrip + 1 above gives
+    ///      C + 664_435_247_753_226). At MAX_VSR the smallest reverting chi after 1 second is
+    ///      floor((2^256 - 1) / MAX_VSR) + 1 = 115792086692257871478197290620423733568884919991398 + 1.
+    function test_BUG_G1_drip_smallestRevertingChi_exact() public {
+        uint256 c = type(uint256).max / RAY;
+        assertEq(c, 115792089237316195423570985008687907853269984665640);
+        assertLt(c, type(uint192).max);
+
+        _setPrimeChi(c);
+        _warp(TEN_YEARS);
+        assertEq(vault.drip(), c);
+
+        _setPrimeChi(c + 1);
+        _warp(1);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.drip();
+        vm.expectRevert(stdError.arithmeticError);
+        vault.nowChi();
+
+        uint256 cMax = type(uint256).max / MAX_VSR;
+        assertEq(cMax, 115792086692257871478197290620423733568884919991398);
+        _setPrimeChi(cMax);
+        _setPrimeVsr(MAX_VSR);                                         // drips at dt == 0
+        _warp(1);
+        assertEq(vault.drip(), cMax * MAX_VSR / RAY);
+        _setPrimeChi(cMax + 1);
         _warp(1);
         vm.expectRevert(stdError.arithmeticError);
         vault.drip();
@@ -1903,7 +2182,7 @@ contract RoundingTest is LocalTestBase {
     }
 
     /// @dev Round 4 (new idea): after a loss `chi_p < RAY`, so `convertToShares` mints more
-    ///      shares than USDC wei. The capacity chain `:805` still cannot over-mint: with
+    ///      shares than USDC wei. The capacity chain `:829` still cannot over-mint: with
     ///      `A = floor(cap chi_p / RAY)`, `s = floor(A RAY / chi_s)`, a fill of `s` pays
     ///      `a = floor(s chi_s / RAY) <= A` and mints `floor(a RAY / chi_p) <= floor(A RAY / chi_p)
     ///      <= cap`. Fuzzed over losses down to `chi = floor(RAY / S)`: the instant fill and a
@@ -1947,7 +2226,7 @@ contract RoundingTest is LocalTestBase {
 
     /// @dev Round 4: a severe loss shrinks what one share of capacity is worth. At the largest
     ///      admissible loss (`TA - 1`, chi = floor(RAY / S) ~ 1.0097e15) a headroom below
-    ///      `RAY / chi` ~ 9.9e11 shares (about the whole supply) converts to 0 USDC (`:805`), so
+    ///      `RAY / chi` ~ 9.9e11 shares (about the whole supply) converts to 0 USDC (`:829`), so
     ///      no deposit can be filled until the admin raises capacity by more than that; the
     ///      deposit is queued and the planner loop is skipped.
     ///      At a 50% loss 1 share of headroom is worth 0 USDC and 2 shares worth 1 wei, which
@@ -2136,6 +2415,516 @@ contract RoundingTest is LocalTestBase {
                 vm.revertToState(snapshot);
             }
         }
+    }
+
+    /**********************************************************************************************/
+    /*** Round 5 attacks (a): C-1 on 0ebb452, minimal reproduction and exact shortfall           ***/
+    /***     clamp :903  convertToShares(maxWithdraw)  once per call, in spPRIME shares           ***/
+    /***     burn  :922/:952  withdraw(assets)  ceil(assets RAY / chi_s) spUSDC per fill          ***/
+    /**********************************************************************************************/
+
+    /// @dev Predicted spUSDC burn of a fill of `s` spPRIME shares: ceil(floor(s chi_p / RAY) RAY / chi_s).
+    function _ceilBurn(uint256 s, uint256 chiS, uint256 chiP) internal pure returns (uint256) {
+        return _divUp((s * chiP / RAY) * RAY, chiS);
+    }
+
+    /// @dev Smallest spUSDC balance at the harness chis for which a two-entry batch reverts:
+    ///      3401 spUSDC (maxWithdraw 3563 USDC, clamp 3528 shares). Requests 108 + 3420 = 3528
+    ///      pay 109 + 3453 USDC and burn 105 + 3297 = 3402 spUSDC: 1 share short. Found by brute
+    ///      force over every balance below 3401 and every split (no smaller balance reverts,
+    ///      because the two floors in the clamp leave >= 2 USDC of slack until then).
+    ///      Asserts the intended behaviour (both paid) and FAILS with
+    ///      `SparkVault/insufficient-balance` (`:416` of the spUSDC code).
+    function test_BUG_C1_batchRedeem_minimalReproduction_3401_shortfall1() public {
+        _deposit(alice, 1_000_000e6);
+        _take(_vaultSpUsdc() - 3401);
+        assertEq(_vaultSpUsdc(), 3401);
+        assertEq(spUsdc.maxWithdraw(address(vault)), 3563);
+        assertEq(vault.convertToShares(3563), 3528);
+
+        uint256 chiS = spUsdc.chi();
+        uint256 chiP = vault.chi();
+        assertEq(_ceilBurn(108, chiS, chiP),  105);
+        assertEq(_ceilBurn(3420, chiS, chiP), 3297);
+        assertEq(uint256(105 + 3297), 3402);                           // > 3401 by exactly 1
+
+        uint256 id1 = _requestRedeem(alice, 108);
+        uint256 id2 = _requestRedeem(alice, 3420);
+
+        _processRedeems(type(uint256).max, 2);  // reverts: SparkVault/insufficient-balance
+
+        assertEq(_redeemShares(id1), 0);
+        assertEq(_redeemShares(id2), 0);
+        assertEq(usdc.balanceOf(alice), 109 + 3453);
+    }
+
+    /// @dev Same state, `expectRevert` form (passes): the batch reverts, one request per call
+    ///      works because the clamp is recomputed from the reduced balance: 108 pays 109 and burns
+    ///      105; then maxWithdraw = floor(3296 c_s) = 3452 -> clamp 3418 of the 3420 requested,
+    ///      pays 3451, burns 3295: the vault ends with 1 spUSDC share and 2 shares queued until
+    ///      the taker returns spUSDC (the next call's clamp is floor(floor(1.0476) / c_p) = 1).
+    function test_BUG_C1_batchRedeem_minimalReproduction_expectRevert_thenOneByOne() public {
+        _deposit(alice, 1_000_000e6);
+        _take(_vaultSpUsdc() - 3401);
+
+        uint256 id1 = _requestRedeem(alice, 108);
+        uint256 id2 = _requestRedeem(alice, 3420);
+
+        vm.prank(rebalancer);
+        vm.expectRevert("SparkVault/insufficient-balance");
+        vault.processPendingRedeems(type(uint256).max, 2);
+
+        _processRedeems(type(uint256).max, 1);
+        assertEq(_redeemShares(id1), 0);
+        assertEq(_vaultSpUsdc(), 3401 - 105);
+        assertEq(usdc.balanceOf(alice), 109);
+
+        assertEq(spUsdc.maxWithdraw(address(vault)), 3452);
+        assertEq(vault.convertToShares(3452), 3418);
+        _processRedeems(type(uint256).max, 1);
+        assertEq(_redeemShares(id2), 2);
+        assertEq(_vaultSpUsdc(), 1);
+        assertEq(usdc.balanceOf(alice), 109 + 3451);
+        assertEq(vault.pendingRedeemShares(), 2);
+
+        // the last share: maxWithdraw floor(1.0476) = 1 -> clamp 0: nothing more can be paid
+        assertEq(spUsdc.maxWithdraw(address(vault)), 1);
+        assertEq(vault.convertToShares(1), 0);
+        _processRedeems(type(uint256).max, 1);
+        assertEq(_redeemShares(id2), 2);
+    }
+
+    /// @dev Three entries can be 2 short: 13625 spUSDC (maxWithdraw 14274, clamp 14137), requests
+    ///      7036 + 6840 + 261 burn 6782 + 6593 + 252 = 13627.
+    function test_BUG_C1_batchRedeem_threeEntries_shortfall2() public {
+        _deposit(alice, 1_000_000e6);
+        _take(_vaultSpUsdc() - 13625);
+        assertEq(spUsdc.maxWithdraw(address(vault)), 14274);
+        assertEq(vault.convertToShares(14274), 14137);
+
+        _requestRedeem(alice, 7036);
+        _requestRedeem(alice, 6840);
+        _requestRedeem(alice, 261);
+
+        uint256 chiS = spUsdc.chi();
+        uint256 chiP = vault.chi();
+        assertEq(_ceilBurn(7036, chiS, chiP) + _ceilBurn(6840, chiS, chiP) + _ceilBurn(261, chiS, chiP), 13627);
+
+        vm.prank(rebalancer);
+        vm.expectRevert("SparkVault/insufficient-balance");
+        vault.processPendingRedeems(type(uint256).max, 3);
+
+        // the first two alone burn 13375 <= 13625: the third entry is what tips it
+        _processRedeems(type(uint256).max, 2);
+        assertEq(_vaultSpUsdc(), 13625 - 6782 - 6593);
+    }
+
+    /// @dev General form, arbitrary indexes (chi_s in [RAY, 10 RAY], chi_p in [RAY/1000, 10 RAY]
+    ///      through storage), n in [2, 4] entries splitting exactly the clamp: the batch reverts
+    ///      iff the sum of the per-fill ceil burns exceeds the vault's spUSDC balance, and the
+    ///      shortfall is at most n - 1 shares (each ceil adds < 1). With one entry it never
+    ///      reverts: ceil(paid / c_s) <= ceil(maxWithdraw / c_s) <= bal.
+    function testFuzz_BUG_C1_batchRedeem_revertIffCeilBurnsExceedBalance_shortfallAtMostNMinusOne(
+        uint256 chiS, uint256 chiP, uint256 bal, uint256 n, uint256 split
+    ) public {
+        chiS = bound(chiS, RAY, 10 * RAY);
+        chiP = bound(chiP, RAY / 1000, 10 * RAY);
+        n    = bound(n, 2, 4);
+        bal  = bound(bal, 1, 1e9);
+
+        _setPrimeChi(chiP);
+        _setSpUsdcChi(chiS);
+        _deposit(alice, 1e15);                                          // enough shares and spUSDC
+        _returnSpUsdcLiquidity(spUsdc.totalAssets());                   // liquidity never binds
+        _take(_vaultSpUsdc() - bal);
+        assertEq(_vaultSpUsdc(), bal);
+
+        uint256 maxWithdraw = spUsdc.maxWithdraw(address(vault));
+        assertEq(maxWithdraw, bal * chiS / RAY);
+        uint256 clamp = vault.convertToShares(maxWithdraw);
+        vm.assume(clamp >= n && clamp <= vault.balanceOf(alice));
+
+        uint256[] memory parts = _parts(clamp, n, split);
+        uint256 burns;
+        for (uint256 i = 0; i < n; ++i) {
+            _requestRedeem(alice, parts[i]);
+            burns += _ceilBurn(parts[i], chiS, chiP);
+        }
+
+        if (burns > bal) {
+            assertLe(burns - bal, n - 1, "C-1: shortfall exceeds n - 1");
+            vm.prank(rebalancer);
+            vm.expectRevert("SparkVault/insufficient-balance");
+            vault.processPendingRedeems(type(uint256).max, n);
+        } else {
+            _processRedeems(type(uint256).max, n);
+            assertEq(_vaultSpUsdc(), bal - burns);
+            assertEq(vault.pendingRedeemShares(), 0);
+        }
+    }
+
+    /// @dev C-1 needs `chi_s > RAY`: at chi_s == RAY `withdraw` burns exactly `paid` spUSDC and
+    ///      sum paid_i <= floor(clamp c_p) <= maxWithdraw = bal, so no batch size reverts.
+    function testFuzz_C1_chiSEqualsRay_batchNeverReverts(uint256 chiP, uint256 bal, uint256 n, uint256 split)
+        public
+    {
+        chiP = bound(chiP, RAY / 1000, 10 * RAY);
+        n    = bound(n, 2, 6);
+        bal  = bound(bal, 1, 1e9);
+
+        _setPrimeChi(chiP);
+        _setSpUsdcChi(RAY);
+        _deposit(alice, 1e15);
+        _returnSpUsdcLiquidity(spUsdc.totalAssets());
+        _take(_vaultSpUsdc() - bal);
+
+        uint256 clamp = vault.convertToShares(spUsdc.maxWithdraw(address(vault)));
+        vm.assume(clamp >= n && clamp <= vault.balanceOf(alice));
+
+        uint256[] memory parts = _parts(clamp, n, split);
+        uint256 paid;
+        for (uint256 i = 0; i < n; ++i) {
+            _requestRedeem(alice, parts[i]);
+            paid += parts[i] * chiP / RAY;
+        }
+        _processRedeems(type(uint256).max, n);                          // never reverts
+        assertEq(_vaultSpUsdc(), bal - paid);
+        assertLe(paid, bal);
+    }
+
+    /**********************************************************************************************/
+    /*** Round 5 attacks (b): capacity over-mint at arbitrary index pairs                        ***/
+    /**********************************************************************************************/
+
+    /// @dev Instant fill at any (chi_s, chi_p) pair, chi_p above or below RAY, capacity in
+    ///      [1, 1e12] shares: `totalSupply <= maxCapacity` and the mint equals the two-floor
+    ///      composition of min(requested, admitted) exactly. No pair over-mints by even 1 share.
+    function testFuzz_capacity_arbitraryIndexes_instantFill_neverOverMints(
+        uint256 chiS, uint256 chiP, uint256 cap, uint256 assets
+    ) public {
+        chiS   = bound(chiS, RAY, 10 * RAY);
+        chiP   = bound(chiP, RAY / 1000, 10 * RAY);
+        cap    = bound(cap, 1, 1e12);
+        assets = bound(assets, 1, 1e16);
+
+        _setPrimeChi(chiP);
+        _setSpUsdcChi(chiS);
+        _setCapacity(cap);
+
+        uint256 admitted  = spUsdc.convertToShares(vault.convertToAssets(cap));
+        uint256 requested = assets * RAY / chiS;
+        uint256 s         = requested < admitted ? requested : admitted;
+        uint256 expected  = (s * chiS / RAY) * RAY / chiP;
+
+        uint256 id = _deposit(alice, assets);
+
+        assertEq(vault.balanceOf(alice), expected, "mint is the two-floor composition");
+        assertLe(vault.totalSupply(), cap, "instant fill over capacity");
+        assertEq(vault.totalSupply(), expected);
+        assertEq(_depositShares(id), requested - s);
+        assertEq(vault.pendingDepositSavingsShares(), requested - s);
+    }
+
+    /// @dev FIFO fills of two queued entries against the spUSDC-share budget of `cap`, each mint
+    ///      the two-floor composition of its slice.
+    function _expectedBatchMints(uint256 s1, uint256 s2, uint256 chiS, uint256 chiP, uint256 cap)
+        internal view returns (uint256 m1, uint256 m2)
+    {
+        uint256 admitted = spUsdc.convertToShares(vault.convertToAssets(cap));
+        uint256 f1 = s1 < admitted ? s1 : admitted;
+        uint256 f2 = s2 < admitted - f1 ? s2 : admitted - f1;
+        m1 = (f1 * chiS / RAY) * RAY / chiP;
+        m2 = (f2 * chiS / RAY) * RAY / chiP;
+    }
+
+    /// @dev Batch fill: two queued entries, capacity raised, one planner call with maxRequests 2.
+    ///      The budget `remaining_` is fixed once at `:827-830` in spUSDC shares and each fill
+    ///      converts its own slice, so the sum of the two mints is floor(a1 / c_p) + floor(a2 / c_p)
+    ///      <= floor((a1 + a2) / c_p) <= cap. Never over-mints at any pair.
+    function testFuzz_capacity_arbitraryIndexes_batchFill_neverOverMints(
+        uint256 chiS, uint256 chiP, uint256 cap, uint256 a1, uint256 a2
+    ) public {
+        chiS = bound(chiS, RAY, 10 * RAY);
+        chiP = bound(chiP, RAY / 1000, 10 * RAY);
+        cap  = bound(cap, 1, 1e12);
+        a1   = bound(a1, 1, 1e16);
+        a2   = bound(a2, 1, 1e16);
+
+        _setCapacity(0);
+        uint256 s1 = _depositShares(_deposit(alice, a1));
+        uint256 s2 = _depositShares(_deposit(bob,   a2));
+
+        _setPrimeChi(chiP);
+        _setSpUsdcChi(chiS);
+        _setCapacity(cap);
+
+        (uint256 m1, uint256 m2) = _expectedBatchMints(s1, s2, chiS, chiP, cap);
+
+        _processDeposits(type(uint256).max, 2);
+
+        assertEq(vault.balanceOf(alice), m1);
+        assertEq(vault.balanceOf(bob),   m2);
+        assertLe(vault.totalSupply(), cap, "batch fill over capacity");
+
+        // a second call cannot push it over either (the head may still hold a partial entry)
+        _processDeposits(type(uint256).max, 2);
+        assertLe(vault.totalSupply(), cap, "second batch over capacity");
+    }
+
+    /**********************************************************************************************/
+    /*** Round 5 attacks (c): C-11 dust donations and F-4 zero mints, exact regions             ***/
+    /**********************************************************************************************/
+
+    /// @dev C-11 (open). `requestDeposit(X)` with X RAY < chi_s, i.e. X <= floor((chi_s - 1) / RAY),
+    ///      buys 0 spUSDC (`:402`): the X USDC is donated to spUSDC, a 0-share entry is pushed
+    ///      (`:406`), the instant-fill predicate (`:414`) is true for it, nothing mints, and the
+    ///      entry can neither be cancelled nor repointed (`no-request`, `:429` / `:485`). One more
+    ///      wei buys exactly 1 spUSDC share. Harness: X == 1 only (c_s = 1.0476). At chi_s = 10 RAY
+    ///      every deposit below 10 wei is lost. `minDeposit >= ceil(c_s)` is the only guard.
+    function testFuzz_BUG_C11_dustDeposit_exactRegion(uint256 chiS, uint256 x) public {
+        chiS = bound(chiS, RAY + 1, 10 * RAY);
+        _setSpUsdcChi(chiS);
+
+        uint256 xMax = (chiS - 1) / RAY;                // largest X with X RAY < chi_s
+        assertEq(xMax, _divUp(chiS, RAY) - 1);
+        x = bound(x, 1, xMax);
+        assertLt(x * RAY, chiS);
+
+        uint256 spUsdcUsdcBefore = usdc.balanceOf(address(spUsdc));
+        uint256 id = _deposit(alice, x);
+
+        assertEq(_vaultSpUsdc(), 0);
+        assertEq(_depositShares(id), 0);
+        assertEq(vault.balanceOf(alice), 0);
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(usdc.balanceOf(address(spUsdc)) - spUsdcUsdcBefore, x);   // donated
+        assertEq(vault.firstPendingDepositId(), 1);                        // ghost walked past
+
+        vm.prank(alice);
+        vm.expectRevert("SparkPrimeVault/no-request");
+        vault.requestDepositCancellation(id, alice);
+        vm.prank(alice);
+        vm.expectRevert("SparkPrimeVault/no-request");
+        vault.updateDepositRecipient(id, alice);
+
+        // the boundary: xMax + 1 buys exactly 1 spUSDC share and fills instantly
+        assertEq((xMax + 1) * RAY / chiS, 1);
+        uint256 id2 = _deposit(bob, xMax + 1);
+        assertEq(_depositShares(id2), 0);
+        assertEq(_vaultSpUsdc() + vault.pendingDepositSavingsShares(), vault.totalSupply() == 0 ? 1 : 1);
+    }
+
+    /// @dev F-4 (open) at arbitrary pairs: the zero-mint region of a fill is exactly
+    ///      s <= sMax = ceil((K + 1) RAY / chi_s) - 1 with K = floor((chi_p - 1) / RAY), empty once
+    ///      chi_p <= RAY. Every spUSDC share in the region is consumed from the head entry
+    ///      (`:849`) and mints nothing (`:852`), i.e. donated to the vault's other holders.
+    function testFuzz_BUG_F4_zeroMintRegion_arbitraryIndexes(uint256 chiS, uint256 chiP) public {
+        chiS = bound(chiS, RAY, 10 * RAY);
+        chiP = bound(chiP, RAY / 1000, 10 * RAY);
+        _setPrimeChi(chiP);
+        _setSpUsdcChi(chiS);
+
+        uint256 sMax = _zeroMintMax(chiS, chiP);
+        if (chiP <= RAY) assertEq(sMax, 0, "region not empty below RAY");
+
+        assertEq(vault.convertToShares(spUsdc.convertToAssets(sMax)),     0);
+        assertGe(vault.convertToShares(spUsdc.convertToAssets(sMax + 1)), 1);
+        if (sMax == 0) return;
+
+        // drive it: capacity exactly sMax + ... such that admitted == sMax spUSDC shares
+        // admitted = floor(floor(cap c_p) / c_s); pick cap so that floor(cap c_p) = K, i.e.
+        // cap = ceil(K RAY / chi_p) if that floors to K.
+        uint256 k   = (chiP - 1) / RAY;
+        uint256 cap = _divUp(k * RAY, chiP);
+        vm.assume(cap * chiP / RAY == k);
+        uint256 admitted = spUsdc.convertToShares(k);
+        assertLe(admitted, sMax);
+        vm.assume(admitted != 0);
+
+        _setCapacity(cap);
+        uint256 id = _deposit(alice, 1e15);
+
+        assertEq(vault.totalSupply(), 0, "F-4: something minted");
+        assertEq(_depositShares(id), 1e15 * RAY / chiS - admitted, "F-4: admitted shares consumed for nothing");
+        assertEq(vault.availableCapacity(), cap);                       // headroom untouched, repeatable
+    }
+
+    /**********************************************************************************************/
+    /*** Round 5 attacks (e): overflow regions                                                  ***/
+    /**********************************************************************************************/
+
+    /// @dev `convertToAssets(shares)` (`:793`) panics iff shares > floor((2^256 - 1) / nowChi()).
+    ///      Harness: 114681085459589801375833087904206311575507395147570 (1.1468e50) shares; the
+    ///      supply can never get there (capacity math CAP-1 dies at 3.4e38 first), so only a
+    ///      direct view call can hit it. `assetsOf` is safe for any balance.
+    function testFuzz_convertToAssets_overflowThreshold_isMaxUintOverChi(uint256 vsrS, uint256 vsrP, uint256 secs)
+        public
+    {
+        (, uint256 chiP) = _randomChis(vsrS, vsrP, secs);
+        uint256 limit = type(uint256).max / chiP;
+
+        assertEq(vault.convertToAssets(limit), limit * chiP / RAY);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.convertToAssets(limit + 1);
+    }
+
+    function test_convertToAssets_overflowThreshold_harness() public {
+        uint256 limit = type(uint256).max / vault.nowChi();
+        assertEq(limit, 114681085459589801375833087904206311575507395147570);
+        assertEq(vault.convertToAssets(limit), 115792089237316195423570985008687907853269984665639);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.convertToAssets(limit + 1);
+        // convertToShares: assets * RAY overflows at C + 1
+        uint256 c = type(uint256).max / RAY;
+        assertEq(vault.convertToShares(c), c * RAY / vault.nowChi());
+        vm.expectRevert(stdError.arithmeticError);
+        vault.convertToShares(c + 1);
+    }
+
+    /// @dev `_rpow(MAX_VSR, dt)` (`:1070`) reverts (empty revert data, `:1084`/`:1086`) from
+    ///      dt = 2_416_158_483 s (76.62 years) on: the last good value is 2^76.6 ~ 1.1579e50 =
+    ///      floor(2^256 / RAY) to within 1e-9. Below that, `nowChi()` multiplies by chi: at the
+    ///      harness chi (1.0097 RAY) the product overflows (panic 0x11) from dt = 2_415_719_841 s
+    ///      (76.60 years) on, 438_642 s earlier than `_rpow` itself. Exact values from the python
+    ///      mirror (binary search over `rpow`), checked bit for bit here. Not reachable: the VSR
+    ///      setter drips on every change and a 76-year gap between drips is not an operating
+    ///      state, but the bound is the real one, not `uint192`.
+    function test_rpow_maxVsr_revertBound_exact() public {
+        assertEq(math.rpow(MAX_VSR, 2_416_158_482), 115792088269848880294669100449313013875845939851551);
+        vm.expectRevert(bytes(""));
+        math.rpow(MAX_VSR, 2_416_158_483);
+
+        // fresh vault, chi == RAY: same bound as _rpow (chi * rpow / RAY == rpow)
+        SparkPrimeVault fresh = _freshVault(address(new SparkPrimeVault()));
+        vm.prank(vsrSetter);
+        fresh.setVSR(MAX_VSR);
+        uint256 rho = fresh.rho();
+        vm.warp(rho + 2_416_158_482);
+        assertEq(fresh.nowChi(), 115792088269848880294669100449313013875845939851551);
+        vm.warp(rho + 2_416_158_483);
+        vm.expectRevert(bytes(""));
+        fresh.nowChi();
+
+        // harness chi: the product overflows first
+        _setPrimeVsr(MAX_VSR);
+        rho = vault.rho();
+        vm.warp(rho + 2_415_719_840);
+        assertEq(vault.nowChi(), uint256(114681083086014444046921979579998224692037029469836) * DripTable.HARNESS_CHI_P / RAY);
+        vm.warp(rho + 2_415_719_841);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.nowChi();
+        vm.expectRevert(stdError.arithmeticError);
+        vault.drip();
+    }
+
+    /// @dev The `uint192` cast in `drip` / `nowChi` (`:637`, `:811`) never truncates: the value is
+    ///      `_rpow * chi / RAY < 2^256 / RAY = C < 2^192` whenever the product fits, so every
+    ///      reachable chi is below 1.158e50 and the `:292` bound (6.3e57) is the only loose one.
+    function test_drip_uint192CastNeverTruncates() public pure {
+        uint256 c = type(uint256).max / RAY;
+        assertLt(c, 2 ** 192);
+        assertEq(type(uint192).max / c, 54_210_108);                    // the bound is 5.4e7x too loose
+    }
+
+    /**********************************************************************************************/
+    /*** Round 5 attacks (f): availableLiquidAssets vs withdraw at the boundary                 ***/
+    /**********************************************************************************************/
+
+    /// @dev `maxWithdraw(vault)` = min(L, floor(bal_s c_s)) (spUSDC `:354-358`). A single
+    ///      `withdraw(maxWithdraw)` never reverts: it burns ceil(maxWithdraw / c_s) <= bal_s spUSDC
+    ///      (because maxWithdraw <= bal_s c_s) and pushes maxWithdraw <= L USDC. The vault's
+    ///      redeem clamp (`:903`) is floor(maxWithdraw / c_p) shares, paying <= maxWithdraw, so
+    ///      a single fill is always safe; only the batch is not (C-1).
+    function testFuzz_availableLiquidAssets_withdrawOfMaxWithdraw_neverReverts(
+        uint256 bal, uint256 liquidity, uint256 vsrS, uint256 vsrP, uint256 secs
+    ) public {
+        (uint256 chiS,) = _randomChis(vsrS, vsrP, secs);
+        _deposit(alice, 1e15);
+        bal = bound(bal, 1, _vaultSpUsdc());
+        _take(_vaultSpUsdc() - bal);
+        liquidity = bound(liquidity, 0, usdc.balanceOf(address(spUsdc)));
+        _drainSpUsdcLiquidity(usdc.balanceOf(address(spUsdc)) - liquidity);
+
+        uint256 maxWithdraw = spUsdc.maxWithdraw(address(vault));
+        uint256 assetsOf    = bal * chiS / RAY;
+        assertEq(maxWithdraw, liquidity < assetsOf ? liquidity : assetsOf);
+        assertEq(vault.availableLiquidAssets(), maxWithdraw);
+
+        vm.prank(address(vault));
+        uint256 burned = spUsdc.withdraw(maxWithdraw, address(vault), address(vault));
+        assertEq(burned, _divUp(maxWithdraw * RAY, chiS));
+        assertLe(burned, bal, "withdraw(maxWithdraw) burned more than held");
+        assertEq(usdc.balanceOf(address(vault)), maxWithdraw);
+    }
+
+    /// @dev Liquidity binds on the redeem queue: repeated planner calls drain spUSDC's USDC down to
+    ///      a strand below c_p (worth less than one spPRIME share: `convertToShares(L) == 0` so
+    ///      `remaining_ == 0` and the loop is skipped) while shares stay queued. The strand is
+    ///      stuck only until more USDC reaches spUSDC. Per call the strand is < c_p + 1 wei
+    ///      (clamp floor plus one payout floor).
+    function testFuzz_redeemQueue_liquidityBinds_strandBelowOneShare(
+        uint256 assets, uint256 liquidity, uint256 vsrS, uint256 vsrP, uint256 secs
+    ) public {
+        assets = bound(assets, 1, 1e15);
+        (, uint256 chiP) = _randomChis(vsrS, vsrP, secs);
+
+        _deposit(alice, assets);
+        uint256 shares = vault.balanceOf(alice);
+        vm.assume(shares != 0);
+        _requestRedeem(alice, shares);
+
+        liquidity = bound(liquidity, 0, assets - 1);                    // strictly short
+        _drainSpUsdcLiquidity(assets - liquidity);
+        vm.assume(spUsdc.maxWithdraw(address(vault)) == liquidity);     // liquidity is the binding term
+
+        _processRedeems(type(uint256).max, type(uint256).max);
+        uint256 paid = usdc.balanceOf(alice);
+        assertLe(paid, liquidity);
+        assertLt((liquidity - paid) * RAY, chiP + RAY, "strand >= c_p + 1 after one call");
+
+        for (uint256 r = 0; r < 12 && vault.convertToShares(spUsdc.maxWithdraw(address(vault))) != 0; ++r) {
+            uint256 before = usdc.balanceOf(alice);
+            _processRedeems(type(uint256).max, type(uint256).max);
+            if (usdc.balanceOf(alice) == before) break;
+        }
+        uint256 strand = usdc.balanceOf(address(spUsdc));
+        // the other binding term: the vault's own spUSDC (random vsrP > vsrS leaves it under-backed)
+        if (vault.pendingRedeemShares() != 0 && spUsdc.maxWithdraw(address(vault)) == strand) {
+            assertLt(strand * RAY, chiP, "final strand >= c_p while shares are queued");
+            assertEq(vault.convertToShares(strand), 0);
+        }
+    }
+
+    /// @dev R9 strand on the vault side: after a full round trip (deposit X, redeem every share)
+    ///      the vault keeps `leftover = s - ceil(out / c_s)` spUSDC shares with
+    ///      leftover c_s < c_p + 2 (three floors, one ceil). Harness: at most 2 shares
+    ///      ((1.0097 + 2) / 1.0476 = 2.87), e.g. X = 836 keeps 2. Fuzzed over random chis.
+    function testFuzz_fullRedeem_leftoverSpUsdc_belowChiPPlusTwo(
+        uint256 assets, uint256 vsrS, uint256 vsrP, uint256 secs
+    ) public {
+        assets = bound(assets, 1, 1e15);
+        (uint256 chiS, uint256 chiP) = _randomChis(vsrS, vsrP, secs);
+
+        _deposit(alice, assets);
+        uint256 shares = vault.balanceOf(alice);
+        vm.assume(shares != 0);
+        _requestRedeem(alice, shares);
+        _processRedeems(type(uint256).max, 1);
+
+        assertEq(vault.totalSupply(), 0);
+        uint256 leftover = _vaultSpUsdc();
+        assertLt(leftover * chiS, chiP + 2 * RAY, "leftover spUSDC >= (c_p + 2) / c_s");
+    }
+
+    function testFuzz_fullRedeem_leftoverSpUsdc_harness_atMost2(uint256 assets) public {
+        assets = bound(assets, 1, 1e15);
+        _deposit(alice, assets);
+        uint256 shares = vault.balanceOf(alice);
+        if (shares != 0) {
+            _requestRedeem(alice, shares);
+            _processRedeems(type(uint256).max, 1);
+        }
+        assertLe(_vaultSpUsdc(), 2);
     }
 
     /**********************************************************************************************/
