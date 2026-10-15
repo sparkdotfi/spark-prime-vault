@@ -1,5 +1,171 @@
 # NEWSURFACE worker report
 
+## Round 5 (`master` @ `0ebb452`)
+
+Target: `src/SparkPrimeVault.sol` on `master` @ 0ebb452. Files: `test/ai/NewSurface.t.sol` (32
+tests, ported), `test/ai/AdjustTotalAssets.t.sol` (23 tests, new), `test/ai/Blacklist.t.sol` (48
+tests, new). All 103 pass (`test_BUG_` tests are passing proofs that pin the behaviour). Harness
+constants unchanged (chi_s = 1.047633055711877768967605062e27, chi_p =
+1.009687768242461209408770821e27, 1_000_000e6 USDC = S_1M = 954_532_691_143 spUSDC = SH_1M =
+990_405_184_109 spPRIME; a full redeem of SH_1M pays R_1M = 999_999_999_998 and burns all S_1M; a
+full cancellation refunds A_1M = 999_999_999_999).
+
+Porting notes: `realizeGain`/`realizeLoss` tests rewritten against `adjustTotalAssets` (moved to
+`AdjustTotalAssets.t.sol`); the guardian-cancel test became `test_fixed_V2_2_*`; the two
+head-advance-loop tests were rewritten for the deferred walk (the head only moves inside
+`_processPendingDeposits`, :861); `Redeem` now carries `savingsSharesBurned`; the old
+`test_uint192Casts_onlyRealizeGainCanWrap` became `test_fixed_G2_*` (the cast is now guarded).
+
+### (a) Bugs and suspicious behaviour
+
+#### G-1 (open, high): `chi` above `maxUint256 / RAY` bricks the vault; only an upgrade recovers
+`adjustTotalAssets` (:278-295) bounds `chi` by `type(uint192).max` (:292) but `drip` (:637) and
+`nowChi` (:811) compute `_rpow(vsr, dt) * chi` in uint256, so any `chi > CHI_DRIP_MAX =
+115_792_089_237_316_195_423_570_985_008_687_907_853_269_984_665_640` reverts one second later at
+`vsr == RAY`. Binary-searched with `vm.snapshotState`: at supply SH_1M the smallest delta is
+`GAIN_BRICK = 114_681_085_459_449_903_921_528_244_645_760_029` (~1.15e29 USDC), writing chi =
+`115_792_089_237_316_195_423_570_985_008_687_908_517_705_232_418_866` (664_435_247_753_226 above
+the bound; one wei less writes `..._907_508_017_464_175_173`, which survives). Afterwards `drip`,
+`nowChi`, `totalAssets`, `convertToShares`, `requestDeposit`, `requestRedeem`, all three
+`processPending*`, `setVSR` and `adjustTotalAssets` itself (it drips first, :282) revert with
+panic 0x11; `transfer` and `requestDepositCancellation` still work. Recovery proven only through
+`upgradeToAndCall` to an implementation that rewrites `chi` (`_authorizeUpgrade` :272 does not
+drip). The band shrinks with the VSR: a chi that survives at `vsr == RAY` overflows one second
+after `setVSR(ONE_PCT)`. Tests: `test_BUG_G1_adjustTotalAssets_aboveDripBoundBricksVault_onlyUpgradeRecovers`,
+`test_BUG_G1_adjustTotalAssets_dripBoundShrinksWithVsr`. Fix: bound `updatedChi_` by
+`type(uint256).max / RAY` (or lower) instead of `uint192`.
+
+#### C-3 (open, medium): no loss floor
+`-(totalAssets - 1)` is accepted (:286). With alice 1M + bob 100k (supply 1_089_445_702_519, TA
+1_099_999_999_997) one admin call writes chi = floor(RAY / S) = 917_897_971_131_388; `totalAssets()`
+and every `assetsOf` read 0 while S_1M + S_100K spUSDC still back the vault. MAX_VSR for a year
+lifts `totalAssets()` to 1 wei. Recovery via `+ (TA - 1)` lands at 1_099_999_999_996.
+`test_BUG_C3_adjustTotalAssets_noFloor_totalAssetsMinusOneWipesHolders`. The `loss-too-high`
+boundary itself is exact: `-TA`, `-TA-1`, `type(int256).min` all revert, `-(TA-1)` passes
+(`test_adjustTotalAssets_lossTooHighBoundary`).
+
+#### R3-1 residue (open, medium): governance-flow sandwich
+`adjustTotalAssets` requires `paused`, but the admin is a spell whose payload is public before the
+GUARDIAN's `pause` tx. Alice 1M, attacker deposits 1M (instant fill) before the pause, admin
+adjusts +50k, unpause, attacker queues a full redeem: chi 1_034_929_962_448_270_700_987_302_681,
+payout 1_024_999_999_998 (profit 24_999_999_998 at 0% fee; 1_014_749_999_997 / profit
+14_749_999_997 at the 1% max fee). The gain is notional, so alice's claim exceeds the remaining
+backing by exactly 49_999_999_999 (39_749_999_998 at 1%).
+`test_BUG_R3_1_governanceSandwich_zeroFee`, `_onePctFee`. Mitigation is procedural (pause
+before the payload is public) or a withdrawal delay after unpause.
+
+#### V2-13 (open, low): vault / spUSDC as redeem or cancellation recipient strands USDC
+`requestRedeem`, `requestDepositCancellation` and both updaters accept the vault and spUSDC
+(only the blacklist is checked). `_canReceiveAsset(vault)` is true (:938/:951) so the withdraw
+goes to the vault with NO `claimableAssets` entry: R_1M (redeem) / A_1M (cancellation) of USDC
+sits in the vault, `claim(vault)` and `claim(alice)` say `nothing-to-claim`, and no later
+deposit or `take` moves it. With spUSDC as recipient, spUSDC burns S_1M of the vault's shares
+and transfers R_1M to itself: its USDC balance is unchanged, its supply drops, its index does not
+move, leaving 1_000_000_000_001 of unaccounted surplus in spUSDC (donation to spUSDC holders).
+`test_BUG_V2_13_vaultAsRedeemRecipient_strandsUsdc`, `_vaultAsCancellationRecipient_strandsUsdc`,
+`_savingsAsRedeemRecipient_donatesToSpUsdc`, `test_updateRedeemRecipient_vaultRecipient_accepted`.
+Fix: reject `address(this)` and `savings` in the three blacklist-checked recipient paths like
+`requestDeposit` already does (:395).
+
+#### Double blacklist (info): vault blacklisted + blacklisted recipient at the head
+If USDC blacklists the vault itself, deposits die at the pull (:400) and `claim` reverts, but
+clean redeems/cancellations still pay (spUSDC pushes USDC straight to the recipient). The fallback
+path withdraws to the vault and reverts inside USDC, so a blacklisted recipient at the head blocks
+the walk again (R4-A shape, needs both blacklists; a bounded `maxRequests` cannot skip it).
+`test_blacklistedVault_cleanRedeemsPay_fallbackEntryBlocksWalk`.
+
+#### V2-7, V2-9 (open, unchanged)
+`setCapacity(type(uint256).max)` bricks `requestDeposit`/`processPendingDeposits` (safe bound at
+supply 0: 114_681_085_459_589_801_375_833_087_904_206_311_575_507_395_147_570 shares, shrinking
+with chi); `requestRedeem(0)` ghosts are permanent and consume `maxRequests`.
+`test_BUG_setCapacity_maxUint256BricksDeposits`, `test_BUG_V2_9_*`.
+
+### (b) Previously reported findings, status on 0ebb452
+
+| Finding | Status | Pinning test |
+|---|---|---|
+| R4-A blacklisted redeem recipient blocks the queue | fixed | `test_fixed_R4A_processPendingRedeems_queueContinuesPastBlacklistedRecipient` |
+| R4-B blacklisted cancellation recipient blocks the queue | fixed | `test_fixed_R4B_processPendingDepositCancellations_queueContinues` |
+| R3-1 `realizeGain` without pause | changed: `not-paused` required, requests blocked while paused; sandwich remains around the pause tx | `test_fixed_R3_1_adjustTotalAssets_notPaused_andRequestsBlockedWhilePaused`, `test_BUG_R3_1_*` |
+| V2-1 unauthenticated recipient updaters | fixed (owner-only) | `test_fixed_V2_1_update{Deposit,Redeem,DepositCancellation}Recipient_*` |
+| V2-2 / F-1 guardian cancel path | fixed (removed) | `test_fixed_V2_2_guardianCannotCancelDeposits` |
+| G-2 `uint192` wrap in gain | fixed (`chi-too-high`) | `test_fixed_G2_adjustTotalAssets_chiTooHighBoundary` (GAIN_TRUNCATE = 6_216_874_099_906_568_962_213_193_772_734_343_774_180_112 reverts; one less writes 6_277_101_735_386_680_763_835_789_423_207_666_416_102_354_893_009_973_700_482) |
+| G-1 drip overflow brick | open | see (a) |
+| C-3 no loss floor | open | see (a) |
+| V2-13 vault / spUSDC recipients | open | see (a) |
+| V2-7 unbounded `setCapacity` | open | `test_BUG_setCapacity_maxUint256BricksDeposits` |
+| V2-9 `requestRedeem(0)` ghosts | open | `test_BUG_V2_9_*` |
+| `cancelRedeemRequest` / `no-shares` / dead event | gone | `test_updateRedeemRecipient_filledEntryRevertsNoRequest` (selector reverts) |
+
+### (c) Properties that held
+
+Blacklist (`Blacklist.t.sol`):
+- `recipient-cannot-receive` on `requestRedeem` (:452, after `zero-recipient`, before
+  `below-minimum`), `requestDepositCancellation` (:425, before the entry load, fires on bad ids),
+  `updateDepositCancellationRecipient` (:493), `updateRedeemRecipient` (:508); each with the
+  `_failure` / `_success` pair.
+- The owner is never consulted: a blacklisted holder redeems, cancels and re-points to a clean
+  recipient; `requestDeposit` / `updateDepositRecipient` do not consult it at all: a blacklisted
+  recipient is minted SH_1M, holds and transfers it; a blacklisted depositor is rejected by USDC's
+  own `transferFrom` (`Blacklistable: account is blacklisted`).
+- Fallback exactness: redeem of SH_1M to a recipient blacklisted after the request emits
+  `ClaimableAssetsIncreased(alice, 999_999_999_998)` then `Redeem(alice, alice, SH_1M,
+  954_532_691_143, 999_999_999_998)`; vault USDC == claimable; cancellation emits
+  `ClaimableAssetsIncreased(alice, 999_999_999_999)` + `DepositCancellation(alice, alice, S_1M,
+  999_999_999_999)`. Partial fills (300k liquidity then the rest) accrue twice: 299_999_999_999 +
+  699_999_999_998 = 999_999_999_997 (redeem, 1 spUSDC share left in the vault), 299_999_999_999 +
+  699_999_999_999 = 999_999_999_998 (cancellation). Blacklist flipped between fills: first pays,
+  second accrues. Three entries, one blacklisted recipient: 2 * R_100K summed, clean entry paid.
+- `claim`: `nothing-to-claim` for 0 / address(0) / after a clean payout; reverts in USDC while
+  blacklisted with claimable and vault USDC retained; after un-blacklisting a stranger's call
+  pays alice exactly with `Claim(alice, R_1M)`, zeroes the entry, second call `nothing-to-claim`;
+  works while paused; sums redeem + cancellation accruals (199_999_999_997).
+- Claimable USDC is invisible to `totalAssets` / `availableLiquidAssets` and untouched by
+  `requestDeposit` (instant and queued), `processPendingDeposits`, `requestDepositCancellation` +
+  `processPendingDepositCancellations`, `requestRedeem` + `processPendingRedeems`, `take` (all
+  spUSDC), `adjustTotalAssets` (-100k/+100k), `setVSR` + drip. Fuzz: vault USDC >= claimable for
+  any later deposit and take (1000 runs).
+
+`adjustTotalAssets` (`AdjustTotalAssets.t.sol`):
+- Access (7 non-admins), `not-paused`, `delta-total-assets-zero`, `loss-too-high` boundary,
+  `totalSupply == 0`: `+1` panics 0x12, `type(int256).max` panics 0x11 (`* RAY`), `-1` is
+  `loss-too-high`; `chi-too-low` at an inflated supply of 1e28 (TA 10_096_877_682_424_612_094_087_708_210;
+  `-> 9` reverts, `-> 10` writes chi = 1); deltas in `[GAIN_TRUNCATE, GAIN_OVERFLOW)` are
+  `chi-too-high`, `>= GAIN_OVERFLOW = 115_792_089_237_316_195_423_570_985_008_687_907_852_269_984_665_643`
+  and `type(int256).max` panic.
+- Loss -100k: chi 908_718_991_417_304_243_366_635_929, TA 899_999_999_997 (loss + 1 wei of
+  floor), backing untouched; gain +100k: chi 1_110_656_545_066_042_825_345_107_777, TA
+  1_099_999_999_997. Event exact with negative and positive delta.
+- Drip first: after 10% for a year while unpaused, `nowChi` 1_110_656_545_066_707_330_303_098_475
+  / TA 1_099_999_999_998 is settled (`Drip` precedes `TotalAssetsAdjusted`) and the delta applies
+  on top; accrual continues from the new chi while paused.
+- Round trip -100k/+100k is not the identity: chi 1_009_687_768_240_663_846_587_628_160, TA
+  999_999_999_996 (2 wei); +/-/+/- costs 2 more.
+- Per party under -200k at supply 2 * SH_1M: holder and escrowed redeemer each lose exactly
+  100_000_000_000 (R_1M -> 899_999_999_998); queued deposit (S_100K) and pending cancellation keep
+  their spUSDC and settle at A_100K; the queued deposit fills for 110_045_020_455 shares worth
+  99_999_999_998; the escrow pays 899_999_999_998.
+- Capacity is in shares: SH_100K of headroom is worth R_100K before and 89_999_999_998 after a
+  -100k loss; a 100k deposit then fills 99_040_518_407 shares (89_999_999_996 USDC) and leaves
+  S_100K - 85_907_942_201 spUSDC at the head.
+
+NewSurface (`NewSurface.t.sol`): owner-only updaters incl. partial-fill remainder (bob gets
+891_364_665_700), filled / cancelled slots `no-request`, `getPendingXRequest(id)` rejects ids
+below the head, updaters work while paused; ghosts do not move the head until capacity returns;
+cancellations do not move the head and dead slots consume `maxRequests` (walk of 500 ghosts
+costs the next depositor ~237k gas warm, ~1.1M cold, once); `pause` GUARDIAN / `unpause` admin;
+event shapes incl. `Redeem(.., 954_532_691_143, 999_999_999_998)` and the partial
+`(SH_100K, 95_453_269_113, 99_999_999_998)`.
+
+### (d) Unsettled
+- The G-1 threshold is stated for the harness supply and `vsr == RAY`; the general condition is
+  `chi * _rpow(vsr, dt) > maxUint256`, which depends on supply, rate and the gap since `rho`.
+- Whether the sandwich is exploitable in practice depends on the spell / pause ordering, which
+  is off-chain; the on-chain numbers above are exact for 1M/1M/50k.
+- Nothing new found in `claim` itself (permissionless, no reentrancy surface: state is zeroed
+  before the transfer, :529-533).
+
+
 ## Round 4 (bf93b0d)
 
 Target: `src/SparkPrimeVault.sol` on `fix/update-guardian-transfer` @ bf93b0d. Files:

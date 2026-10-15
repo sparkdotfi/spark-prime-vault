@@ -7,10 +7,12 @@ import { IAccessControl } from "../../lib/oz/contracts/access/IAccessControl.sol
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
 
-/// @dev Tests for every surface that is NEW on `refactor/more-simplifying` @ ff828d2: owner-only
-///      recipient updaters, `realizeLoss` with its new bounds, `realizeGain`, unbounded
-///      `setCapacity`, `requestRedeem(0)`, head-advance loops, `delete` after fill, `pause` on
-///      GUARDIAN, getters and event shapes.
+/// @dev Tests for the surface that was new in rounds 3/4 and survived onto `master` @ 0ebb452:
+///      owner-only recipient updaters (V2-1), the removed guardian cancel path (V2-2 / F-1),
+///      unbounded `setCapacity`, `requestRedeem(0)` ghosts, the deferred head walk (no
+///      head-advance loops any more), `delete` after fill, `pause` on GUARDIAN / `unpause` on
+///      admin, getters and event shapes. `adjustTotalAssets` lives in `AdjustTotalAssets.t.sol`,
+///      the blacklist surface in `Blacklist.t.sol`.
 ///
 ///      Harness indexes (frozen at RAY after setUp):
 ///        spUSDC  chi_s = 1.047633055711877768967605062e27
@@ -21,29 +23,39 @@ abstract contract NewSurfaceBase is LocalTestBase {
         address indexed owner,
         address indexed recipient,
         uint256 indexed requestId,
-        uint256         assets,
-        uint256         savingsShares
+        uint256         assetsDeposited,
+        uint256         savingsSharesMinted
     );
-    event Deposit(address indexed owner, address indexed recipient, uint256 assets, uint256 savingsShares);
-    event Redeem(address indexed owner, address indexed recipient, uint256 shares, uint256 assets);
+    event Deposit(
+        address indexed owner,
+        address indexed recipient,
+        uint256         assetsConverted,
+        uint256         sharesMinted
+    );
+    event Redeem(
+        address indexed owner,
+        address indexed recipient,
+        uint256         sharesBurned,
+        uint256         savingsSharesBurned,
+        uint256         assetsReceived
+    );
     event RedeemRequest(
         address indexed owner,
         address indexed recipient,
         uint256 indexed requestId,
-        uint256         shares,
-        uint256         fee
+        uint256         sharesToBurn,
+        uint256         feeSharesBurned
     );
     event DepositRecipientUpdated(uint256 indexed requestId, address indexed recipient);
     event DepositCancellationRecipientUpdated(uint256 indexed requestId, address indexed recipient);
     event RedeemRecipientUpdated(uint256 indexed requestId, address indexed recipient);
-    event LossRealized(uint192 chi, uint256 loss);
-    event GainRealized(uint192 chi, uint256 gain);
     event Paused();
     event Unpaused();
 
     address alice   = makeAddr("alice");
     address bob     = makeAddr("bob");
     address carol   = makeAddr("carol");
+    address dave    = makeAddr("dave");
     address mallory = makeAddr("mallory");
 
     uint256 constant CHI_S = 1.047633055711877768967605062e27;
@@ -58,6 +70,12 @@ abstract contract NewSurfaceBase is LocalTestBase {
     uint256 constant A_100K = 99_999_999_999;
     uint256 constant SH_1M   = 990_405_184_109;
     uint256 constant SH_100K = 99_040_518_410;
+
+    // convertToAssets(SH_1M) and the spUSDC burned (ceil) to withdraw it.
+    uint256 constant R_1M    = 999_999_999_998;
+    uint256 constant RS_1M   = 954_532_691_143;
+    uint256 constant R_100K  = 99_999_999_998;
+    uint256 constant RS_100K = 95_453_269_113;
 
     /**********************************************************************************************/
     /*** Helpers                                                                                ***/
@@ -79,6 +97,8 @@ abstract contract NewSurfaceBase is LocalTestBase {
         assertEq(spUsdc.convertToShares(ONE_M), S_1M);
         assertEq(spUsdc.convertToAssets(S_1M),  A_1M);
         assertEq(vault.convertToShares(A_1M),   SH_1M);
+        assertEq(vault.convertToAssets(SH_1M),  R_1M);
+        assertEq(vault.convertToAssets(SH_100K), R_100K);
     }
 
 }
@@ -86,12 +106,12 @@ abstract contract NewSurfaceBase is LocalTestBase {
 contract NewSurfaceTest is NewSurfaceBase {
 
     /**********************************************************************************************/
-    /*** 11. Recipient updaters are owner-only (V2-1 fixed at ff828d2)                          ***/
+    /*** 11. Recipient updaters are owner-only (V2-1 fixed)                                     ***/
     /**********************************************************************************************/
 
-    // `updateDepositRecipient` (lines 416-424): the owner redirects the fill and the exact spPRIME
+    // `updateDepositRecipient` (:479-489): the owner redirects the fill and the exact spPRIME
     // amount that anyone used to be able to steal goes to the owner's choice.
-    function test_updateDepositRecipient_ownerRedirectsQueuedDeposit() public {
+    function test_fixed_V2_1_updateDepositRecipient_ownerRedirectsQueuedDeposit() public {
         _setCapacity(0);
         uint256 id = _deposit(alice, ONE_M);
 
@@ -116,15 +136,15 @@ contract NewSurfaceTest is NewSurfaceBase {
 
         assertEq(vault.balanceOf(bob),   SH_1M);   // 990_405_184_109 spPRIME, ~999_999.99 USDC
         assertEq(vault.balanceOf(alice), 0);
-        assertEq(vault.firstPendingDepositId(),    1);
+        assertEq(vault.firstPendingDepositId(), 1);
     }
 
     function test_updateDepositRecipient_strangerGuardianAdminAndRecipientRevert() public {
         _setCapacity(0);
         uint256 id = _deposit(alice, ONE_M);
 
-        address[3] memory who = [mallory, guardian, admin];
-        for (uint256 i; i < 3; ++i) {
+        address[4] memory who = [mallory, guardian, admin, rebalancer];
+        for (uint256 i; i < 4; ++i) {
             vm.prank(who[i]);
             vm.expectRevert("SparkPrimeVault/not-authorized");
             vault.updateDepositRecipient(id, who[i]);
@@ -171,11 +191,12 @@ contract NewSurfaceTest is NewSurfaceBase {
 
         assertEq(vault.balanceOf(alice), aliceShares);
         assertEq(vault.balanceOf(bob),   vault.totalSupply() - aliceShares);
-        assertGt(vault.balanceOf(bob),   890_000e6);
+        assertEq(vault.balanceOf(bob),   891_364_665_700);
+        assertEq(vault.firstPendingDepositId(), 1);
     }
 
     // A filled entry is deleted (owner 0, shares 0): `no-request` fires before the owner check,
-    // and nothing is written into the dead slot any more.
+    // and nothing is written into the dead slot.
     function test_updateDepositRecipient_filledEntryRevertsNoRequest() public {
         uint256 id = _deposit(alice, ONE_M);  // instant fill, deleted
         assertEq(vault.balanceOf(alice), SH_1M);
@@ -192,6 +213,10 @@ contract NewSurfaceTest is NewSurfaceBase {
         assertEq(o, address(0));
         assertEq(r, address(0));
         assertEq(s, 0);
+
+        // The pending-only single getter rejects the id once the head moved past it.
+        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vault.getPendingDepositRequest(id);
     }
 
     function test_updateDepositRecipient_cancelledEntryRevertsNoRequest() public {
@@ -205,14 +230,24 @@ contract NewSurfaceTest is NewSurfaceBase {
         vault.updateDepositRecipient(id, bob);
     }
 
-    // `updateRedeemRecipient` (lines 537-545): same shape, for the USDC paid on a queued redeem.
-    function test_updateRedeemRecipient_ownerRedirectsQueuedRedeem() public {
+    // `updateDepositRecipient` (:481) still rejects the vault itself; the queued deposit path is
+    // the only one that does.
+    function test_updateDepositRecipient_vaultRecipientReverts() public {
+        _setCapacity(0);
+        uint256 id = _deposit(alice, ONE_M);
+        vm.prank(alice);
+        vm.expectRevert("SparkPrimeVault/vault-recipient");
+        vault.updateDepositRecipient(id, address(vault));
+    }
+
+    // `updateRedeemRecipient` (:506-516): same shape, for the USDC paid on a queued redeem.
+    function test_fixed_V2_1_updateRedeemRecipient_ownerRedirectsQueuedRedeem() public {
         _deposit(alice, ONE_M);
         assertEq(vault.balanceOf(alice), SH_1M);
         uint256 id = _requestRedeem(alice, SH_1M);
 
         uint256 expectedAssets = vault.convertToAssets(SH_1M);
-        assertEq(expectedAssets, 999_999_999_998);
+        assertEq(expectedAssets, R_1M);
 
         vm.prank(alice);
         vm.expectEmit(address(vault));
@@ -230,15 +265,15 @@ contract NewSurfaceTest is NewSurfaceBase {
         assertEq(usdc.balanceOf(bob),    expectedAssets);
         assertEq(usdc.balanceOf(alice),  0);
         assertEq(vault.balanceOf(alice), 0);
-        assertEq(vault.firstPendingRedeemId(),     1);
+        assertEq(vault.firstPendingRedeemId(), 1);
     }
 
     function test_updateRedeemRecipient_strangerGuardianAndRecipientRevert() public {
         _deposit(alice, ONE_M);
         uint256 id = _requestRedeem(alice, SH_1M);
 
-        address[3] memory who = [mallory, guardian, admin];
-        for (uint256 i; i < 3; ++i) {
+        address[4] memory who = [mallory, guardian, admin, rebalancer];
+        for (uint256 i; i < 4; ++i) {
             vm.prank(who[i]);
             vm.expectRevert("SparkPrimeVault/not-authorized");
             vault.updateRedeemRecipient(id, who[i]);
@@ -251,12 +286,12 @@ contract NewSurfaceTest is NewSurfaceBase {
         vault.updateRedeemRecipient(id, mallory);
 
         _processRedeems(type(uint256).max, type(uint256).max);
-        assertEq(usdc.balanceOf(bob),     999_999_999_998);
+        assertEq(usdc.balanceOf(bob),     R_1M);
         assertEq(usdc.balanceOf(mallory), 0);
     }
 
-    // bf93b0d removed `cancelRedeemRequest`: a redeem entry is open until the planner fills it,
-    // and the filled (deleted) slot rejects the updater.
+    // `cancelRedeemRequest` is gone: a redeem entry is open until the planner fills it, and the
+    // filled (deleted) slot rejects the updater.
     function test_updateRedeemRecipient_filledEntryRevertsNoRequest() public {
         _deposit(alice, ONE_M);
         uint256 filled = _requestRedeem(alice, SH_100K);
@@ -280,8 +315,8 @@ contract NewSurfaceTest is NewSurfaceBase {
         assertEq(vault.balanceOf(address(vault)), SH_100K);
     }
 
-    // `updateDepositCancellationRecipient` (lines 465-477): same shape, for the USDC refund.
-    function test_updateDepositCancellationRecipient_ownerRedirectsRefund() public {
+    // `updateDepositCancellationRecipient` (:491-504): same shape, for the USDC refund.
+    function test_fixed_V2_1_updateDepositCancellationRecipient_ownerRedirectsRefund() public {
         _setCapacity(0);
         uint256 id = _deposit(alice, ONE_M);
         vm.prank(alice);
@@ -316,29 +351,34 @@ contract NewSurfaceTest is NewSurfaceBase {
         vault.updateDepositCancellationRecipient(cid, alice);
     }
 
-    // bf93b0d (F-1 deposit side fixed): the GUARDIAN can only cancel to the entry's owner
-    // (`:424` `invalid-recipient` otherwise); the cancelled entry keeps the depositor as owner, so
-    // only the depositor can repoint the refund afterwards.
-    function test_updateDepositCancellationRecipient_guardianCancelRefundsOwnerOnly() public {
+    // V2-2 / F-1 fixed: the guardian cancel path is gone. `requestDepositCancellation` (:419-444)
+    // is owner-only for every recipient, including the owner.
+    function test_fixed_V2_2_guardianCannotCancelDeposits() public {
         _setCapacity(0);
         uint256 id = _deposit(alice, ONE_M);
 
-        vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/zero-recipient");
-        vault.requestDepositCancellation(id, guardian);
+        address[4] memory who = [guardian, admin, rebalancer, mallory];
+        for (uint256 i; i < 4; ++i) {
+            vm.prank(who[i]);
+            vm.expectRevert("SparkPrimeVault/not-authorized");
+            vault.requestDepositCancellation(id, alice);
+            vm.prank(who[i]);
+            vm.expectRevert("SparkPrimeVault/not-authorized");
+            vault.requestDepositCancellation(id, who[i]);
+        }
 
-        vm.prank(guardian);
-        uint256 cid = vault.requestDepositCancellation(id, alice);
-        ( address owner, address recipient, ) = _cancelledDepositRequest(cid);
+        ( address owner, address recipient, uint256 shares ) = _depositRequest(id);
         assertEq(owner,     alice);
         assertEq(recipient, alice);
-
-        vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/not-authorized");
-        vault.updateDepositCancellationRecipient(cid, guardian);
+        assertEq(shares,    S_1M);
+        assertEq(_cancelledDepositQueueLength(), 0);
 
         vm.prank(alice);
-        vault.updateDepositCancellationRecipient(cid, bob);
+        uint256 cid = vault.requestDepositCancellation(id, bob);
+        ( owner, recipient, shares ) = _cancelledDepositRequest(cid);
+        assertEq(owner,     alice);
+        assertEq(recipient, bob);
+        assertEq(shares,    S_1M);
 
         _processCancelledDeposits(type(uint256).max, type(uint256).max);
         assertEq(usdc.balanceOf(bob),      A_1M);
@@ -346,7 +386,7 @@ contract NewSurfaceTest is NewSurfaceBase {
         assertEq(usdc.balanceOf(guardian), 0);
     }
 
-    // `invalid-recipient` is checked before the entry is loaded, so it fires even on ids that do
+    // `zero-recipient` is checked before the entry is loaded, so it fires even on ids that do
     // not exist.
     function test_updateRecipient_zeroRecipientReverts() public {
         _setCapacity(0);
@@ -362,589 +402,21 @@ contract NewSurfaceTest is NewSurfaceBase {
         vault.updateRedeemRecipient(0, address(0));
     }
 
-    /**********************************************************************************************/
-    /*** 12. realizeLoss                                                                        ***/
-    /**********************************************************************************************/
-
-    // chi' = floor((totalAssets - L) * RAY / S); the floor is against holders (line 382).
-    function test_realizeLoss_exactChiAndTotalAssets() public {
-        _deposit(alice, ONE_M);
-        _pause();
-
-        uint256 loss      = HUNDRED_K;
-        uint256 chiBefore = vault.nowChi();
-        uint256 taBefore  = vault.totalAssets();
-        uint256 supply    = vault.totalSupply();
-
-        assertEq(chiBefore, CHI_P);
-        assertEq(taBefore,  999_999_999_998);
-        assertEq(supply,    SH_1M);
-
-        uint256 expectedChi = ((taBefore - loss) * RAY) / supply;
-        assertEq(expectedChi, 908_718_991_417_304_243_366_635_929);
-        assertLt(expectedChi, chiBefore);
-
-        vm.expectEmit(address(vault));
-        emit LossRealized(uint192(expectedChi), loss);
-        _realizeLoss(loss);
-
-        assertEq(vault.chi(),    expectedChi);
-        assertEq(vault.nowChi(), expectedChi);
-        assertEq(vault.rho(),    block.timestamp);
-
-        uint256 drop = taBefore - vault.totalAssets();
-        assertGe(drop, loss);       // floor: holders never lose less than L
-        assertLe(drop, loss + 1);   // and at most 1 wei more
-        assertEq(drop, loss + 1);   // exact at these indexes
-    }
-
-    function test_realizeLoss_revertsWhenNotPaused() public {
-        _deposit(alice, ONE_M);
-        vm.prank(redeemFeeSetter);
-        vm.expectRevert("SparkPrimeVault/not-paused");
-        vault.realizeLoss(1);
-    }
-
-    function test_realizeLoss_revertsOnZeroLoss() public {
-        _deposit(alice, ONE_M);
-        _pause();
-        vm.prank(redeemFeeSetter);
-        vm.expectRevert("SparkPrimeVault/invalid-loss");
-        vault.realizeLoss(0);
-    }
-
-    function test_realizeLoss_revertsForNonRiskManager() public {
-        _deposit(alice, ONE_M);
-        _pause();
-        address[3] memory who = [admin, guardian, alice];
-        for (uint256 i; i < 3; ++i) {
-            vm.prank(who[i]);
-            vm.expectRevert(_unauthorized(who[i], REDEEM_FEE_SETTER_ROLE));
-            vault.realizeLoss(1);
-        }
-    }
-
-    // totalSupply == 0 implies totalAssets() == 0, so `loss_ < totalAssets_` (line 376) fails for
-    // every loss before the `no-shares` check (line 380) is reached: that require is dead code.
-    function test_realizeLoss_zeroSupplyRevertsInvalidLossNotNoShares() public {
-        _pause();
-        assertEq(vault.totalSupply(), 0);
-        assertEq(vault.totalAssets(), 0);
-
-        uint256[3] memory losses = [uint256(1), 1e12, type(uint256).max];
-        for (uint256 i; i < 3; ++i) {
-            vm.prank(redeemFeeSetter);
-            vm.expectRevert("SparkPrimeVault/invalid-loss");
-            vault.realizeLoss(losses[i]);
-        }
-    }
-
-    // V2-3 regression: a full loss and anything above it is a clean revert, the index survives.
-    function test_realizeLoss_fullLossAndAboveRevertInvalidLoss() public {
-        _deposit(alice, ONE_M);
-        _pause();
-        uint256 ta = vault.totalAssets();
-        assertEq(ta, 999_999_999_998);
-
-        uint256[3] memory losses = [ta, ta + 1, type(uint256).max];
-        for (uint256 i; i < 3; ++i) {
-            vm.prank(redeemFeeSetter);
-            vm.expectRevert("SparkPrimeVault/invalid-loss");
-            vault.realizeLoss(losses[i]);
-        }
-
-        assertEq(vault.chi(), CHI_P);
-        _unpause();
-        _deposit(bob, HUNDRED_K);
-        assertEq(vault.balanceOf(bob), SH_100K);
-    }
-
-    // C-3 persists: there is no floor below `loss < totalAssets`. `loss = totalAssets - 1` leaves
-    // chi = floor(RAY / S) = 1_009_687_768_243_692 (~1e-12 USDC per share); every holder reads 0
-    // and even totalAssets() reads 0 because S * floor(RAY / S) < RAY. A hot-wallet RISK_MANAGER
-    // can do this in one call while paused. Recovery now exists through `realizeGain`.
-    function test_BUG_realizeLoss_noFloor_totalAssetsMinusOneWipesHolders() public {
-        _deposit(alice, ONE_M);
-        _pause();
-
-        uint256 ta = vault.totalAssets();
-        assertEq(ta, 999_999_999_998);
-
-        uint256 expectedChi = RAY / SH_1M;
-        assertEq(expectedChi, 1_009_687_768_243_692);
-
-        vm.expectEmit(address(vault));
-        emit LossRealized(uint192(expectedChi), ta - 1);
-        _realizeLoss(ta - 1);
-
-        assertEq(vault.chi(),            expectedChi);
-        assertEq(vault.totalAssets(),    0);        // S * chi / RAY floors to 0
-        assertEq(vault.assetsOf(alice),  0);
-        assertEq(vault.balanceOf(alice), SH_1M);
-        assertEq(_vaultSpUsdc(),         S_1M);     // ~1M USDC of backing still in the vault
-
-        // Nothing further can be realized as a loss (totalAssets is 0).
-        vm.prank(redeemFeeSetter);
-        vm.expectRevert("SparkPrimeVault/invalid-loss");
-        vault.realizeLoss(1);
-
-        // The VSR cannot undo it in any useful time: 100% APY for a year doubles 1e15 to 2e15.
-        _setPrimeVsr(MAX_VSR);
-        _warpAndDrip(365 days);
-        assertLt(vault.chi(), 3 * expectedChi);
-        assertEq(vault.totalAssets(), 1);
-        _setPrimeVsr(RAY);
-
-        // `realizeGain` is the only recovery: admin writes the value back.
-        vm.prank(admin);
-        vault.realizeGain(ta - 1);
-        assertGe(vault.totalAssets(), ta - 1);
-        assertLe(vault.totalAssets(), ta);
-        assertGe(vault.assetsOf(alice), ta - 1);
-    }
-
-    // With totalSupply == 1 share totalAssets() is 1 wei, so `loss < 1` admits no loss at all.
-    function test_realizeLoss_oneShareSupplyAdmitsNoLoss() public {
-        _deposit(alice, 3);  // 3 wei USDC -> 2 spUSDC shares -> 2 wei -> 1 spPRIME share
-        assertEq(vault.totalSupply(), 1);
-        assertEq(vault.totalAssets(), 1);
-
-        _pause();
-        vm.prank(redeemFeeSetter);
-        vm.expectRevert("SparkPrimeVault/invalid-loss");
-        vault.realizeLoss(1);
-        vm.prank(redeemFeeSetter);
-        vm.expectRevert("SparkPrimeVault/invalid-loss");
-        vault.realizeLoss(0);
-        assertEq(vault.chi(), CHI_P);
-    }
-
-    // chi == 0 is still reachable once totalSupply > RAY (1e27 shares = ~1e21 USDC here): then
-    // floor(1 * RAY / S) == 0 and the old V2-3 shape (division by zero in convertToShares,
-    // dead index) returns until admin calls `realizeGain`. Info: needs a 1e21 USDC vault.
-    function test_realizeLoss_chiZeroStillReachableAboveRaySupply() public {
-        _deposit(alice, 1.2e27);
-        uint256 supply = vault.totalSupply();
-        assertGt(supply, RAY);
-        uint256 ta = vault.totalAssets();
-
-        _pause();
-        _realizeLoss(ta - 1);
-        assertEq(vault.chi(),    0);
-        assertEq(vault.nowChi(), 0);
-        assertEq(vault.totalAssets(), 0);
-        vm.expectRevert(stdError.divisionError);
-        vault.convertToShares(1);
-
-        vm.prank(admin);
-        vault.realizeGain(ta);
-        assertEq(vault.chi(), (ta * RAY) / supply);
-        assertGt(vault.chi(), 0);
-    }
-
-    function test_realizeLoss_escrowedRedeemSharesTakeLossQueuedDepositsDoNot() public {
-        _deposit(alice, ONE_M);
-        _deposit(bob,   ONE_M);
-        uint256 bobShares = vault.balanceOf(bob);
-        uint256 redeemId  = _requestRedeem(bob, bobShares);
-        assertEq(vault.balanceOf(address(vault)), bobShares);
-
-        _setCapacity(vault.totalSupply());           // close capacity
-        uint256 carolId = _deposit(carol, HUNDRED_K);
-        assertEq(vault.balanceOf(carol), 0);
-        ( ,, uint256 carolQueued ) = _depositRequest(carolId);
-        assertEq(carolQueued, S_100K);
-
-        uint256 aliceBefore  = vault.assetsOf(alice);
-        uint256 escrowBefore = vault.convertToAssets(bobShares);
-        assertEq(aliceBefore,  999_999_999_998);
-        assertEq(escrowBefore, 999_999_999_998);
-
-        _pause();
-        _realizeLoss(200_000e6);
-        _unpause();
-
-        uint256 aliceDrop  = aliceBefore  - vault.assetsOf(alice);
-        uint256 escrowDrop = escrowBefore - vault.convertToAssets(bobShares);
-        assertGe(aliceDrop,  HUNDRED_K);
-        assertLe(aliceDrop,  HUNDRED_K + 2);
-        assertGe(escrowDrop, HUNDRED_K);
-        assertLe(escrowDrop, HUNDRED_K + 2);
-
-        // Carol's queued spUSDC is untouched and fills at the post-loss price (more shares).
-        ( ,, uint256 carolAfter ) = _depositRequest(carolId);
-        assertEq(carolAfter, S_100K);
-        _setCapacity(type(uint128).max);
-        _processDeposits(type(uint256).max, type(uint256).max);
-        assertGt(vault.balanceOf(carol), SH_100K);
-        uint256 carolValue = vault.assetsOf(carol);
-        assertGe(carolValue, A_100K - 2);
-        assertLe(carolValue, A_100K);
-
-        // Bob's escrowed redeem pays the post-loss value.
-        _processRedeems(type(uint256).max, type(uint256).max);
-        ( ,, uint256 remaining ) = _redeemRequest(redeemId);
-        assertEq(remaining, 0);
-        assertGe(usdc.balanceOf(bob), 899_999_999_990);
-        assertLe(usdc.balanceOf(bob), 900_000_000_000);
-    }
-
-    // uint192 cast (line 382): chi' <= chi for every admitted loss and chi' >= floor(RAY / S) > 0
-    // while S < RAY, so the cast cannot truncate and chi cannot hit 0. Info only.
-    function testFuzz_realizeLoss_newChiNeverExceedsOld(uint256 loss) public {
-        _deposit(alice, ONE_M);
-        _pause();
-        uint256 ta  = vault.totalAssets();
-        uint256 chi = vault.chi();
-        loss = bound(loss, 1, ta - 1);
-
-        _realizeLoss(loss);
-
-        assertLe(vault.chi(), chi);
-        assertGe(vault.chi(), RAY / SH_1M);
-        assertLe(vault.totalAssets(), ta - loss);
-        assertGe(vault.totalAssets() + 1, ta - loss);
-        assertLt(vault.chi(), 2 ** 192);
-    }
-
-}
-
-contract NewSurfaceRealizeGainTest is NewSurfaceBase {
-
-    /**********************************************************************************************/
-    /*** 12b. realizeGain (new at ff828d2)                                                      ***/
-    /**********************************************************************************************/
-
-    uint256 constant CHI_GAIN_100K = 1_110_656_545_066_042_825_345_107_777;
-
-    // Smallest gain for which (TA + gain) * RAY / S >= 2^192 at the harness supply.
-    uint256 constant GAIN_TRUNCATE = 6_216_874_099_906_568_962_213_193_772_734_343_774_180_112;
-
-    // Largest chi that drip() can multiply by RAY (vsr == RAY) without overflowing.
-    uint256 constant CHI_DRIP_MAX = 115_792_089_237_316_195_423_570_985_008_687_907_853_269_984_665_640;
-
-    // Smallest gain that pushes chi above CHI_DRIP_MAX at the harness supply.
-    uint256 constant GAIN_BRICK = 114_681_085_459_449_903_921_528_244_645_760_029;
-
-    // Smallest gain for which (TA + gain) * RAY overflows uint256.
-    uint256 constant GAIN_OVERFLOW = 115_792_089_237_316_195_423_570_985_008_687_907_852_269_984_665_643;
-
-    function _realizeGain(uint256 gain) internal {
-        vm.prank(admin);
-        vault.realizeGain(gain);
-    }
-
-    // chi' = floor((totalAssets + G) * RAY / S) (line 306); totalAssets rises by G or G - 1.
-    function test_realizeGain_exactChiEventAndTotalAssets() public {
-        _deposit(alice, ONE_M);
-
-        uint256 gain     = HUNDRED_K;
-        uint256 taBefore = vault.totalAssets();
-        assertEq(taBefore,            999_999_999_998);
-        assertEq(vault.totalSupply(), SH_1M);
-
-        uint256 expectedChi = ((taBefore + gain) * RAY) / SH_1M;
-        assertEq(expectedChi, CHI_GAIN_100K);
-        assertGt(expectedChi, CHI_P);
-
-        vm.expectEmit(address(vault));
-        emit GainRealized(uint192(expectedChi), gain);
-        _realizeGain(gain);
-
-        assertEq(vault.chi(),    expectedChi);
-        assertEq(vault.nowChi(), expectedChi);
-
-        uint256 rise = vault.totalAssets() - taBefore;
-        assertGe(rise, gain - 1);
-        assertLe(rise, gain);
-        assertEq(rise, gain - 1);  // exact at these indexes: 1_099_999_999_997
-        assertEq(vault.assetsOf(alice), 1_099_999_999_997);
-    }
-
-    function test_realizeGain_revertsForNonAdmin() public {
-        _deposit(alice, ONE_M);
-        address[5] memory who = [redeemFeeSetter, guardian, vsrSetter, rebalancer, alice];
-        for (uint256 i; i < 5; ++i) {
-            vm.prank(who[i]);
-            vm.expectRevert(_unauthorized(who[i], DEFAULT_ADMIN_ROLE));
-            vault.realizeGain(1);
-        }
-    }
-
-    function test_realizeGain_revertsOnZeroGain() public {
-        _deposit(alice, ONE_M);
-        vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/invalid-gain");
-        vault.realizeGain(0);
-    }
-
-    // `invalid-gain` is checked before `no-shares`.
-    function test_realizeGain_revertsOnZeroSupply() public {
-        assertEq(vault.totalSupply(), 0);
-        vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/no-shares");
-        vault.realizeGain(1);
-        vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/invalid-gain");
-        vault.realizeGain(0);
-    }
-
-    // No `whenNotPaused` and no `require(paused)`: a gain can be written mid-incident, while
-    // `realizeLoss` is restricted to the paused state.
-    function test_realizeGain_worksPausedAndUnpaused() public {
-        _deposit(alice, ONE_M);
-
-        _realizeGain(1e6);
-        uint256 chiUnpaused = vault.chi();
-        assertGt(chiUnpaused, CHI_P);
-
-        _pause();
-        _realizeGain(1e6);
-        assertGt(vault.chi(), chiUnpaused);
-        assertTrue(vault.paused());
-    }
-
-    // Accrued but undripped yield is folded in first: the gain is applied on top of nowChi().
-    function test_realizeGain_dripsBeforeApplyingGain() public {
-        _deposit(alice, ONE_M);
-        _setPrimeVsr(TEN_PCT_VSR);
-        _warp(365 days);
-
-        uint256 taAccrued = vault.totalAssets();  // uses nowChi()
-        assertGt(taAccrued, 1_099_000e6);
-        assertEq(vault.rho(), block.timestamp - 365 days);
-
-        uint256 expectedChi = ((taAccrued + HUNDRED_K) * RAY) / SH_1M;
-        _realizeGain(HUNDRED_K);
-
-        assertEq(vault.chi(), expectedChi);
-        assertEq(vault.rho(), block.timestamp);
-        assertGe(vault.totalAssets(), taAccrued + HUNDRED_K - 1);
-        assertLe(vault.totalAssets(), taAccrued + HUNDRED_K);
-    }
-
-    function test_realizeGain_escrowedRedeemSharesAndHoldersShareGainQueuedDepositsDoNot() public {
-        _deposit(alice, ONE_M);
-        _deposit(bob,   ONE_M);
-        uint256 bobShares = vault.balanceOf(bob);
-        uint256 redeemId  = _requestRedeem(bob, bobShares);
-
-        _setCapacity(vault.totalSupply());
-        uint256 carolId = _deposit(carol, HUNDRED_K);
-        ( ,, uint256 carolQueued ) = _depositRequest(carolId);
-        assertEq(carolQueued, S_100K);
-
-        uint256 aliceBefore  = vault.assetsOf(alice);
-        uint256 escrowBefore = vault.convertToAssets(bobShares);
-        assertEq(aliceBefore,  999_999_999_998);
-        assertEq(escrowBefore, 999_999_999_998);
-
-        _realizeGain(200_000e6);
-
-        uint256 aliceRise  = vault.assetsOf(alice) - aliceBefore;
-        uint256 escrowRise = vault.convertToAssets(bobShares) - escrowBefore;
-        assertGe(aliceRise,  HUNDRED_K - 2);
-        assertLe(aliceRise,  HUNDRED_K);
-        assertGe(escrowRise, HUNDRED_K - 2);
-        assertLe(escrowRise, HUNDRED_K);
-
-        // Carol's queued spUSDC did not participate: fills for fewer shares, same value.
-        ( ,, uint256 carolAfter ) = _depositRequest(carolId);
-        assertEq(carolAfter, S_100K);
-        _setCapacity(type(uint128).max);
-        _processDeposits(type(uint256).max, type(uint256).max);
-        assertLt(vault.balanceOf(carol), SH_100K);
-        assertGe(vault.assetsOf(carol), A_100K - 2);
-        assertLe(vault.assetsOf(carol), A_100K);
-
-        // Bob's escrowed redeem pays the post-gain value (needs the extra USDC to exist).
-        _returnSpUsdcLiquidity(200_000e6);
-        _processRedeems(type(uint256).max, type(uint256).max);
-        ( ,, uint256 remaining ) = _redeemRequest(redeemId);
-        assertEq(remaining, 0);
-        assertGe(usdc.balanceOf(bob), 1_099_999_999_990);
-        assertLe(usdc.balanceOf(bob), 1_100_000_000_000);
-    }
-
-    function test_realizeGain_repeatedGainsAccumulate() public {
-        _deposit(alice, ONE_M);
-        uint256 ta0 = vault.totalAssets();
-
-        _realizeGain(HUNDRED_K);
-        uint256 ta1  = vault.totalAssets();
-        uint256 chi2 = ((ta1 + HUNDRED_K) * RAY) / SH_1M;
-
-        _realizeGain(HUNDRED_K);
-        assertEq(vault.chi(), chi2);
-        assertGe(vault.totalAssets(), ta0 + 2 * HUNDRED_K - 2);
-        assertLe(vault.totalAssets(), ta0 + 2 * HUNDRED_K);
-    }
-
-    // gain G then loss G: at most 2 wei of floor drift, never a net gain for holders.
-    function test_realizeGain_thenLossRoundTripBound() public {
-        _deposit(alice, ONE_M);
-        uint256 ta0  = vault.totalAssets();
-        uint256 chi0 = vault.chi();
-
-        _realizeGain(HUNDRED_K);
-        _pause();
-        _realizeLoss(HUNDRED_K);
-
-        assertLe(vault.chi(), chi0);
-        assertLe(vault.totalAssets(), ta0);
-        assertGe(vault.totalAssets(), ta0 - 2);
-    }
-
-    // (a) The uint192 cast on line 306 is unchecked. At the harness supply any gain of at least
-    // GAIN_TRUNCATE (~6.2e36 USDC) produces a quotient >= 2^192 that wraps to a tiny chi: holders
-    // read 0 and the event advertises the wrapped value. Recoverable by another realizeGain.
-    function test_BUG_realizeGain_uint192TruncationWrapsChiToDust() public {
-        _deposit(alice, ONE_M);
-        uint256 ta = vault.totalAssets();
-
-        // Just below the threshold the quotient fits (and is already far above CHI_DRIP_MAX).
-        uint256 snap = vm.snapshotState();
-        uint256 fits = ((ta + GAIN_TRUNCATE - 1) * RAY) / SH_1M;
-        assertLt(fits, 2 ** 192);
-        _realizeGain(GAIN_TRUNCATE - 1);
-        assertEq(vault.chi(), fits);
-        vm.revertToState(snap);
-
-        uint256 quotient = ((ta + GAIN_TRUNCATE) * RAY) / SH_1M;
-        assertGe(quotient, 2 ** 192);
-        uint256 wrapped = quotient % (2 ** 192);
-        assertEq(wrapped, 458_233_707_431_279);
-
-        vm.expectEmit(address(vault));
-        emit GainRealized(uint192(wrapped), GAIN_TRUNCATE);
-        _realizeGain(GAIN_TRUNCATE);
-
-        assertEq(vault.chi(),           wrapped);
-        assertEq(vault.totalAssets(),   0);
-        assertEq(vault.assetsOf(alice), 0);
-        assertEq(_vaultSpUsdc(),        S_1M);
-
-        _realizeGain(ta);
-        assertGe(vault.totalAssets(), ta - 1);
-        assertLe(vault.totalAssets(), ta);
-    }
-
-    // (b) Above GAIN_OVERFLOW the multiplication `(totalAssets + gain) * RAY` overflows and the
-    // call reverts with a panic; one below still goes through (and wraps per (a)).
-    function test_realizeGain_uint256OverflowRevertsAboveThreshold() public {
-        _deposit(alice, ONE_M);
-        uint256 ta = vault.totalAssets();
-        assertEq(GAIN_OVERFLOW, type(uint256).max / RAY - ta + 1);
-
-        vm.prank(admin);
-        vm.expectRevert(stdError.arithmeticError);
-        vault.realizeGain(GAIN_OVERFLOW);
-
-        vm.prank(admin);
-        vm.expectRevert(stdError.arithmeticError);
-        vault.realizeGain(type(uint256).max);
-
-        _realizeGain(GAIN_OVERFLOW - 1);
-        assertLt(vault.chi(), 2 ** 192);
-    }
-
-    // (c) A-9 brick: once chi > maxUint256 / RAY, `_rpow(vsr, dt) * chi` in drip() (line 649)
-    // and nowChi() (line 698) overflows as soon as one second passes. Every entry point that
-    // drips or converts reverts, including realizeGain and realizeLoss, so there is no recovery
-    // short of an upgrade. Transfers keep working. Threshold gain at the harness supply:
-    // GAIN_BRICK (~1.15e29 USDC); one wei below is fine (at vsr == RAY).
-    function test_BUG_realizeGain_aboveDripThresholdBricksVault() public {
-        _deposit(alice, ONE_M);
+    // The updaters are not pause-gated: an owner can still re-point while paused, while the
+    // request functions are blocked.
+    function test_updateRecipient_worksWhilePaused() public {
         _setCapacity(0);
-        uint256 bobId = _deposit(bob, HUNDRED_K);  // queued entry to exercise the cancel path later
-        _setCapacity(type(uint128).max);
-        uint256 ta = vault.totalAssets();
-        assertEq(CHI_DRIP_MAX, type(uint256).max / RAY);
-
-        // One wei below: chi <= CHI_DRIP_MAX, drip survives the next second.
-        uint256 snap = vm.snapshotState();
-        _realizeGain(GAIN_BRICK - 1);
-        assertEq(vault.chi(), 115_792_089_237_316_195_423_570_985_008_687_907_508_017_464_175_173);
-        assertLe(vault.chi(), CHI_DRIP_MAX);
-        _warp(1);
-        vault.drip();
-        vault.nowChi();
-        vm.revertToState(snap);
-
-        _realizeGain(GAIN_BRICK);
-        assertEq(vault.chi(), 115_792_089_237_316_195_423_570_985_008_687_908_517_705_232_418_866);
-        assertGt(vault.chi(), CHI_DRIP_MAX);
-
-        // Same block: views still answer (no multiplication by _rpow yet).
-        assertEq(vault.totalAssets(), 114_681_085_459_449_903_921_529_244_645_760_026);
-
-        _warp(1);
-
-        vm.expectRevert(stdError.arithmeticError);
-        vault.drip();
-        vm.expectRevert(stdError.arithmeticError);
-        vault.nowChi();
-        vm.expectRevert(stdError.arithmeticError);
-        vault.totalAssets();
-        vm.expectRevert(stdError.arithmeticError);
-        vault.convertToShares(1);
-
-        _fund(carol, ONE_M);
-        vm.prank(carol);
-        vm.expectRevert(stdError.arithmeticError);
-        vault.requestDeposit(ONE_M, carol, 0);
-
-        vm.prank(alice);
-        vm.expectRevert(stdError.arithmeticError);
-        vault.requestRedeem(1, alice);
-
-        vm.prank(rebalancer);
-        vm.expectRevert(stdError.arithmeticError);
-        vault.processPendingDeposits(type(uint256).max, type(uint256).max);
-        vm.prank(rebalancer);
-        vm.expectRevert(stdError.arithmeticError);
-        vault.processPendingRedeems(type(uint256).max, type(uint256).max);
-        vm.prank(rebalancer);
-        vm.expectRevert(stdError.arithmeticError);
-        vault.processPendingDepositCancellations(type(uint256).max, type(uint256).max);
-
-        vm.prank(vsrSetter);
-        vm.expectRevert(stdError.arithmeticError);
-        vault.setVSR(RAY);
-
-        vm.prank(admin);
-        vm.expectRevert(stdError.arithmeticError);
-        vault.realizeGain(1);
-
+        uint256 id = _deposit(alice, ONE_M);
         _pause();
-        vm.prank(redeemFeeSetter);
-        vm.expectRevert(stdError.arithmeticError);
-        vault.realizeLoss(1);
 
-        // Shares still move; the cancel path (no drip) still works for bob's queued entry.
         vm.prank(alice);
-        assertTrue(vault.transfer(carol, 1));
-        _unpause();
-        vm.prank(bob);
-        vault.requestDepositCancellation(bobId, bob);
-        assertEq(vault.pendingCancelledDepositSavingsShares(), S_100K);
-        assertEq(_vaultSpUsdc(), S_1M + S_100K);
-        assertGt(ta, 0);
-    }
+        vault.updateDepositRecipient(id, bob);
+        ( , address recipient, ) = _depositRequest(id);
+        assertEq(recipient, bob);
 
-    // The safe band shrinks with the VSR: _rpow(vsr, dt) > RAY, so a chi that survives at
-    // vsr == RAY overflows one second after any positive rate is set.
-    function test_BUG_realizeGain_dripThresholdShrinksWithVsr() public {
-        _deposit(alice, ONE_M);
-        _realizeGain(GAIN_BRICK - 1);
-        assertLe(vault.chi(), CHI_DRIP_MAX);
-
-        _setPrimeVsr(ONE_PCT_VSR);  // same block: drip() returns early, no overflow yet
-        _warp(1);
-        vm.expectRevert(stdError.arithmeticError);
-        vault.drip();
-        vm.expectRevert(stdError.arithmeticError);
-        vault.nowChi();
+        vm.prank(alice);
+        vm.expectRevert("SparkPrimeVault/paused");
+        vault.requestDepositCancellation(id, alice);
     }
 
 }
@@ -952,11 +424,11 @@ contract NewSurfaceRealizeGainTest is NewSurfaceBase {
 contract NewSurfaceMiscTest is NewSurfaceBase {
 
     /**********************************************************************************************/
-    /*** 13. setCapacity lost its uint128 bound                                                 ***/
+    /*** 13. setCapacity has no bound (V2-7 open)                                               ***/
     /**********************************************************************************************/
 
-    // `convertToAssets(availableCapacity())` (line 704) multiplies the free capacity by chi, so
-    // any capacity above maxUint256 / chi + totalSupply makes every requestDeposit and
+    // `convertToAssets(availableCapacity())` (:829) multiplies the free capacity by chi, so any
+    // capacity above maxUint256 / chi + totalSupply makes every requestDeposit and
     // processPendingDeposits panic. The safe bound shrinks as chi grows.
     function test_BUG_setCapacity_maxUint256BricksDeposits() public {
         _setCapacity(type(uint256).max);
@@ -1004,10 +476,10 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
     }
 
     /**********************************************************************************************/
-    /*** 14. requestRedeem(0)                                                                   ***/
+    /*** 14. requestRedeem(0) (V2-9 open)                                                       ***/
     /**********************************************************************************************/
 
-    function test_requestRedeem_zeroSharesCreatesGhostEntry() public {
+    function test_BUG_V2_9_requestRedeem_zeroSharesCreatesGhostEntry() public {
         _setRedeemFeeRate(vault.MAX_REDEEM_FEE());
         assertEq(vault.minRedeem(),        0);
         assertEq(vault.balanceOf(mallory), 0);
@@ -1031,7 +503,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
     }
 
     // Ghost entries ahead of a real one consume `maxRequests` (C-12 persists).
-    function test_requestRedeem_ghostsConsumeMaxRequests() public {
+    function test_BUG_V2_9_requestRedeem_ghostsConsumeMaxRequests() public {
         _deposit(alice, ONE_M);
         for (uint256 i; i < 3; ++i) {
             vm.prank(mallory);
@@ -1042,11 +514,11 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
 
         _processRedeems(type(uint256).max, 3);
         assertEq(usdc.balanceOf(alice), 0);
-        assertEq(vault.firstPendingRedeemId(),    3);
+        assertEq(vault.firstPendingRedeemId(), 3);
 
         _processRedeems(type(uint256).max, 1);
-        assertEq(usdc.balanceOf(alice), 999_999_999_998);
-        assertEq(vault.firstPendingRedeemId(),    4);
+        assertEq(usdc.balanceOf(alice), R_1M);
+        assertEq(vault.firstPendingRedeemId(), 4);
     }
 
     function test_requestRedeem_zeroSharesRevertsWithMinRedeem() public {
@@ -1057,28 +529,36 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
     }
 
     /**********************************************************************************************/
-    /*** 15. Head-advance loops                                                                 ***/
+    /*** 15. Deferred head walk (no head-advance loops on 0ebb452)                              ***/
     /**********************************************************************************************/
 
-    function test_requestDeposit_skipsGhostsAndFillsInstantly() public {
+    // A zero-asset request always satisfies `pendingDepositSavingsShares == savingsShares_`
+    // (:414) and runs the walk, but with `availableCapacity() == 0` the loop body never executes
+    // (`remaining_ == 0`, :837) so the head does not move. The ghosts are skipped by the first
+    // real instant fill after capacity returns.
+    function test_requestDeposit_ghostsDoNotAdvanceHeadUntilCapacityReturns() public {
         _setCapacity(0);
         _fund(mallory, 0);
         for (uint256 i; i < 3; ++i) {
             vm.prank(mallory);
             assertEq(vault.requestDeposit(0, mallory, 0), i);
         }
-        assertEq(vault.firstPendingDepositId(), 2);  // each ghost walked one step, none filled
-        assertEq(_depositLength(),    3);
+        assertEq(vault.firstPendingDepositId(), 0);
+        assertEq(_depositLength(),              3);
+        assertEq(vault.pendingDepositSavingsShares(), 0);
 
         _setCapacity(type(uint128).max);
         uint256 id = _deposit(bob, ONE_M);
-        assertEq(id,                     3);
-        assertEq(vault.balanceOf(bob),   SH_1M);
-        assertEq(vault.firstPendingDepositId(),    4);
-        assertEq(_depositLength(),       4);
+        assertEq(id,                            3);
+        assertEq(vault.balanceOf(bob),          SH_1M);
+        assertEq(vault.firstPendingDepositId(), 4);
+        assertEq(_depositLength(),              4);
     }
 
-    function test_requestDepositCancellation_headCancelAdvancesPastGhostsAndCancelled() public {
+    // `requestDepositCancellation` (:419-444) no longer walks the head: cancelled entries at the
+    // head stay there (as zero slots) until the next walk, and they still count against
+    // `maxRequests_` (:835).
+    function test_requestDepositCancellation_doesNotAdvanceHead() public {
         _setCapacity(0);
         uint256 idA = _deposit(alice, ONE_M);
         _fund(mallory, 0);
@@ -1093,14 +573,37 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         assertEq(vault.firstPendingDepositId(), 0);
 
         vm.prank(alice);
-        vault.requestDepositCancellation(idA, alice); // head cancel: skips ghost 1 and cancelled 2
-        assertEq(vault.firstPendingDepositId(), 3);
+        vault.requestDepositCancellation(idA, alice); // head cancel: head stays
+        assertEq(vault.firstPendingDepositId(), 0);
 
         vm.prank(carol);
         vault.requestDepositCancellation(idC, carol);
-        assertEq(vault.firstPendingDepositId(), 4);
-        assertEq(_depositLength(),    4);
-        assertLe(vault.firstPendingDepositId(), _depositLength());
+        assertEq(vault.firstPendingDepositId(), 0);
+        assertEq(_depositLength(),              4);
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), S_1M + 2 * S_100K);
+
+        // The next instant fill walks past the four dead slots.
+        _setCapacity(type(uint128).max);
+        uint256 idD = _deposit(dave, HUNDRED_K);  // pending == own shares, walks 0..4
+        assertEq(idD, 4);
+        assertEq(vault.balanceOf(dave), SH_100K);
+        assertEq(vault.firstPendingDepositId(), 5);
+
+        // A bounded rebalancer walk over a dead slot only moves the head.
+        _setCapacity(0);
+        _deposit(alice, ONE_M);                      // 5, queued
+        vm.prank(alice);
+        vault.requestDepositCancellation(5, alice);  // dead slot 5
+        _deposit(bob, HUNDRED_K);                    // 6, queued (predicate true but cap 0)
+        assertEq(vault.firstPendingDepositId(), 5);
+        _setCapacity(type(uint128).max);
+        _processDeposits(type(uint256).max, 1);      // budget spent on slot 5
+        assertEq(vault.firstPendingDepositId(), 6);
+        assertEq(vault.balanceOf(bob), 0);
+        _processDeposits(type(uint256).max, 1);
+        assertEq(vault.firstPendingDepositId(), 7);
+        assertEq(vault.balanceOf(bob), SH_100K);
     }
 
     function test_requestDeposit_gasOfWalkingGhostsPaidOnce() public {
@@ -1109,10 +612,10 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         _fund(mallory, 0);
         for (uint256 i; i < 500; ++i) {
             vm.prank(mallory);
-            vault.requestDeposit(0, mallory, 0);
+            vault.requestDeposit(0, mallory, 0);  // predicate false: alice is queued ahead
         }
         assertEq(vault.firstPendingDepositId(), 0);
-        assertEq(_depositLength(),    501);
+        assertEq(_depositLength(),              501);
 
         _setCapacity(type(uint128).max);
         _processDeposits(type(uint256).max, 1);  // fills alice, head = 1, 500 ghosts ahead
@@ -1123,7 +626,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         uint256 g0 = gasleft();
         vault.requestDeposit(ONE_M, bob, 0);
         uint256 gasBob = g0 - gasleft();
-        assertEq(vault.firstPendingDepositId(),  502);
+        assertEq(vault.firstPendingDepositId(), 502);
         assertEq(vault.balanceOf(bob), SH_1M);
 
         _fund(carol, ONE_M);
@@ -1135,9 +638,9 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
 
         emit log_named_uint("gas: requestDeposit walking 500 ghosts", gasBob);
         emit log_named_uint("gas: requestDeposit with no walk       ", gasCarol);
-        // Slots are warm inside one test tx (~777 gas per ghost here); on mainnet every ghost
-        // is a cold SLOAD (2_100) so 500 ghosts cost the next depositor ~1.1M gas, once.
-        assertGt(gasBob - gasCarol, 500 * 500);
+        // Slots are warm inside one test tx; on mainnet every ghost is a cold SLOAD (2_100) so
+        // 500 ghosts cost the next depositor ~1.1M gas, once.
+        assertGt(gasBob - gasCarol, 500 * 400);
         assertLt(gasBob - gasCarol, 500 * 2_500);
     }
 
@@ -1155,6 +658,8 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         _processRedeems(type(uint256).max, type(uint256).max);
         ( o, r, s ) = _redeemRequest(rid);
         assertEq(o, address(0)); assertEq(r, address(0)); assertEq(s, 0);
+        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vault.getPendingRedeemRequest(rid);
     }
 
     function test_updateRecipient_outOfRangePanics() public {
@@ -1166,6 +671,8 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         vault.updateRedeemRecipient(0, mallory);
         vm.expectRevert("SparkPrimeVault/invalid-range");  // range getter guards the index
         vault.getPendingDepositRequests(0, 1);
+        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vault.getPendingDepositRequest(0);
     }
 
     /**********************************************************************************************/
@@ -1183,8 +690,8 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         vault.pause();
         assertTrue(vault.paused());
 
-        vm.prank(unpauser);
-        vm.expectRevert(_unauthorized(unpauser, DEFAULT_ADMIN_ROLE));
+        vm.prank(rebalancer);
+        vm.expectRevert(_unauthorized(rebalancer, DEFAULT_ADMIN_ROLE));
         vault.unpause();
 
         vm.prank(guardian);
@@ -1244,7 +751,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         vault.requestDeposit(ONE_M, alice, 0);
     }
 
-    // `Deposit`'s 4th argument is named `savingsShares` but carries spPRIME shares.
+    // `Deposit(owner, recipient, assetsConverted, sharesMinted)`: the 4th argument is spPRIME.
     function test_events_depositFourthArgIsPrimeShares() public {
         _fund(alice, ONE_M);
         vm.prank(alice);
@@ -1253,39 +760,25 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         vault.requestDeposit(ONE_M, alice, 0);
     }
 
-    // Round 4: every `uint192` cast in the contract. `initialize` (:248) casts RAY; `drip` (:620)
-    // and `nowChi` (:748) cast a quotient that is <= maxUint256 / RAY < 2^192 whenever the
-    // multiplication did not already revert; `realizeLoss` (:378) only ever lowers chi (fuzzed in
-    // `testFuzz_realizeLoss_newChiNeverExceedsOld`); `realizeGain` (:302) is the one cast that can
-    // wrap (G-2). Pinned here: the drip bound sits 5.4e7 times below 2^192, so a chi that drips at
-    // all can never be a wrapped value.
-    function test_uint192Casts_onlyRealizeGainCanWrap() public {
-        uint256 dripBound = type(uint256).max / RAY;
-        assertLt(dripBound, 2 ** 192);
-        assertEq(2 ** 192 / dripBound, 54_210_108);
-
-        _deposit(alice, ONE_M);
-        _pause();
-        _realizeLoss(1);
-        assertLe(uint256(vault.chi()), CHI_P);                      // never up, never wraps
-
-        // A gain whose quotient lands exactly at 2^192 wraps to 0 (chi == 0) in one call.
-        uint256 supply = vault.totalSupply();
-        uint256 ta     = vault.totalAssets();
-        uint256 gain   = (2 ** 192) * supply / RAY + 1 - ta;
-        vm.prank(admin);
-        vault.realizeGain(gain);
-        assertEq(uint256(vault.chi()), 458_233_707_431_279);         // quotient - 2^192 (G-2 value)
-        assertLt(uint256(vault.chi()), RAY / supply + 1);            // below one gain step
-        assertEq(vault.totalAssets(), 0);
-    }
-
-    function test_events_redeemOrderIsOwnerRecipientSharesAssets() public {
+    // `Redeem(owner, recipient, sharesBurned, savingsSharesBurned, assetsReceived)`: the spUSDC
+    // burned is the ceil of assets * RAY / chi_s; for the full 1M it is the whole S_1M.
+    function test_events_redeemOrderIsOwnerRecipientSharesSavingsAssets() public {
         _deposit(alice, ONE_M);
         _requestRedeem(alice, SH_1M);
         vm.expectEmit(address(vault));
-        emit Redeem(alice, alice, SH_1M, 999_999_999_998);
+        emit Redeem(alice, alice, SH_1M, RS_1M, R_1M);
         _processRedeems(type(uint256).max, type(uint256).max);
+        assertEq(_vaultSpUsdc(), 0);
+        assertEq(usdc.balanceOf(alice), R_1M);
+    }
+
+    function test_events_partialRedeemBurnsCeilSavingsShares() public {
+        _deposit(alice, ONE_M);
+        _requestRedeem(alice, SH_100K);
+        vm.expectEmit(address(vault));
+        emit Redeem(alice, alice, SH_100K, RS_100K, R_100K);
+        _processRedeems(type(uint256).max, type(uint256).max);
+        assertEq(_vaultSpUsdc(), S_1M - RS_100K);
     }
 
 }
