@@ -1,12 +1,15 @@
 [submodule "lib/forge-std"]
 	path = lib/forge-std
-	url = git@github.com:foundry-rs/forge-std.git
+	url = https://github.com/foundry-rs/forge-std
 [submodule "lib/oz"]
 	path = lib/oz
-	url = git@github.com:OpenZeppelin/openzeppelin-contracts.git
+	url = https://github.com/openzeppelin/openzeppelin-contracts
 [submodule "lib/oz-upgradeable"]
 	path = lib/oz-upgradeable
-	url = git@github.com:OpenZeppelin/openzeppelin-contracts-upgradeable.git
+	url = https://github.com/openzeppelin/openzeppelin-contracts-upgradeable.git
 [submodule "lib/spark-address-registry"]
 	path = lib/spark-address-registry
-	url = git@github.com:sparkdotfi/spark-address-registry.git
+	url = https://github.com/sparkdotfi/spark-address-registry
+[submodule "lib/token-tests"]
+	path = lib/token-tests
+	url = https://github.com/makerdao/token-tests

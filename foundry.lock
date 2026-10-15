@@ -10,5 +10,8 @@
   },
   "lib/spark-address-registry": {
     "rev": "98091964e0ef9f74bb2b6da3646f8e6d16448588"
+  },
+  "lib/token-tests": {
+    "rev": "6bdd5a38586970acf27166c3205093fd3450d530"
   }
 }

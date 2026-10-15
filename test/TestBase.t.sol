@@ -11,6 +11,8 @@ import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
 
 interface IERC20Like {
 
+    function approve(address spender, uint256 amount) external returns (bool);
+
     function balanceOf(address user) external view returns (uint256);
 
 }
@@ -23,21 +25,19 @@ interface ISparkVaultLike {
 
 contract TestBase is Test {
 
-    address internal admin       = makeAddr("admin");
-    address internal guardian    = makeAddr("guardian");
-    address internal rebalancer  = makeAddr("rebalancer");
-    address internal riskManager = makeAddr("riskManager");
-    address internal setter      = makeAddr("setter");
-    address internal taker       = makeAddr("taker");
-    address internal unpauser    = makeAddr("unpauser");
+    address internal admin           = makeAddr("admin");
+    address internal guardian        = makeAddr("guardian");
+    address internal rebalancer      = makeAddr("rebalancer");
+    address internal redeemFeeSetter = makeAddr("redeemFeeSetter");
+    address internal taker           = makeAddr("taker");
+    address internal vsrSetter       = makeAddr("vsrSetter");
 
-    bytes32 internal DEFAULT_ADMIN_ROLE = 0x00;
-    bytes32 internal GUARDIAN_ROLE      = keccak256("GUARDIAN_ROLE");
-    bytes32 internal REBALANCER_ROLE    = keccak256("REBALANCER_ROLE");
-    bytes32 internal RISK_MANAGER_ROLE  = keccak256("RISK_MANAGER_ROLE");
-    bytes32 internal SETTER_ROLE        = keccak256("SETTER_ROLE");
-    bytes32 internal TAKER_ROLE         = keccak256("TAKER_ROLE");
-    bytes32 internal UNPAUSER_ROLE      = keccak256("UNPAUSER_ROLE");
+    bytes32 internal DEFAULT_ADMIN_ROLE     = 0x00;
+    bytes32 internal GUARDIAN_ROLE          = keccak256("GUARDIAN_ROLE");
+    bytes32 internal REBALANCER_ROLE        = keccak256("REBALANCER_ROLE");
+    bytes32 internal REDEEM_FEE_SETTER_ROLE = keccak256("REDEEM_FEE_SETTER_ROLE");
+    bytes32 internal TAKER_ROLE             = keccak256("TAKER_ROLE");
+    bytes32 internal VSR_SETTER_ROLE        = keccak256("VSR_SETTER_ROLE");
 
     IERC20Like      internal usdc   = IERC20Like(Ethereum.USDC);
     ISparkVaultLike internal spUsdc = ISparkVaultLike(Ethereum.SPARK_VAULT_V2_SPUSDC);
