@@ -47,6 +47,12 @@ interface IERC4626Like {
 
 }
 
+interface IBlacklistableLike {
+
+    function isBlacklisted(address account) external view returns (bool);
+
+}
+
 // TODO: requestDepositWithPermit?
 // TODO: Get pendingOfReceiver()/getPendingOfOwner() even needed?
 
@@ -110,6 +116,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         uint256         shares,
         uint256         assets
     );
+
+    event AssetsMovedToClaimable(address indexed recipient, uint256 assets);
+
+    event Claim(address indexed recipient, uint256 assets);
 
     event Referral(uint16 indexed referral, address indexed recipient, uint256 assets);
 
@@ -210,6 +220,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     uint256 public firstPendingRedeemId;               // First unfilled index of the redeem queue
 
     mapping (address account => uint256 balance) public balanceOf;
+    mapping (address account => uint256 assets)  public claimableAssets;  // Held for blacklisted recipients
     mapping (address account => uint256 nonce)   public nonces;
 
     mapping (address account => mapping (address spender => uint256 amount)) public allowance;
@@ -413,7 +424,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         external
         returns (uint256 newRequestId_)
     {
-        require(recipient_ != address(0), "SparkPrimeVault/invalid-recipient");
+        require(recipient_ != address(0),     "SparkPrimeVault/invalid-recipient");
+        require(_canReceiveAsset(recipient_), "SparkPrimeVault/blacklisted-recipient");
 
         Request memory request_ = _depositRequests[requestId_];
 
@@ -455,8 +467,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         whenNotPaused
         returns (uint256 requestId_)
     {
-        require(recipient_ != address(0), "SparkPrimeVault/invalid-recipient");
-        require(shares_ >= minRedeem,     "SparkPrimeVault/below-minimum");
+        require(recipient_ != address(0),     "SparkPrimeVault/invalid-recipient");
+        require(_canReceiveAsset(recipient_), "SparkPrimeVault/blacklisted-recipient");
+        require(shares_ >= minRedeem,         "SparkPrimeVault/below-minimum");
 
         drip();
 
@@ -494,7 +507,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     function updateDepositCancellationRecipient(uint256 requestId_, address recipient_) external {
-        require(recipient_ != address(0), "SparkPrimeVault/invalid-recipient");
+        require(recipient_ != address(0),     "SparkPrimeVault/invalid-recipient");
+        require(_canReceiveAsset(recipient_), "SparkPrimeVault/blacklisted-recipient");
 
         Request storage request_ = _depositCancellationRequests[requestId_];
 
@@ -508,7 +522,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     function updateRedeemRecipient(uint256 requestId_, address recipient_) external {
-        require(recipient_ != address(0), "SparkPrimeVault/invalid-recipient");
+        require(recipient_ != address(0),     "SparkPrimeVault/invalid-recipient");
+        require(_canReceiveAsset(recipient_), "SparkPrimeVault/blacklisted-recipient");
 
         Request storage request_ = _redeemRequests[requestId_];
 
@@ -516,6 +531,24 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         require(msg.sender == request_.owner, "SparkPrimeVault/not-authorized");
 
         emit RedeemRecipientUpdated(requestId_, request_.recipient = recipient_);
+    }
+
+    /**********************************************************************************************/
+    /*** Claim functions                                                                        ***/
+    /**********************************************************************************************/
+
+    // Permissionless, assets always go to `recipient_`.
+    // Reverts in the asset while still blacklisted.
+    function claim(address recipient_) external returns (uint256 assets_) {
+        assets_ = claimableAssets[recipient_];
+
+        require(assets_ != 0, "SparkPrimeVault/nothing-to-claim");
+
+        claimableAssets[recipient_] = 0;
+
+        SafeERC20.safeTransfer(IERC20OZ(asset), recipient_, assets_);
+
+        emit Claim(recipient_, assets_);
     }
 
     /**********************************************************************************************/
@@ -913,8 +946,15 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
             request_.shares                      -= savingsShares_;
             remaining_                           -= savingsShares_;
 
-            uint256 assets_ =
-                IERC4626Like(savings).redeem(savingsShares_, request_.recipient, address(this));
+            bool canReceiveAsset_ = _canReceiveAsset(request_.recipient);
+
+            uint256 assets_ = IERC4626Like(savings).redeem(
+                savingsShares_,
+                canReceiveAsset_ ? request_.recipient : address(this),
+                address(this)
+            );
+
+            if (!canReceiveAsset_) _moveToClaimableAssets(request_.recipient, assets_);
 
             emit DepositCancellation(request_.owner, request_.recipient, savingsShares_, assets_);
 
@@ -954,7 +994,15 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
             emit Redeem(request_.owner, request_.recipient, shares_, assets_);
 
-            IERC4626Like(savings).withdraw(assets_, request_.recipient, address(this));
+            bool canReceiveAsset_ = _canReceiveAsset(request_.recipient);
+
+            IERC4626Like(savings).withdraw(
+                assets_,
+                canReceiveAsset_ ? request_.recipient : address(this),
+                address(this)
+            );
+
+            if (!canReceiveAsset_) _moveToClaimableAssets(request_.recipient, assets_);
 
             if (request_.shares != 0) break;  // Partial fill, entry stays at the head
 
@@ -1042,6 +1090,21 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
             success_ &&
             result_.length == 32 &&
             abi.decode(result_, (bytes4)) == IERC1271.isValidSignature.selector;
+    }
+
+    /**********************************************************************************************/
+    /*** Blacklist internal helper functions                                                    ***/
+    /**********************************************************************************************/
+
+    function _moveToClaimableAssets(address recipient_, uint256 assets_) internal {
+        claimableAssets[recipient_] += assets_;
+
+        emit AssetsMovedToClaimable(recipient_, assets_);
+    }
+
+    // NOTE: Assumes the asset exposes `isBlacklisted` (USDC/EURC). Override for other assets.
+    function _canReceiveAsset(address account_) internal view virtual returns (bool) {
+        return !IBlacklistableLike(asset).isBlacklisted(account_);
     }
 
     /**********************************************************************************************/
