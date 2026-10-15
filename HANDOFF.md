@@ -3,6 +3,8 @@
 Written 2026-10-14 00:05 UTC for a Claude session with zero context. Everything you need is in
 this repo; paths below are on Lucas's Mac mini unless marked (fork).
 
+> **Status 2026-10-15, round 5 (pre-audit):** target `master` @ `0ebb452` merged into `review/poc-tests-v2` (PR #17). Harness ported (roles `REDEEM_FEE_SETTER_ROLE` / `VSR_SETTER_ROLE`, `adjustTotalAssets`, `MockUSDC` with a real `isBlacklisted` blacklist). Suite under `test/ai/`: ten workers in `~/code/spprime-campaign-v5/<name>` (branches `campaign-v5/<name>`, all merged). New files: `Headline.t.sol` (coordinator's independent reproductions), `Blacklist.t.sol`, `AdjustTotalAssets.t.sol`, `FreshEyes.t.sol`, `REPORT-upgrade-views.md`, `REPORT-fresh-eyes.md`. Report: `AUDIT-REPORT.md` round 5 on top. Run with `FOUNDRY_OFFLINE=true` in worktrees. Headline: G-1 chi brick (exact threshold), gain sandwich around the pause, no loss floor, C-1, backing not ring-fenced; R4-A/R4-B fixed by the blacklist fallback.
+
 > **Status 2026-10-14, round 4:** target `fix/update-guardian-transfer` @ `bf93b0d` (guardian deposit cancels refund the owner; `cancelRedeemRequest` removed). Suite under `test/ai/`: 627 tests, 626 pass, 1 deliberate failing proof. F-1 closed both sides. New: permanent blacklist block of the redeem queue (High) and of the cancellation queue at zero fee (Medium). Report: `AUDIT-REPORT.md` round 4 on top.
 
 > **Status 2026-10-14, round 3 (+ rename sync):** upstream now `refactor/more-simplifying` @ `072e8d0` (renames, internal queue arrays, `getPending*Requests` views; then `731c1c8`: planner calls renamed `processPending*`, `UNPAUSER_ROLE` removed). The suite lives under `test/ai/` (595 tests). Branch pushed to `origin/review/poc-tests-v2`. Suite on
