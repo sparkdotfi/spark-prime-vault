@@ -940,9 +940,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         returns (uint256 assets_)
     {
         try IERC4626Like(savings).redeem(savingsShares_, recipient_, address(this))
-            returns (uint256 redeemed_)
+            returns (uint256 assetsRedeemed_)
         {
-            return redeemed_;
+            return assetsRedeemed_;
         } catch {}
 
         assets_ = IERC4626Like(savings).redeem(savingsShares_, address(this), address(this));
@@ -955,9 +955,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         returns (uint256 savingsShares_)
     {
         try IERC4626Like(savings).withdraw(assets_, recipient_, address(this))
-            returns (uint256 withdrawn_)
+            returns (uint256 savingsSharesBurnt_)
         {
-            return withdrawn_;
+            return savingsSharesBurnt_;
         } catch {}
 
         savingsShares_ = IERC4626Like(savings).withdraw(assets_, address(this), address(this));
