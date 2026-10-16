@@ -7,8 +7,12 @@ abstract contract SparkPrimeVaultTests is TestBase {
 
     uint16 internal constant REFERRAL = type(uint16).max;
 
+    address internal user = makeAddr("user");
+
     function setUp() public override virtual {
         super.setUp();
+
+        vm.label(address(user), "user");
 
         skip(365 days);
     }
@@ -16,14 +20,6 @@ abstract contract SparkPrimeVaultTests is TestBase {
 }
 
 contract RequestDepositTests is SparkPrimeVaultTests {
-
-    address internal user = makeAddr("user");
-
-    function setUp() public override {
-        super.setUp();
-
-        vm.label(address(user), "user");
-    }
 
     // Failure tests
 
@@ -237,6 +233,201 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         _assertVaultState();
         _assertAccountBalances(userBalances);
         _assertAccountBalances(vaultBalances);
+    }
+
+}
+
+contract RequestRedeemTests is SparkPrimeVaultTests {
+
+    // Failure tests
+
+    function test_requestRedeem_paused() external {
+        _pause();
+
+        vm.expectRevert("SparkPrimeVault/paused");
+        vm.prank(user);
+        spPrime.requestRedeem(100e6, user);
+    }
+    
+    function test_requestRedeem_zeroRecipient() external {
+        vm.expectRevert("SparkPrimeVault/zero-recipient");
+        vm.prank(user);
+        spPrime.requestRedeem(100e6, address(0));
+    }
+
+    function test_requestRedeem_vaultRecipient() external {
+        vm.expectRevert("SparkPrimeVault/vault-recipient");
+        vm.prank(user);
+        spPrime.requestRedeem(100e6, address(spPrime));
+    }
+    
+    function test_requestRedeem_recipientCannotReceive() external {
+        _blacklist(user);
+
+        vm.expectRevert("SparkPrimeVault/recipient-cannot-receive");
+        vm.prank(user);
+        spPrime.requestRedeem(100e6, user);
+    }
+
+    function test_requestRedeem_belowMinimumBoundary() external {
+        _requestDeposit(user, 1_000e6); // Deposit Request 0 (Filled instantly)
+
+        vm.expectRevert("SparkPrimeVault/below-minimum");
+        vm.prank(user);
+        spPrime.requestRedeem(MINIMUM_REDEEM - 1, user);
+
+        vm.prank(user);
+        spPrime.requestRedeem(MINIMUM_REDEEM, user);
+    }
+
+    function test_requestRedeem_insufficientBalanceBoundary() external {
+        _requestDeposit(user, 1_000e6); // Deposit Request 0 (Filled instantly)
+
+        uint256 spPrimeShares = spPrime.balanceOf(user);
+
+        assertEq(spPrimeShares, 952.380951e6);
+
+        vm.expectRevert("SparkPrimeVault/insufficient-balance");
+        vm.prank(user);
+        spPrime.requestRedeem(spPrimeShares + 1, user);
+
+        vm.prank(user);
+        spPrime.requestRedeem(spPrimeShares, user);
+    }
+
+    // Success tests
+
+    function test_requestRedeem() external {
+        _requestDeposit(user, 1_000_000e6); // Deposit Request 0 (Filled instantly)
+
+        vaultState.rho                    = vm.getBlockTimestamp();
+        vaultState.chi                    = 1.049999999999999999961070145e27;
+        vaultState.totalAssets            = 1_000_000e6 - 2;
+        vaultState.availableCapacityValue = spPrime.convertToAssets(VAULT_CAPACITY - spPrime.convertToShares(1_000_000e6));
+        vaultState.availableLiquidAssets  = 1_000_000e6 - 1;
+
+        vaultState.depositRequests.firstPendingId = 1;
+
+        AccountBalances memory userBalances = AccountBalances({
+            account           : user,
+            assets            : 0,
+            shareValue        : 1_000_000e6 - 2,
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        AccountBalances memory vaultBalances = AccountBalances({
+            account           : address(spPrime),
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 1_000_000e6 - 1,
+            claimableAssets   : 0
+        });
+
+        _assertVaultState();
+
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.RedeemRequest(0, user, user, 500_000e6, 0);
+
+        vm.prank(user);
+        uint256 requestId = spPrime.requestRedeem(500_000e6, user);
+
+        assertEq(requestId, 0);
+
+        uint256 expectedShareValue = (500_000e6 * spPrime.nowChi()) / RAY;
+
+        assertEq(expectedShareValue, 524_999.999999e6); // 5% APY
+
+        vaultState.redeemRequests.pendingShareValue = expectedShareValue;
+        vaultState.redeemRequests.length            = 1;
+        vaultState.redeemRequests.firstPendingId    = 0;
+
+        userBalances.shareValue -= expectedShareValue + 1;
+
+        vaultBalances.shareValue += expectedShareValue;
+
+        _assertRedeemRequest(0, user, user, expectedShareValue);
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+    }
+
+    function test_requestRedeem_withFee() external {
+        _setRedeemFeeRate(0.005e18);  // 0.5%
+
+        _requestDeposit(user, 1_000_000e6); // Deposit Request 0 (Filled instantly)
+
+        vaultState.rho                    = vm.getBlockTimestamp();
+        vaultState.chi                    = 1.049999999999999999961070145e27;
+        vaultState.totalAssets            = 1_000_000e6 - 2;
+        vaultState.availableCapacityValue = spPrime.convertToAssets(VAULT_CAPACITY - spPrime.convertToShares(1_000_000e6));
+        vaultState.availableLiquidAssets  = 1_000_000e6 - 1;
+
+        vaultState.depositRequests.firstPendingId = 1;
+
+        AccountBalances memory userBalances = AccountBalances({
+            account           : user,
+            assets            : 0,
+            shareValue        : 1_000_000e6 - 2,
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        AccountBalances memory vaultBalances = AccountBalances({
+            account           : address(spPrime),
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 1_000_000e6 - 1,
+            claimableAssets   : 0
+        });
+
+        _assertVaultState();
+
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // Assets held (spUSDC value) match assets owed to spPrime holders, within rounding
+        assertEq(spPrime.availableLiquidAssets() - spPrime.totalAssets(), 1);
+
+        uint256 expectedFee = 2_500e6;  // 500_000e6 * 0.5%
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.RedeemRequest(0, user, user, 500_000e6, expectedFee);
+
+        vm.prank(user);
+        uint256 requestId = spPrime.requestRedeem(500_000e6, user);
+
+        assertEq(requestId, 0);
+
+        uint256 expectedShareValue         = 500_000e6 * spPrime.nowChi() / RAY;
+        uint256 expectedShareValueAfterFee = (500_000e6 - expectedFee) * spPrime.nowChi() / RAY;
+
+        assertEq(expectedShareValue, 524_999.999999e6); // 5% APY
+
+        // Fee shares are burned, so supply and assets drop and capacity frees up
+        vaultState.totalAssets             = 1_000_000e6 - 2_625e6 - 2;  // 2_500e6 fee shares * 1.05 chi
+        vaultState.availableCapacityValue += spPrime.convertToAssets(expectedFee) + 1;
+
+        vaultState.redeemRequests.pendingShareValue = expectedShareValueAfterFee;
+        vaultState.redeemRequests.length            = 1;
+        vaultState.redeemRequests.firstPendingId    = 0;
+
+        userBalances.shareValue -= expectedShareValue + 1;
+
+        vaultBalances.shareValue += expectedShareValueAfterFee;
+
+        _assertRedeemRequest(0, user, user, expectedShareValueAfterFee);
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // Assets held are unchanged but assets owed dropped by the burned fee, the difference is Spark's profit
+        assertEq(spPrime.availableLiquidAssets() - spPrime.totalAssets(), 2_625e6 + 1);
     }
 
 }

@@ -252,8 +252,8 @@ abstract contract TestBase is Test {
         spPrime.processPendingRedeems(maxShares, maxRequests);
     }
 
-    function _processPendingRedeems(uint256 maxRequests) internal {
-        _processPendingRedeems(type(uint256).max, maxRequests);
+    function _processPendingRedeems() internal {
+        _processPendingRedeems(type(uint256).max, type(uint256).max);
     }
 
     function _blacklist(address account) internal {
@@ -352,7 +352,7 @@ abstract contract TestBase is Test {
         // Redeem Requests
 
         assertApproxEqAbs(
-            spUSDC.convertToAssets(spPrime.pendingRedeemShares()),
+            spPrime.convertToAssets(spPrime.pendingRedeemShares()),
             vaultState.redeemRequests.pendingShareValue,
             tolerance,
             "vaultState.redeemRequests.pendingShareValue"
@@ -444,7 +444,7 @@ abstract contract TestBase is Test {
         uint256 requestId,
         address owner,
         address recipient,
-        uint256 shares
+        uint256 shareValue
     )
         internal view
     {
@@ -464,8 +464,8 @@ abstract contract TestBase is Test {
 
         assertEq(
             spPrime.convertToAssets(shares_),
-            shares,
-            "redeemRequest.shares"
+            shareValue,
+            "redeemRequest.shareValue"
         );
 
     }
