@@ -112,7 +112,7 @@ contract RoleBasedTests is TestBase {
     }
 
     function test_adjustTotalAssets_notPaused() external {
-        vm.expectRevert("SparkPrimeVault/not-paused");
+        vm.expectRevert(SparkPrimeVault.IsNotPaused.selector);
         vm.prank(admin);
         spPrime.adjustTotalAssets(-1e6);
     }
@@ -120,7 +120,7 @@ contract RoleBasedTests is TestBase {
     function test_adjustTotalAssets_zeroDeltaTotalAssets() external {
         _pause();
 
-        vm.expectRevert("SparkPrimeVault/delta-total-assets-zero");
+        vm.expectRevert(SparkPrimeVault.ZeroDeltaTotalAssets.selector);
         vm.prank(admin);
         spPrime.adjustTotalAssets(0);
     }
@@ -131,7 +131,7 @@ contract RoleBasedTests is TestBase {
 
         assertEq(spPrime.totalAssets(), 1_000_000e6 - 1);  // Rounding
 
-        vm.expectRevert("SparkPrimeVault/loss-too-high");
+        vm.expectRevert(SparkPrimeVault.LossTooHigh.selector);
         vm.prank(admin);
         spPrime.adjustTotalAssets(-(1_000_000e6 - 1));
 
@@ -160,7 +160,7 @@ contract RoleBasedTests is TestBase {
         assertEq(uint256(totalAssets), supply);  // chi == RAY
 
         // totalAssets -> 9: chi = 9e27 / 1e28 = 0
-        vm.expectRevert("SparkPrimeVault/chi-too-low");
+        vm.expectRevert(SparkPrimeVault.ChiTooLow.selector);
         vm.prank(admin);
         spPrime.adjustTotalAssets(-(totalAssets - 9));
 
@@ -401,7 +401,7 @@ contract RoleBasedTests is TestBase {
     }
 
     function test_setMaxRedeemFee_feeTooHighBoundary() external {
-        vm.expectRevert("SparkPrimeVault/fee-too-high");
+        vm.expectRevert(SparkPrimeVault.MaxFeeTooHigh.selector);
         vm.prank(admin);
         spPrime.setMaxRedeemFeeRate(0.01e18 + 1);
 
@@ -530,7 +530,7 @@ contract RoleBasedTests is TestBase {
     }
 
     function test_setVSRBounds_vsrTooLowBoundary() external {
-        vm.expectRevert("SparkPrimeVault/vsr-too-low");
+        vm.expectRevert(SparkPrimeVault.MinVSRTooLow.selector);
         vm.prank(admin);
         spPrime.setVSRBounds({ minVSR_ : RAY - 1, maxVSR_ : FOUR_PCT_VSR });
 
@@ -541,7 +541,7 @@ contract RoleBasedTests is TestBase {
     function test_setVSRBounds_vsrTooHighBoundary() external {
         uint256 maxVsr = spPrime.MAX_VSR();
 
-        vm.expectRevert("SparkPrimeVault/vsr-too-high");
+        vm.expectRevert(SparkPrimeVault.MaxVSRTooHigh.selector);
         vm.prank(admin);
         spPrime.setVSRBounds({ minVSR_ : RAY, maxVSR_ : maxVsr + 1 });
 
@@ -550,7 +550,7 @@ contract RoleBasedTests is TestBase {
     }
 
     function test_setVSRBounds_minVSRGtMaxVSRBoundary() external {
-        vm.expectRevert("SparkPrimeVault/min-vsr-gt-max-vsr");
+        vm.expectRevert(SparkPrimeVault.MinVSRGtMaxVSR.selector);
         vm.prank(admin);
         spPrime.setVSRBounds({ minVSR_ : FOUR_PCT_VSR + 1, maxVSR_ : FOUR_PCT_VSR });
 
@@ -616,7 +616,7 @@ contract RoleBasedTests is TestBase {
         vm.prank(admin);
         spPrime.setVSRBounds(ONE_PCT_VSR, FOUR_PCT_VSR);
 
-        vm.expectRevert("SparkPrimeVault/vsr-too-low");
+        vm.expectRevert(SparkPrimeVault.VSRTooLow.selector);
         vm.prank(vsrSetter);
         spPrime.setVSR(ONE_PCT_VSR - 1);
 
@@ -628,7 +628,7 @@ contract RoleBasedTests is TestBase {
         vm.prank(admin);
         spPrime.setVSRBounds(RAY, FOUR_PCT_VSR);
 
-        vm.expectRevert("SparkPrimeVault/vsr-too-high");
+        vm.expectRevert(SparkPrimeVault.VSRTooHigh.selector);
         vm.prank(vsrSetter);
         spPrime.setVSR(FOUR_PCT_VSR + 1);
 
@@ -674,7 +674,7 @@ contract RoleBasedTests is TestBase {
 
         uint256 vaultBalance = spUSDC.balanceOf(address(spPrime));
 
-        vm.expectRevert("SparkPrimeVault/insufficient-shares");
+        vm.expectRevert(SparkPrimeVault.InsufficientShares.selector);
         vm.prank(taker);
         spPrime.take(vaultBalance + 1);
 
@@ -711,7 +711,7 @@ contract RoleBasedTests is TestBase {
     }
 
     function test_setRedeemFeeRate_feeTooHighBoundary() external {
-        vm.expectRevert("SparkPrimeVault/fee-too-high");
+        vm.expectRevert(SparkPrimeVault.FeeTooHigh.selector);
         vm.prank(redeemFeeSetter);
         spPrime.setRedeemFeeRate(1);  // Can't set a fee until admin sets the max fee
 
@@ -721,7 +721,7 @@ contract RoleBasedTests is TestBase {
         vm.prank(admin);
         spPrime.setMaxRedeemFeeRate(0.005e18);
 
-        vm.expectRevert("SparkPrimeVault/fee-too-high");
+        vm.expectRevert(SparkPrimeVault.FeeTooHigh.selector);
         vm.prank(redeemFeeSetter);
         spPrime.setRedeemFeeRate(0.005e18 + 1);
 

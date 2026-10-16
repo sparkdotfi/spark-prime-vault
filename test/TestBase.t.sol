@@ -199,13 +199,14 @@ abstract contract TestBase is Test {
         spPrime.setCapacity(capacity);
     }
 
-    function _processPendingDeposits(uint256 maxSavingsShares, uint256 maxRequests) internal {
-        vm.prank(processor);
-        spPrime.processPendingDeposits(maxSavingsShares, maxRequests);
+    function _setMaxRedeemFeeRate(uint256 maxRedeemFeeRate) internal {
+        vm.prank(admin);
+        spPrime.setMaxRedeemFeeRate(maxRedeemFeeRate);
     }
 
-    function _processPendingDeposits(uint256 maxRequests) internal {
-        _processPendingDeposits(type(uint256).max, maxRequests);
+    function _setRedeemFeeRate(uint256 feeRate) internal {
+        vm.prank(redeemFeeSetter);
+        spPrime.setRedeemFeeRate(feeRate);
     }
 
     function _requestDeposit(address account, address recipient, uint256 assets) internal returns (uint256 requestId) {
@@ -221,22 +222,15 @@ abstract contract TestBase is Test {
         return _requestDeposit(account, account, assets);
     }
 
-    function _requestDepositCancellation(address account, uint256 requestId, address recipient, uint256 shares) internal returns (uint256 newRequestId) {
+    function _requestDepositCancellation(address account, uint256 requestId, address recipient, uint256 assets) internal returns (uint256 newRequestId) {
+        uint256 shares = spUSDC.convertToShares(assets);
+
         vm.prank(account);
         return spPrime.requestDepositCancellation(requestId, recipient, shares);
     }
 
-    function _requestDepositCancellation(address account, uint256 requestId, uint256 shares) internal returns (uint256 newRequestId) {
-        return _requestDepositCancellation(account, requestId, account, shares);
-    }
-
-    function _processPendingDepositCancellations(uint256 maxSavingsShares, uint256 maxRequests) internal {
-        vm.prank(processor);
-        spPrime.processPendingDepositCancellations(maxSavingsShares, maxRequests);
-    }
-
-    function _processPendingDepositCancellations(uint256 maxRequests) internal {
-        _processPendingDepositCancellations(type(uint256).max, maxRequests);
+    function _requestDepositCancellation(address account, uint256 requestId, uint256 assets) internal returns (uint256 newRequestId) {
+        return _requestDepositCancellation(account, requestId, account, assets);
     }
 
     function _requestRedeem(address account, address recipient, uint256 shares) internal returns (uint256 requestId) {
@@ -248,14 +242,35 @@ abstract contract TestBase is Test {
         return _requestRedeem(account, account, shares);
     }
 
-    function _processPendingRedeems(uint256 maxAssets, uint256 maxRequests) internal {
+    function _processPendingDeposits(uint256 maxSavingsShares, uint256 maxRequests) internal {
         vm.prank(processor);
-        spPrime.processPendingRedeems(maxAssets, maxRequests);
+        spPrime.processPendingDeposits(maxSavingsShares, maxRequests);
+    }
+
+    function _processPendingDeposits(uint256 maxRequests) internal {
+        _processPendingDeposits(type(uint256).max, maxRequests);
+    }
+
+    function _processPendingDepositCancellations(uint256 maxSavingsShares, uint256 maxRequests) internal {
+        vm.prank(processor);
+        spPrime.processPendingDepositCancellations(maxSavingsShares, maxRequests);
+    }
+
+    function _processPendingDepositCancellations(uint256 maxRequests) internal {
+        _processPendingDepositCancellations(type(uint256).max, maxRequests);
+    }
+
+    function _processPendingRedeems(uint256 maxShares, uint256 maxRequests) internal {
+        vm.prank(processor);
+        spPrime.processPendingRedeems(maxShares, maxRequests);
+    }
+
+    function _processPendingRedeems(uint256 maxRequests) internal {
+        _processPendingRedeems(type(uint256).max, maxRequests);
     }
 
     function _processPendingRedeems() internal {
-        vm.prank(processor);
-        spPrime.processPendingRedeems(type(uint256).max, type(uint256).max);
+        _processPendingRedeems(type(uint256).max, type(uint256).max);
     }
 
     function _blacklist(address account) internal {
@@ -354,7 +369,7 @@ abstract contract TestBase is Test {
         // Redeem Requests
 
         assertApproxEqAbs(
-            spUSDC.convertToAssets(spPrime.pendingRedeemShares()),
+            spPrime.convertToAssets(spPrime.pendingRedeemShares()),
             vaultState.redeemRequests.pendingShareValue,
             tolerance,
             "vaultState.redeemRequests.pendingShareValue"
@@ -450,7 +465,11 @@ abstract contract TestBase is Test {
     )
         internal view
     {
-        ( address owner_, address recipient_, uint256 shares_ ) = spPrime.getPendingDepositCancellationRequest(requestId);
+        (
+            address owner_,
+            address recipient_,
+            uint256 shares_
+        ) = spPrime.getPendingDepositCancellationRequest(requestId);
 
         assertEq(
             owner_,
@@ -468,6 +487,35 @@ abstract contract TestBase is Test {
             spUSDC.convertToAssets(shares_),
             savingsShareValue,
             "depositCancellationRequest.savingsShareValue"
+        );
+    }
+
+    function _assertRedeemRequest(
+        uint256 requestId,
+        address owner,
+        address recipient,
+        uint256 shareValue
+    )
+        internal view
+    {
+        ( address owner_, address recipient_, uint256 shares_ ) = spPrime.getPendingRedeemRequest(requestId);
+
+        assertEq(
+            owner_,
+            owner,
+            "redeemRequest.owner"
+        );
+
+        assertEq(
+            recipient_,
+            recipient,
+            "redeemRequest.recipient"
+        );
+
+        assertEq(
+            spPrime.convertToAssets(shares_),
+            shareValue,
+            "redeemRequest.shareValue"
         );
 
     }

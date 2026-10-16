@@ -31,19 +31,19 @@ contract RequestDepositCancellationTests is TestBase {
     function test_requestDepositCancellation_paused() external {
         _pause();
 
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(SparkPrimeVault.IsPaused.selector);
         vm.prank(user);
         spPrime.requestDepositCancellation(requestId, user, requestShares);
     }
 
     function test_requestDepositCancellation_zeroRecipient() external {
-        vm.expectRevert("SparkPrimeVault/zero-recipient");
+        vm.expectRevert(SparkPrimeVault.ZeroRecipient.selector);
         vm.prank(user);
         spPrime.requestDepositCancellation(requestId, address(0), requestShares);
     }
 
     function test_requestDepositCancellation_vaultRecipient() external {
-        vm.expectRevert("SparkPrimeVault/vault-recipient");
+        vm.expectRevert(SparkPrimeVault.VaultIsRecipient.selector);
         vm.prank(user);
         spPrime.requestDepositCancellation(requestId, address(spPrime), requestShares);
     }
@@ -51,7 +51,7 @@ contract RequestDepositCancellationTests is TestBase {
     function test_requestDepositCancellation_recipientCannotReceive() external {
         _blacklist(recipient);
 
-        vm.expectRevert("SparkPrimeVault/recipient-cannot-receive");
+        vm.expectRevert(SparkPrimeVault.RecipientCannotReceive.selector);
         vm.prank(user);
         spPrime.requestDepositCancellation(requestId, recipient, requestShares);
     }
@@ -61,7 +61,7 @@ contract RequestDepositCancellationTests is TestBase {
 
         _processPendingDeposits(type(uint256).max);
 
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(SparkPrimeVault.NoRequest.selector);
         vm.prank(user);
         spPrime.requestDepositCancellation(requestId, user, requestShares);
     }
@@ -72,7 +72,7 @@ contract RequestDepositCancellationTests is TestBase {
         ( , , uint256 requestShares2 ) = spPrime.getPendingDepositRequest(requestId2);
 
         // The deposit recipient cannot cancel, only the owner can.
-        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.expectRevert(SparkPrimeVault.NotRequestOwner.selector);
         vm.prank(recipient);
         spPrime.requestDepositCancellation(requestId2, recipient, requestShares2);
 
@@ -81,7 +81,7 @@ contract RequestDepositCancellationTests is TestBase {
     }
 
     function test_requestDepositCancellation_belowMinimumBoundary() external {
-        vm.expectRevert("SparkPrimeVault/invalid-shares");
+        vm.expectRevert(SparkPrimeVault.InvalidShares.selector);
         vm.prank(user);
         spPrime.requestDepositCancellation(requestId, user, MINIMUM_DEPOSIT_CANCELLATION);
 
@@ -90,7 +90,7 @@ contract RequestDepositCancellationTests is TestBase {
     }
 
     function test_requestDepositCancellation_aboveRequestSharesBoundary() external {
-        vm.expectRevert("SparkPrimeVault/invalid-shares");
+        vm.expectRevert(SparkPrimeVault.InvalidShares.selector);
         vm.prank(user);
         spPrime.requestDepositCancellation(requestId, user, requestShares + 1);
 
