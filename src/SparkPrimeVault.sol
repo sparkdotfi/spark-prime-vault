@@ -544,26 +544,26 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         require(recipient_ != address(this),  VaultIsRecipient());
         require(_canReceiveAsset(recipient_), RecipientCannotReceive());
 
-        Request memory request_ = _depositRequests[requestId_];
+        Request memory depositRequest_ = _depositRequests[requestId_];
 
-        require(request_.shares != 0,                     NoRequest());
-        require(msg.sender == request_.owner,             NotRequestOwner());
+        require(depositRequest_.shares != 0,              NoRequest());
+        require(msg.sender == depositRequest_.owner,      NotRequestOwner());
         require(savingsShares_ >= minDepositCancellation, BelowMinDepositCancellation());
-        require(savingsShares_ <= request_.shares,        SavingsSharesTooHigh());
+        require(savingsShares_ <= depositRequest_.shares, SavingsSharesTooHigh());
 
         newRequestId_ = _depositCancellationRequests.length;
 
         _depositCancellationRequests.push(
-            Request(request_.owner, recipient_, savingsShares_)
+            Request(depositRequest_.owner, recipient_, savingsShares_)
         );
 
         pendingDepositSavingsShares          -= savingsShares_;
         pendingCancelledDepositSavingsShares += savingsShares_;
 
-        if (request_.shares == savingsShares_) {
+        if (depositRequest_.shares == savingsShares_) {
             delete _depositRequests[requestId_];
         } else {
-            _depositRequests[requestId_].shares = request_.shares - savingsShares_;
+            _depositRequests[requestId_].shares = depositRequest_.shares - savingsShares_;
         }
 
         emit DepositCancellationRequest(requestId_, newRequestId_, recipient_, savingsShares_);
