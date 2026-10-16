@@ -222,11 +222,14 @@ abstract contract TestBase is Test {
         return _requestDeposit(account, account, assets);
     }
 
-    function _requestDepositCancellation(address account, uint256 requestId, address recipient, uint256 assets) internal returns (uint256 newRequestId) {
-        uint256 shares = spUSDC.convertToShares(assets);
+    function _requestDepositCancellation(address account, uint256 requestId, address recipient, uint256 assets)
+        internal
+        returns (uint256 newRequestId)
+    {
+        uint256 savingsShares = spUSDC.convertToShares(assets);
 
         vm.prank(account);
-        return spPrime.requestDepositCancellation(requestId, recipient, shares);
+        return spPrime.requestDepositCancellation(requestId, recipient, savingsShares);
     }
 
     function _requestDepositCancellation(address account, uint256 requestId, uint256 assets) internal returns (uint256 newRequestId) {

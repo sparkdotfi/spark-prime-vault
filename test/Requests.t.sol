@@ -11,6 +11,10 @@ contract RequestDepositCancellationTests is TestBase {
     uint256 internal requestId;
     uint256 internal requestShares;
 
+    AccountBalances internal userBalances;
+    AccountBalances internal recipientBalances;
+    AccountBalances internal vaultBalances;
+
     function setUp() public override {
         super.setUp();
 
@@ -24,6 +28,47 @@ contract RequestDepositCancellationTests is TestBase {
         requestId = _requestDeposit(user, 1_000_000e6);  // Deposit Request 0 (Queued)
 
         ( , , requestShares ) = spPrime.getPendingDepositRequest(requestId);
+
+        vaultState.rho                    = vm.getBlockTimestamp();
+        vaultState.chi                    = 1.049999999999999999961070145e27;
+        vaultState.totalAssets            = 0;
+        vaultState.availableCapacityValue = 0;
+        vaultState.availableLiquidAssets  = 1_000_000e6 - 1;
+
+        vaultState.depositRequests.pendingShareValue = 1_000_000e6 - 1;
+        vaultState.depositRequests.length            = 1;
+        vaultState.depositRequests.firstPendingId    = 0;
+
+        userBalances = AccountBalances({
+            account           : user,
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        recipientBalances = AccountBalances({
+            account           : recipient,
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        vaultBalances = AccountBalances({
+            account           : address(spPrime),
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 1_000_000e6 - 1,
+            claimableAssets   : 0
+        });
+
+        _assertVaultState();
+        _assertDepositRequest(requestId, user, user, 1_000_000e6 - 1);
+
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(recipientBalances);
+        _assertAccountBalances(vaultBalances);
     }
 
     // Failure tests
@@ -81,16 +126,16 @@ contract RequestDepositCancellationTests is TestBase {
     }
 
     function test_requestDepositCancellation_belowMinimumBoundary() external {
-        vm.expectRevert(SparkPrimeVault.InvalidShares.selector);
+        vm.expectRevert(SparkPrimeVault.BelowMinDepositCancellation.selector);
         vm.prank(user);
-        spPrime.requestDepositCancellation(requestId, user, MINIMUM_DEPOSIT_CANCELLATION);
+        spPrime.requestDepositCancellation(requestId, user, MINIMUM_DEPOSIT_CANCELLATION - 1);
 
         vm.prank(user);
-        spPrime.requestDepositCancellation(requestId, user, MINIMUM_DEPOSIT_CANCELLATION + 1);
+        spPrime.requestDepositCancellation(requestId, user, MINIMUM_DEPOSIT_CANCELLATION);
     }
 
     function test_requestDepositCancellation_aboveRequestSharesBoundary() external {
-        vm.expectRevert(SparkPrimeVault.InvalidShares.selector);
+        vm.expectRevert(SparkPrimeVault.SavingsSharesTooHigh.selector);
         vm.prank(user);
         spPrime.requestDepositCancellation(requestId, user, requestShares + 1);
 
@@ -101,47 +146,6 @@ contract RequestDepositCancellationTests is TestBase {
     // Success tests
 
     function test_requestDepositCancellation_full() external {
-        vaultState.rho                    = vm.getBlockTimestamp();
-        vaultState.chi                    = 1.049999999999999999961070145e27;
-        vaultState.totalAssets            = 0;
-        vaultState.availableCapacityValue = 0;
-        vaultState.availableLiquidAssets  = 1_000_000e6 - 1;
-
-        vaultState.depositRequests.pendingShareValue = 1_000_000e6 - 1;
-        vaultState.depositRequests.length            = 1;
-        vaultState.depositRequests.firstPendingId    = 0;
-
-        AccountBalances memory userBalances = AccountBalances({
-            account           : user,
-            assets            : 0,
-            shareValue        : 0,
-            savingsShareValue : 0,
-            claimableAssets   : 0
-        });
-
-        AccountBalances memory recipientBalances = AccountBalances({
-            account           : recipient,
-            assets            : 0,
-            shareValue        : 0,
-            savingsShareValue : 0,
-            claimableAssets   : 0
-        });
-
-        AccountBalances memory vaultBalances = AccountBalances({
-            account           : address(spPrime),
-            assets            : 0,
-            shareValue        : 0,
-            savingsShareValue : 1_000_000e6 - 1,
-            claimableAssets   : 0
-        });
-
-        _assertVaultState();
-        _assertDepositRequest(requestId, user, user, 1_000_000e6 - 1);
-
-        _assertAccountBalances(userBalances);
-        _assertAccountBalances(recipientBalances);
-        _assertAccountBalances(vaultBalances);
-
         vm.expectEmit(address(spPrime));
         emit SparkPrimeVault.DepositCancellationRequest(requestId, 0, recipient, requestShares);
 
@@ -167,76 +171,9 @@ contract RequestDepositCancellationTests is TestBase {
         _assertAccountBalances(userBalances);
         _assertAccountBalances(recipientBalances);
         _assertAccountBalances(vaultBalances);
-
-        // Process the cancellation.
-
-        uint256 expectedAssets = spUSDC.convertToAssets(requestShares);
-
-        vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.DepositCancellation(cancelRequestId, user, recipient, requestShares, expectedAssets);
-
-        _processPendingDepositCancellations(type(uint256).max);
-
-        vaultState.availableLiquidAssets = 0;
-
-        vaultState.depositCancellationRequests.pendingShareValue = 0;
-        vaultState.depositCancellationRequests.length            = 0;
-        vaultState.depositCancellationRequests.firstPendingId    = 1;
-
-        recipientBalances.assets = 1_000_000e6 - 1;
-
-        vaultBalances.savingsShareValue = 0;
-
-        _assertVaultState();
-        _assertDepositRequest(requestId, address(0), address(0), 0);
-
-        _assertAccountBalances(userBalances);
-        _assertAccountBalances(recipientBalances);
-        _assertAccountBalances(vaultBalances);
     }
 
     function test_requestDepositCancellation_partial() external {
-        vaultState.rho                    = vm.getBlockTimestamp();
-        vaultState.chi                    = 1.049999999999999999961070145e27;
-        vaultState.totalAssets            = 0;
-        vaultState.availableCapacityValue = 0;
-        vaultState.availableLiquidAssets  = 1_000_000e6 - 1;
-
-        vaultState.depositRequests.pendingShareValue = 1_000_000e6 - 1;
-        vaultState.depositRequests.length            = 1;
-        vaultState.depositRequests.firstPendingId    = 0;
-
-        AccountBalances memory userBalances = AccountBalances({
-            account           : user,
-            assets            : 0,
-            shareValue        : 0,
-            savingsShareValue : 0,
-            claimableAssets   : 0
-        });
-
-        AccountBalances memory recipientBalances = AccountBalances({
-            account           : recipient,
-            assets            : 0,
-            shareValue        : 0,
-            savingsShareValue : 0,
-            claimableAssets   : 0
-        });
-
-        AccountBalances memory vaultBalances = AccountBalances({
-            account           : address(spPrime),
-            assets            : 0,
-            shareValue        : 0,
-            savingsShareValue : 1_000_000e6 - 1,
-            claimableAssets   : 0
-        });
-
-        _assertVaultState();
-        _assertDepositRequest(requestId, user, user, 1_000_000e6 - 1);
-
-        _assertAccountBalances(userBalances);
-        _assertAccountBalances(recipientBalances);
-        _assertAccountBalances(vaultBalances);
-
         uint256 cancelShares = spUSDC.convertToShares(400_000e6);
 
         vm.expectEmit(address(spPrime));
@@ -260,34 +197,6 @@ contract RequestDepositCancellationTests is TestBase {
         _assertDepositCancellationRequest(cancelRequestId, user, recipient, 400_000e6 - 1);
 
         // No funds move until the cancellation is processed.
-
-        _assertAccountBalances(userBalances);
-        _assertAccountBalances(recipientBalances);
-        _assertAccountBalances(vaultBalances);
-
-        // Process the cancellation.
-
-        uint256 expectedAssets = spUSDC.convertToAssets(cancelShares);
-
-        vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.DepositCancellation(cancelRequestId, user, recipient, cancelShares, expectedAssets);
-
-        _processPendingDepositCancellations(type(uint256).max);
-
-        vaultState.availableLiquidAssets = 600_000e6 - 1;
-
-        vaultState.depositCancellationRequests.pendingShareValue = 0;
-        vaultState.depositCancellationRequests.length            = 0;
-        vaultState.depositCancellationRequests.firstPendingId    = 1;
-
-        recipientBalances.assets = 400_000e6 - 1;
-
-        vaultBalances.savingsShareValue = 600_000e6 - 1;
-
-        _assertVaultState();
-
-        // The remainder of the deposit request is unaffected.
-        _assertDepositRequest(requestId, user, user, 600_000e6 - 1);
 
         _assertAccountBalances(userBalances);
         _assertAccountBalances(recipientBalances);

@@ -63,6 +63,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     error BelowMinDeposit();
 
+    error BelowMinDepositCancellation();
+
     error BelowMinRedeem();
 
     error ChiTooHigh();
@@ -100,6 +102,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     error NotRequestOwner();
 
     error RecipientCannotReceive();
+
+    error SavingsSharesTooHigh();
 
     error VaultIsRecipient();
 
@@ -372,7 +376,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         emit MinDepositSet(minDeposit = minDeposit_);
     }
 
-    function setMinDepositCancellation(uint256 minDepositCancellation_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setMinDepositCancellation(uint256 minDepositCancellation_)
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
         emit MinDepositCancellationSet(minDepositCancellation = minDepositCancellation_);
     }
 
@@ -501,7 +508,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         }
     }
 
-    function requestDepositCancellation(uint256 requestId_, address recipient_, uint256 shares_)
+    function requestDepositCancellation(
+        uint256 requestId_,
+        address recipient_,
+        uint256 savingsShares_
+    )
         whenNotPaused
         external
         returns (uint256 newRequestId_)
@@ -512,29 +523,27 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         Request memory request_ = _depositRequests[requestId_];
 
-        require(request_.shares != 0,         NoRequest());
-        require(msg.sender == request_.owner, NotRequestOwner());
-        require(
-            shares_ > minDepositCancellation && shares_ <= request_.shares,
-            InvalidShares()
-        );
+        require(request_.shares != 0,                     NoRequest());
+        require(msg.sender == request_.owner,             NotRequestOwner());
+        require(savingsShares_ >= minDepositCancellation, BelowMinDepositCancellation());
+        require(savingsShares_ <= request_.shares,        SavingsSharesTooHigh());
 
         newRequestId_ = _depositCancellationRequests.length;
 
         _depositCancellationRequests.push(
-            Request(request_.owner, recipient_, shares_)
+            Request(request_.owner, recipient_, savingsShares_)
         );
 
-        pendingDepositSavingsShares          -= shares_;
-        pendingCancelledDepositSavingsShares += shares_;
+        pendingDepositSavingsShares          -= savingsShares_;
+        pendingCancelledDepositSavingsShares += savingsShares_;
 
-        if (request_.shares == shares_) {
+        if (request_.shares == savingsShares_) {
             delete _depositRequests[requestId_];
         } else {
-            _depositRequests[requestId_].shares = request_.shares - shares_;
+            _depositRequests[requestId_].shares = request_.shares - savingsShares_;
         }
 
-        emit DepositCancellationRequest(requestId_, newRequestId_, recipient_, shares_);
+        emit DepositCancellationRequest(requestId_, newRequestId_, recipient_, savingsShares_);
     }
 
     function requestRedeem(uint256 shares_, address recipient_)
