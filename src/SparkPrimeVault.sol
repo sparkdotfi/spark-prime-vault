@@ -53,8 +53,6 @@ interface IBlacklistableLike {
 
 }
 
-// TODO: requestDepositWithPermit?
-
 /// @dev If the inheritance is updated, the functions in `initialize` must be updated as well.
 ///      Last updated for: `Initializable, UUPSUpgradeable, AccessControlEnumerableUpgradeable`.
 contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
