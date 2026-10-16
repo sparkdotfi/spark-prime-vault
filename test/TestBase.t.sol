@@ -230,6 +230,15 @@ abstract contract TestBase is Test {
         return _requestDepositCancellation(account, requestId, account, shares);
     }
 
+    function _processPendingDepositCancellations(uint256 maxSavingsShares, uint256 maxRequests) internal {
+        vm.prank(processor);
+        spPrime.processPendingDepositCancellations(maxSavingsShares, maxRequests);
+    }
+
+    function _processPendingDepositCancellations(uint256 maxRequests) internal {
+        _processPendingDepositCancellations(type(uint256).max, maxRequests);
+    }
+
     function _requestRedeem(address account, address recipient, uint256 shares) internal returns (uint256 requestId) {
         vm.prank(account);
         return spPrime.requestRedeem(shares, recipient);
@@ -429,6 +438,36 @@ abstract contract TestBase is Test {
             spUSDC.convertToAssets(shares_),
             savingsShareValue,
             "depositRequest.savingsShareValue"
+        );
+
+    }
+
+    function _assertDepositCancellationRequest(
+        uint256 requestId,
+        address owner,
+        address recipient,
+        uint256 savingsShareValue
+    )
+        internal view
+    {
+        ( address owner_, address recipient_, uint256 shares_ ) = spPrime.getPendingDepositCancellationRequest(requestId);
+
+        assertEq(
+            owner_,
+            owner,
+            "depositCancellationRequest.owner"
+        );
+
+        assertEq(
+            recipient_,
+            recipient,
+            "depositCancellationRequest.recipient"
+        );
+
+        assertEq(
+            spUSDC.convertToAssets(shares_),
+            savingsShareValue,
+            "depositCancellationRequest.savingsShareValue"
         );
 
     }
