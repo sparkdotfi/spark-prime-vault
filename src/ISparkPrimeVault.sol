@@ -940,10 +940,10 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**
      * @notice Returns the value of the shares of `owner_`, calculated up to the current block
      *         timestamp.
-     * @param  owner_ The address of the share owner
-     * @return The value of the shares [asset units]
+     * @param  owner_  The address of the share owner
+     * @return assets_ The value of the shares. [asset units]
      */
-    function assetsOf(address owner_) external view returns (uint256);
+    function assetsOf(address owner_) external view returns (uint256 assets_);
 
     /**
      * @notice Returns the amount of shares that can still be minted before reaching the maximum

@@ -26,6 +26,8 @@ interface ISparkVaultLike {
 
     function transfer(address to, uint256 amount) external returns (bool);
 
+    function withdraw(uint256 assets, address to, address from) external returns (uint256);
+
     function assetsOf(address owner) external view returns (uint256);
 
     function balanceOf(address owner) external view returns (uint256);
@@ -115,7 +117,7 @@ abstract contract TestBase is Test {
             address(new ERC1967Proxy(
                 address(new SparkPrimeVault()),
                 abi.encodeCall(
-                    SparkPrimeVault.initialize,
+                    ISparkPrimeVault.initialize,
                     (
                         address(spUSDC),
                         "Spark Prime USDC",
@@ -292,6 +294,11 @@ abstract contract TestBase is Test {
     function _unblacklist(address account) internal {
         vm.prank(IUSDCLike(Ethereum.USDC).blacklister());
         IUSDCLike(Ethereum.USDC).unblacklist(account);
+    }
+
+    function _take(uint256 savingsShares) internal {
+        vm.prank(taker);
+        spPrime.take(savingsShares);
     }
 
     /**********************************************************************************************/
