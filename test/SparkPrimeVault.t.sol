@@ -748,31 +748,22 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
         _requestRedeem(bob, 400_000e6);  // Will be filled
         _requestRedeem(cam, 500_000e6);  // Will be partially filled
 
-        uint256 depositedAssets        = 2_100_000e6;
-        uint256 depositedShareValue    = depositedAssets - 9;
-        uint256 availableCapacityValue = spPrime.convertToAssets(VAULT_CAPACITY) - depositedShareValue;
-
-        uint256 pendingRedeemAssets = spPrime.convertToAssets(1_800_000e6);  // All redeemed shares
-
-        uint256 targetAssets = spPrime.convertToAssets(1_500_000e6);  // Only 200k of the last 500k redeem shares
-
-        // Take the excess liquidity, so only the target assets can be withdrawn
-        uint256 takenSavingsShares = spUSDC.convertToShares(depositedAssets - targetAssets);
+        // Take 525k of the 2.1m liquidity, so only 1.575m (1.5m shares) can be withdrawn
+        uint256 takenSavingsShares = spUSDC.convertToShares(525_000e6);
 
         vm.prank(taker);
         spPrime.take(takenSavingsShares);
 
         vaultState.rho                    = vm.getBlockTimestamp();
         vaultState.chi                    = 1.049999999999999999961070145e27;
-        vaultState.totalAssets            = depositedShareValue;
-        vaultState.availableCapacityValue = availableCapacityValue;
-        vaultState.availableLiquidAssets  = targetAssets - 2;
+        vaultState.totalAssets            = 2_100_000e6 - 9;
+        vaultState.availableCapacityValue = 102_900_000e6 + 8; // Vault capacity value was 105m because of 5% change in chi prior to the first deposit
+        vaultState.availableLiquidAssets  = 1_575_000e6 - 2;
 
         vaultState.depositRequests.firstPendingId = 6;
 
-        vaultState.redeemRequests.pendingShareValue = pendingRedeemAssets;
+        vaultState.redeemRequests.pendingShareValue = 1_890_000e6 - 1;  // 1.8m shares at 5% APY
         vaultState.redeemRequests.length            = 6;
-        vaultState.redeemRequests.firstPendingId    = 0;
 
         aliBalances = AccountBalances({
             account           : ali,
@@ -801,8 +792,8 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
         vaultBalances = AccountBalances({
             account           : address(spPrime),
             assets            : 0,
-            shareValue        : pendingRedeemAssets,
-            savingsShareValue : targetAssets - 2,
+            shareValue        : 1_890_000e6 - 1,  // 1.8m shares at 5% APY
+            savingsShareValue : 1_575_000e6 - 2,
             claimableAssets   : 0
         });
 
@@ -825,9 +816,11 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
     function test_processPendingRedeems_infiniteMaxShares_infiniteMaxRequests() external {
 
     }
+
     function test_processPendingRedeems_infiniteMaxShares_limitedMaxRequests() external {
 
     }
+
     function test_processPendingRedeems_limitedMaxShares_infiniteMaxRequests() external {
 
     }
