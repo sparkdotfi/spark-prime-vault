@@ -713,3 +713,411 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
     }
 
 }
+
+contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
+
+    address internal ali = makeAddr("ali");
+    address internal bob = makeAddr("bob");
+    address internal cam = makeAddr("cam");
+
+    AccountBalances internal aliBalances;
+    AccountBalances internal bobBalances;
+    AccountBalances internal camBalances;
+    AccountBalances internal vaultBalances;
+
+    function setUp() public override {
+        super.setUp();
+
+        vm.label(ali, "ali");
+        vm.label(bob, "bob");
+        vm.label(cam, "cam");
+
+        // All deposits will be filled instantly
+
+        _requestDeposit(ali, 100_000e6);
+        _requestDeposit(bob, 200_000e6);
+        _requestDeposit(cam, 300_000e6);
+        _requestDeposit(ali, 400_000e6);
+        _requestDeposit(bob, 500_000e6);
+        _requestDeposit(cam, 600_000e6);
+
+        _requestRedeem(ali, 100_000e6);  // Will be filled
+        _requestRedeem(bob, 200_000e6);  // Will be filled
+        _requestRedeem(cam, 300_000e6);  // Will be filled
+        _requestRedeem(ali, 300_000e6);  // Will be filled
+        _requestRedeem(bob, 400_000e6);  // Will be filled
+        _requestRedeem(cam, 500_000e6);  // Will be partially filled
+
+        // Take 525k of the 2.1m liquidity, so only 1.575m (1.5m shares) can be withdrawn
+        uint256 takenSavingsShares = spUSDC.convertToShares(525_000e6);
+
+        vm.prank(taker);
+        spPrime.take(takenSavingsShares);
+
+        vaultState.rho                    = vm.getBlockTimestamp();
+        vaultState.chi                    = 1.049999999999999999961070145e27;
+        vaultState.totalAssets            = 2_100_000e6 - 9;
+        vaultState.availableCapacityValue = 102_900_000e6 + 8; // Vault capacity value was 105m because of 5% change in chi prior to the first deposit
+        vaultState.availableLiquidAssets  = 1_575_000e6 - 2;
+
+        vaultState.depositRequests.firstPendingId = 6;
+
+        vaultState.redeemRequests.pendingShareValue = 1_890_000e6 - 1;  // 1.8m shares at 5% APY
+        vaultState.redeemRequests.length            = 6;
+
+        aliBalances = AccountBalances({
+            account           : ali,
+            assets            : 0,
+            shareValue        : 80_000e6 - 3,  // 500k deposited, 420k (400k shares) requested for redeem
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        bobBalances = AccountBalances({
+            account           : bob,
+            assets            : 0,
+            shareValue        : 70_000e6 - 3,  // 700k deposited, 630k (600k shares) requested for redeem
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        camBalances = AccountBalances({
+            account           : cam,
+            assets            : 0,
+            shareValue        : 60_000e6 - 4,  // 900k deposited, 840k (800k shares) requested for redeem
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        vaultBalances = AccountBalances({
+            account           : address(spPrime),
+            assets            : 0,
+            shareValue        : 1_890_000e6 - 1,  // 1.8m shares at 5% APY
+            savingsShareValue : 1_575_000e6 - 2,
+            claimableAssets   : 0
+        });
+
+        _assertVaultState();
+
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(camBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 5% APY for all spPRIME shares
+        _assertRedeemRequest(0, ali, ali, 105_000e6 - 1);
+        _assertRedeemRequest(1, bob, bob, 210_000e6 - 1);
+        _assertRedeemRequest(2, cam, cam, 315_000e6 - 1);
+        _assertRedeemRequest(3, ali, ali, 315_000e6 - 1);
+        _assertRedeemRequest(4, bob, bob, 420_000e6 - 1);
+        _assertRedeemRequest(5, cam, cam, 525_000e6 - 1);
+    }
+
+    function test_processPendingRedeems_infiniteMaxShares_infiniteMaxRequests() external {
+        // Redeem Request 0
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(spPrime), address(0), 100_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Redeem(0, ali, ali, 100_000e6, spUSDC.convertToShares(105_000e6), 105_000e6 - 1);
+
+        // Redeem Request 1
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(spPrime), address(0), 200_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Redeem(1, bob, bob, 200_000e6, spUSDC.convertToShares(210_000e6), 210_000e6 - 1);
+
+        // Redeem Request 2
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(spPrime), address(0), 300_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Redeem(2, cam, cam, 300_000e6, spUSDC.convertToShares(315_000e6), 315_000e6 - 1);
+
+        // Redeem Request 3
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(spPrime), address(0), 300_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Redeem(3, ali, ali, 300_000e6, spUSDC.convertToShares(315_000e6), 315_000e6 - 1);
+
+        // Redeem Request 4
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(spPrime), address(0), 400_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Redeem(4, bob, bob, 400_000e6, spUSDC.convertToShares(420_000e6), 420_000e6 - 1);
+
+        // Redeem Request 5 (Partial)
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(spPrime), address(0), 200_000e6 - 2);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Redeem(5, cam, cam, 200_000e6 - 2, spUSDC.convertToShares(210_000e6 - 2), 210_000e6 - 3);
+
+        vm.prank(processor);
+        spPrime.processPendingRedeems(type(uint256).max, type(uint256).max);
+
+        uint256 assetsRedeemed = 105_000e6 + 210_000e6 + 315_000e6 + 315_000e6 + 420_000e6 + 210_000e6;  // Only ~200k shares of the last 500k share redeem
+
+        vaultState.totalAssets            -= assetsRedeemed - 2;
+        vaultState.availableCapacityValue += assetsRedeemed - 2;
+        vaultState.availableLiquidAssets   = 3;  // Dust left from rounding
+
+        vaultState.redeemRequests.pendingShareValue -= assetsRedeemed - 3;
+        vaultState.redeemRequests.length             = 1;
+        vaultState.redeemRequests.firstPendingId     = 5;
+
+        aliBalances.assets += 105_000e6 + 315_000e6 - 2;
+        bobBalances.assets += 210_000e6 + 420_000e6 - 2;
+        camBalances.assets += 315_000e6 + 210_000e6 - 4;
+
+        vaultBalances.shareValue        -= assetsRedeemed - 3;
+        vaultBalances.savingsShareValue  = 3;  // Dust left from rounding
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(camBalances);
+        _assertAccountBalances(vaultBalances);
+
+        for (uint256 i = 0; i < 5; i++) {
+            vm.expectRevert(SparkPrimeVault.InvalidRequestId.selector);
+            _assertRedeemRequest(i, address(0), address(0), 0);
+        }
+
+        _assertRedeemRequest(5, cam, cam, 315_000e6 + 2);  // Partial fill
+    }
+
+    function test_processPendingRedeems_infiniteMaxShares_limitedMaxRequests() external {
+        // Redeem Request 0
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(spPrime), address(0), 100_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Redeem(0, ali, ali, 100_000e6, spUSDC.convertToShares(105_000e6), 105_000e6 - 1);
+
+        // Redeem Request 1
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(spPrime), address(0), 200_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Redeem(1, bob, bob, 200_000e6, spUSDC.convertToShares(210_000e6), 210_000e6 - 1);
+
+        // Redeem Request 2
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(spPrime), address(0), 300_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Redeem(2, cam, cam, 300_000e6, spUSDC.convertToShares(315_000e6), 315_000e6 - 1);
+
+        // Fills the first 3 redeems
+        vm.prank(processor);
+        spPrime.processPendingRedeems(type(uint256).max, 3);
+
+        uint256 assetsRedeemed = 105_000e6 + 210_000e6 + 315_000e6;  // Only first 3 redeems
+
+        vaultState.totalAssets            -= assetsRedeemed;
+        vaultState.availableCapacityValue += assetsRedeemed;
+        vaultState.availableLiquidAssets  -= assetsRedeemed - 1;
+
+        vaultState.redeemRequests.pendingShareValue -= assetsRedeemed;
+        vaultState.redeemRequests.length             = 3;
+        vaultState.redeemRequests.firstPendingId     = 3;
+
+        aliBalances.assets += 105_000e6 - 1;
+        bobBalances.assets += 210_000e6 - 1;
+        camBalances.assets += 315_000e6 - 1;
+
+        vaultBalances.shareValue        -= assetsRedeemed;
+        vaultBalances.savingsShareValue -= assetsRedeemed - 1;
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(camBalances);
+        _assertAccountBalances(vaultBalances);
+
+        for (uint256 i = 0; i < 3; i++) {
+            vm.expectRevert(SparkPrimeVault.InvalidRequestId.selector);
+            _assertRedeemRequest(i, address(0), address(0), 0);
+        }
+
+        _assertRedeemRequest(3, ali, ali, 315_000e6 - 1);
+        _assertRedeemRequest(4, bob, bob, 420_000e6 - 1);
+        _assertRedeemRequest(5, cam, cam, 525_000e6 - 1);
+    }
+
+    function test_processPendingRedeems_limitedMaxShares_infiniteMaxRequests() external {
+        // Redeem Request 0
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(spPrime), address(0), 100_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Redeem(0, ali, ali, 100_000e6, spUSDC.convertToShares(105_000e6), 105_000e6 - 1);
+
+        // Redeem Request 1
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(spPrime), address(0), 200_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Redeem(1, bob, bob, 200_000e6, spUSDC.convertToShares(210_000e6), 210_000e6 - 1);
+
+        // Redeem Request 2
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(spPrime), address(0), 300_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Redeem(2, cam, cam, 300_000e6, spUSDC.convertToShares(315_000e6), 315_000e6 - 1);
+
+        // Redeem Request 3 (Partial)
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(spPrime), address(0), 200_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Redeem(3, ali, ali, 200_000e6, spUSDC.convertToShares(210_000e6), 210_000e6 - 1);
+
+        vm.prank(processor);
+        spPrime.processPendingRedeems(800_000e6, type(uint256).max);
+
+        uint256 assetsRedeemed = 105_000e6 + 210_000e6 + 315_000e6 + 210_000e6;  // Only 200k shares of the fourth 300k share redeem
+
+        vaultState.totalAssets            -= assetsRedeemed;
+        vaultState.availableCapacityValue += assetsRedeemed;
+        vaultState.availableLiquidAssets  -= assetsRedeemed - 1;
+
+        vaultState.redeemRequests.pendingShareValue -= assetsRedeemed;
+        vaultState.redeemRequests.length             = 3;
+        vaultState.redeemRequests.firstPendingId     = 3;
+
+        aliBalances.assets += 105_000e6 + 210_000e6 - 2;
+        bobBalances.assets += 210_000e6 - 1;
+        camBalances.assets += 315_000e6 - 1;
+
+        vaultBalances.shareValue        -= assetsRedeemed;
+        vaultBalances.savingsShareValue -= assetsRedeemed - 1;
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(camBalances);
+        _assertAccountBalances(vaultBalances);
+
+        for (uint256 i = 0; i < 3; i++) {
+            vm.expectRevert(SparkPrimeVault.InvalidRequestId.selector);
+            _assertRedeemRequest(i, address(0), address(0), 0);
+        }
+
+        _assertRedeemRequest(3, ali, ali, 105_000e6 - 1);  // Partial fill
+        _assertRedeemRequest(4, bob, bob, 420_000e6 - 1);
+        _assertRedeemRequest(5, cam, cam, 525_000e6 - 1);
+    }
+
+    function test_processPendingRedeems_blacklistedRecipient() external {
+        _blacklist(bob);  // Bob can no longer receive USDC, so his redeems become claimable
+
+        // Redeem Request 0
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(spPrime), address(0), 100_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Redeem(0, ali, ali, 100_000e6, spUSDC.convertToShares(105_000e6), 105_000e6 - 1);
+
+        // Redeem Request 1 (Blacklisted recipient)
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(spPrime), address(0), 200_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.ClaimableAssetsIncreased(bob, 210_000e6 - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Redeem(1, bob, bob, 200_000e6, spUSDC.convertToShares(210_000e6), 210_000e6 - 1);
+
+        // Redeem Request 2
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(spPrime), address(0), 300_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Redeem(2, cam, cam, 300_000e6, spUSDC.convertToShares(315_000e6), 315_000e6 - 1);
+
+        // Redeem Request 3
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(spPrime), address(0), 300_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Redeem(3, ali, ali, 300_000e6, spUSDC.convertToShares(315_000e6), 315_000e6 - 1);
+
+        // Redeem Request 4 (Blacklisted recipient)
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(spPrime), address(0), 400_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.ClaimableAssetsIncreased(bob, 420_000e6 - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Redeem(4, bob, bob, 400_000e6, spUSDC.convertToShares(420_000e6), 420_000e6 - 1);
+
+        // Redeem Request 5 (Partial)
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Transfer(address(spPrime), address(0), 200_000e6 - 2);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.Redeem(5, cam, cam, 200_000e6 - 2, spUSDC.convertToShares(210_000e6 - 2), 210_000e6 - 3);
+
+        vm.prank(processor);
+        spPrime.processPendingRedeems(type(uint256).max, type(uint256).max);
+
+        uint256 assetsRedeemed = 105_000e6 + 210_000e6 + 315_000e6 + 315_000e6 + 420_000e6 + 210_000e6;  // Only ~200k shares of the last 500k share redeem
+
+        vaultState.totalAssets            -= assetsRedeemed - 2;
+        vaultState.availableCapacityValue += assetsRedeemed - 2;
+        vaultState.availableLiquidAssets   = 3;  // Dust left from rounding
+
+        vaultState.redeemRequests.pendingShareValue -= assetsRedeemed - 3;
+        vaultState.redeemRequests.length             = 1;
+        vaultState.redeemRequests.firstPendingId     = 5;
+
+        aliBalances.assets += 105_000e6 + 315_000e6 - 2;
+        camBalances.assets += 315_000e6 + 210_000e6 - 4;
+
+        bobBalances.claimableAssets += 210_000e6 + 420_000e6 - 2;  // Held in the vault until bob claims
+
+        vaultBalances.assets            += 210_000e6 + 420_000e6 - 2;
+        vaultBalances.shareValue        -= assetsRedeemed - 3;
+        vaultBalances.savingsShareValue  = 3;  // Dust left from rounding
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(camBalances);
+        _assertAccountBalances(vaultBalances);
+
+        for (uint256 i = 0; i < 5; i++) {
+            vm.expectRevert(SparkPrimeVault.InvalidRequestId.selector);
+            _assertRedeemRequest(i, address(0), address(0), 0);
+        }
+
+        _assertRedeemRequest(5, cam, cam, 315_000e6 + 2);  // Partial fill
+    }
+
+}
