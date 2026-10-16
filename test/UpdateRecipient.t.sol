@@ -56,9 +56,6 @@ contract UpdateRecipientTests is TestBase {
         vm.expectRevert(SparkPrimeVault.NotRequestOwner.selector);
         vm.prank(makeAddr("unauthorized"));
         spPrime.updateDepositRecipient(0, user);
-
-        vm.prank(user);
-        spPrime.updateDepositRecipient(0, user);
     }
 
     function test_updateDepositRecipient() external {
@@ -134,9 +131,6 @@ contract UpdateRecipientTests is TestBase {
         vm.expectRevert(SparkPrimeVault.NotRequestOwner.selector);
         vm.prank(makeAddr("unauthorized"));
         spPrime.updateDepositCancellationRecipient(0, user);
-
-        vm.prank(user);
-        spPrime.updateDepositCancellationRecipient(0, user);
     }
 
     function test_updateDepositCancellationRecipient() external {
@@ -210,9 +204,6 @@ contract UpdateRecipientTests is TestBase {
 
         vm.expectRevert(SparkPrimeVault.NotRequestOwner.selector);
         vm.prank(makeAddr("unauthorized"));
-        spPrime.updateRedeemRecipient(0, user);
-
-        vm.prank(user);
         spPrime.updateRedeemRecipient(0, user);
     }
 
