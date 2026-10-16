@@ -3,7 +3,7 @@ pragma solidity ^0.8.34;
 
 import { TestBase, SparkPrimeVault, ISparkVaultLike } from "./TestBase.t.sol";
 
-contract SparkPrimeVaultTests is TestBase {
+abstract contract SparkPrimeVaultTests is TestBase {
 
     uint16 internal constant REFERRAL = type(uint16).max;
 
