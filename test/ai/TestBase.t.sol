@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+pragma solidity ^0.8.34;
+
+import { Test } from "../../lib/forge-std/src/Test.sol";
+
+import { ERC1967Proxy } from "../../lib/oz/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+
+import { Ethereum } from "../../lib/spark-address-registry/src/Ethereum.sol";
+
+import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
+
+interface IERC20Like {
+
+    function balanceOf(address user) external view returns (uint256);
+
+}
+
+interface ISparkVaultLike {
+
+    function balanceOf(address user) external view returns (uint256);
+
+}
+
+contract TestBase is Test {
+
+    address internal admin           = makeAddr("admin");
+    address internal guardian        = makeAddr("guardian");
+    address internal rebalancer      = makeAddr("rebalancer");
+    address internal redeemFeeSetter = makeAddr("redeemFeeSetter");
+    address internal taker           = makeAddr("taker");
+    address internal vsrSetter       = makeAddr("vsrSetter");
+
+    bytes32 internal DEFAULT_ADMIN_ROLE     = 0x00;
+    bytes32 internal GUARDIAN_ROLE          = keccak256("GUARDIAN_ROLE");
+    bytes32 internal REBALANCER_ROLE        = keccak256("REBALANCER_ROLE");
+    bytes32 internal REDEEM_FEE_SETTER_ROLE = keccak256("REDEEM_FEE_SETTER_ROLE");
+    bytes32 internal TAKER_ROLE             = keccak256("TAKER_ROLE");
+    bytes32 internal VSR_SETTER_ROLE        = keccak256("VSR_SETTER_ROLE");
+
+    IERC20Like      internal usdc   = IERC20Like(Ethereum.USDC);
+    ISparkVaultLike internal spUsdc = ISparkVaultLike(Ethereum.SPARK_VAULT_V2_SPUSDC);
+
+    SparkPrimeVault internal vault;
+
+    function setUp() public virtual {
+        vm.createSelectFork(getChain("mainnet").rpcUrl, 26148600);
+
+        vault = SparkPrimeVault(
+            address(new ERC1967Proxy(
+                address(new SparkPrimeVault()),
+                abi.encodeCall(
+                    SparkPrimeVault.initialize,
+                    (address(spUsdc), "Spark Prime USDC", "spPRIME", admin)
+                )
+            ))
+        );
+    }
+
+
+    function _depositRequest(uint256 id)
+        internal view returns (address owner, address recipient, uint256 shares)
+    {
+        SparkPrimeVault.Request[] memory r = vault.getPendingDepositRequests(id, id + 1);
+        return (r[0].owner, r[0].recipient, r[0].shares);
+    }
+
+    function _redeemRequest(uint256 id)
+        internal view returns (address owner, address recipient, uint256 shares)
+    {
+        SparkPrimeVault.Request[] memory r = vault.getPendingRedeemRequests(id, id + 1);
+        return (r[0].owner, r[0].recipient, r[0].shares);
+    }
+
+    function _cancelledDepositRequest(uint256 id)
+        internal view returns (address owner, address recipient, uint256 shares)
+    {
+        SparkPrimeVault.Request[] memory r = vault.getPendingDepositCancellationRequests(id, id + 1);
+        return (r[0].owner, r[0].recipient, r[0].shares);
+    }
+
+    function _depositQueueLength() internal view returns (uint256) {
+        return vault.firstPendingDepositId() + vault.getPendingDepositRequests().length;
+    }
+
+    function _redeemQueueLength() internal view returns (uint256) {
+        return vault.firstPendingRedeemId() + vault.getPendingRedeemRequests().length;
+    }
+
+    function _cancelledDepositQueueLength() internal view returns (uint256) {
+        return vault.firstPendingDepositCancellationId() + vault.getPendingDepositCancellationRequests().length;
+    }
+
+}
