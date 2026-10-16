@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
+import { Initializable } from "../lib/oz/contracts/proxy/utils/Initializable.sol";
+
 import { ERC1967Proxy, TestBase, SparkPrimeVault } from "./TestBase.t.sol";
 
 contract InitializeTests is TestBase {
@@ -53,6 +55,16 @@ contract InitializeTests is TestBase {
     function test_initialize_zeroMinRedeem() external {
         vm.expectRevert(SparkPrimeVault.ZeroMinRedeem.selector);
         _deploy(1, 1, 0);
+    }
+
+    function test_initialize_alreadyInitialized() external {
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        spPrime.initialize(address(spUSDC), "Spark Prime USDC", "spPrime", admin, 1, 1, 1);
+    }
+
+    function test_initialize_implementationDisabled() external {
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        implementation.initialize(address(spUSDC), "Spark Prime USDC", "spPrime", admin, 1, 1, 1);
     }
 
     function test_initialize() external {
