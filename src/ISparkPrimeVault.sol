@@ -332,35 +332,136 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     error ZeroRecipient();
 
     /**********************************************************************************************/
-    /*** Interactive Functions                                                                  ***/
+    /*** Constants                                                                              ***/
     /**********************************************************************************************/
 
-    /**
-     * @notice Adjusts the total assets of the vault by updating the rate accumulator (chi).
-     * @dev    This function can only be called by accounts with DEFAULT_ADMIN_ROLE while the vault
-     *         is paused. Drips before computing the new chi as:
-     *         chi = (totalAssets() + deltaTotalAssets_) * RAY / totalSupply
-     * @param  deltaTotalAssets_ The signed change in total assets [asset units]
-     */
-    function adjustTotalAssets(int256 deltaTotalAssets_) external;
+    /// @notice Returns the absolute maximum allowed Vault Savings Rate (VSR).
+    function MAX_VSR() external view returns (uint256);
+
+    /// @notice Returns the precision multiplier representing 1.0 (1e27).
+    function RAY() external view returns (uint256);
+
+    /// @notice Returns the precision multiplier representing 1.0 (1e18).
+    function WAD() external view returns (uint256);
+
+    /// @notice Returns the absolute maximum allowed redeem fee rate [wad].
+    function MAX_REDEEM_FEE() external view returns (uint256);
+
+    /// @notice Returns the identifier of the role that can pause the vault.
+    function GUARDIAN_ROLE() external view returns (bytes32);
+
+    /// @notice Returns the identifier of the role that can process the request queues.
+    function PROCESSOR_ROLE() external view returns (bytes32);
+
+    /// @notice Returns the identifier of the role that can set the redeem fee rate.
+    function REDEEM_FEE_SETTER_ROLE() external view returns (bytes32);
+
+    /// @notice Returns the identifier of the role that can take savings shares.
+    function TAKER_ROLE() external view returns (bytes32);
+
+    /// @notice Returns the identifier of the role that can set the VSR.
+    function VSR_SETTER_ROLE() external view returns (bytes32);
+
+    /// @notice Returns the EIP-712 typehash of the permit struct.
+    function PERMIT_TYPEHASH() external view returns (bytes32);
 
     /**
-     * @notice Transfers all claimable assets of `recipient_` to `recipient_`.
-     * @dev    Permissionless, assets always go to `recipient_`.
-     *         Reverts in the asset while `recipient_` is still blacklisted.
-     * @param  recipient_ The address whose claimable assets are transferred to it
-     * @return assets_    The amount of assets transferred [asset units]
+     * @notice Returns the version of the vault implementation.
+     * @return The version string.
      */
-    function claim(address recipient_) external returns (uint256 assets_);
+    function version() external view returns (string memory);
+
+    /**********************************************************************************************/
+    /*** Storage variables                                                                      ***/
+    /**********************************************************************************************/
+
+    /// @notice Returns the address of the ERC-4626 savings vault the deposited assets are held in.
+    function savings() external view returns (address);
+
+    /// @notice Returns the address of the underlying asset.
+    function asset() external view returns (address);
+
+    /// @notice Returns whether the vault is paused.
+    function paused() external view returns (bool);
 
     /**
-     * @notice Updates the rate accumulator and returns the new value.
-     * @dev    This function calculates the new chi value based on the time elapsed since the last drip
-     *         and the current VSR. The formula used is:
-     *         new_chi = old_chi * (vsr)^(block.timestamp - rho) / RAY
-     * @return nChi_ The new Chi value [ray]
+     * @notice Returns the timestamp of the last drip operation.
+     * @dev    rho tracks when the rate accumulator was last updated.
+     * @return The timestamp of the last drip [unix epoch time]
      */
-    function drip() external returns (uint192 nChi_);
+    function rho() external view returns (uint64);
+
+    /**
+     * @notice Returns the current rate accumulator (chi).
+     * @dev    Chi represents the cumulative growth factor for all shares. It starts at 1e27 (RAY) and
+     *         increases exponentially over time based on the Vault Savings Rate (VSR). The formula is:
+     *         chi = chi_old * (vsr)^(time_delta) / RAY where time_delta is the time since last drip.
+     *         User assets = user_shares * nowChi() / RAY
+     *         It can also be set directly by adjustTotalAssets().
+     * @return The current rate accumulator value [ray]
+     */
+    function chi() external view returns (uint192);
+
+    /**
+     * @notice Returns the current Vault Savings Rate (VSR).
+     * @dev    The VSR is the rate at which the vault's shares appreciate in value over time.
+     *         It's expressed in ray (1e27).
+     * @return The current VSR value [ray]
+     */
+    function vsr() external view returns (uint256);
+
+    /// @notice Returns the minimum allowed VSR value.
+    function minVSR() external view returns (uint256);
+
+    /// @notice Returns the maximum allowed VSR value.
+    function maxVSR() external view returns (uint256);
+
+    /// @notice Returns the maximum total supply of shares [share units].
+    function maxCapacity() external view returns (uint256);
+
+    /// @notice Returns the minimum amount of assets for a deposit request [asset units].
+    function minDeposit() external view returns (uint256);
+
+    /// @notice Returns the minimum amount of shares for a redeem request [share units].
+    function minRedeem() external view returns (uint256);
+
+    /// @notice Returns the fee rate burned from the shares of redeem requests [wad].
+    function redeemFeeRate() external view returns (uint256);
+
+    /// @notice Returns the maximum allowed redeem fee rate [wad].
+    function maxRedeemFeeRate() external view returns (uint256);
+
+    /// @notice Returns the total savings shares in the deposit queue [savings share units].
+    function pendingDepositSavingsShares() external view returns (uint256);
+
+    /**
+     * @notice Returns the total savings shares in the deposit cancellation queue
+     *         [savings share units].
+     */
+    function pendingCancelledDepositSavingsShares() external view returns (uint256);
+
+    /// @notice Returns the total vault shares in the redeem queue [share units].
+    function pendingRedeemShares() external view returns (uint256);
+
+    /// @notice Returns the first unfilled request ID of the deposit queue.
+    function firstPendingDepositId() external view returns (uint256);
+
+    /// @notice Returns the first unfilled request ID of the deposit cancellation queue.
+    function firstPendingDepositCancellationId() external view returns (uint256);
+
+    /// @notice Returns the first unfilled request ID of the redeem queue.
+    function firstPendingRedeemId() external view returns (uint256);
+
+    /**
+     * @notice Returns the assets of `account` that are claimable via claim().
+     * @param  account The address of the recipient
+     * @return assets  The amount of claimable assets [asset units]
+     */
+    function claimableAssets(address account) external view returns (uint256 assets);
+
+    /**********************************************************************************************/
+    /*** Initialization and upgradeability                                                      ***/
+    /**********************************************************************************************/
 
     /**
      * @notice Initializes the vault implementation with core configuration.
@@ -379,30 +480,102 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
         address        admin
     ) external;
 
-    /**
-     * @notice Pauses the vault.
-     * @dev    This function can only be called by accounts with GUARDIAN_ROLE.
-     *         While paused, new requests and queue processing are disabled.
-     */
-    function pause() external;
+    /**********************************************************************************************/
+    /*** Admin external functions                                                               ***/
+    /**********************************************************************************************/
 
     /**
-     * @notice Approves `spender_` to spend `value_` shares of `owner_` with an EIP-712 signature.
-     * @dev    Supports ECDSA signatures from EOAs and ERC-1271 signatures from contracts.
-     * @param  owner_     The address approving the spender
-     * @param  spender_   The address being approved
-     * @param  value_     The amount of shares approved [share units]
-     * @param  deadline_  The timestamp after which the signature is no longer valid
-     *                    [unix epoch time]
-     * @param  signature_ The signature of `owner_` over the permit
+     * @notice Adjusts the total assets of the vault by updating the rate accumulator (chi).
+     * @dev    This function can only be called by accounts with DEFAULT_ADMIN_ROLE while the vault
+     *         is paused. Drips before computing the new chi as:
+     *         chi = (totalAssets() + deltaTotalAssets_) * RAY / totalSupply
+     * @param  deltaTotalAssets_ The signed change in total assets [asset units]
      */
-    function permit(
-        address        owner_,
-        address        spender_,
-        uint256        value_,
-        uint256        deadline_,
-        bytes   memory signature_
-    ) external;
+    function adjustTotalAssets(int256 deltaTotalAssets_) external;
+
+    /**
+     * @notice Sets the maximum capacity of the vault.
+     * @dev    This function can only be called by accounts with DEFAULT_ADMIN_ROLE.
+     *         Deposit requests are only filled while totalSupply is below this value.
+     * @param  capacity_ The new maximum capacity [share units]
+     */
+    function setCapacity(uint256 capacity_) external;
+
+    /**
+     * @notice Sets the maximum redeem fee rate.
+     * @dev    This function can only be called by accounts with DEFAULT_ADMIN_ROLE.
+     *         The rate must be less than or equal to MAX_REDEEM_FEE.
+     * @param  feeRate_ The new maximum redeem fee rate [wad]
+     */
+    function setMaxRedeemFeeRate(uint256 feeRate_) external;
+
+    /**
+     * @notice Sets the minimum amount of assets for a deposit request.
+     * @dev    This function can only be called by accounts with DEFAULT_ADMIN_ROLE.
+     * @param  minDeposit_ The new minimum deposit [asset units]
+     */
+    function setMinDeposit(uint256 minDeposit_) external;
+
+    /**
+     * @notice Sets the minimum amount of shares for a redeem request.
+     * @dev    This function can only be called by accounts with DEFAULT_ADMIN_ROLE.
+     * @param  minRedeem_ The new minimum redeem [share units]
+     */
+    function setMinRedeem(uint256 minRedeem_) external;
+
+    /**
+     * @notice Sets the bounds for the Vault Savings Rate (VSR).
+     * @dev    This function can only be called by accounts with DEFAULT_ADMIN_ROLE.
+     * @param  minVSR_ The new minimum allowed VSR value [ray]
+     * @param  maxVSR_ The new maximum allowed VSR value [ray]
+     */
+    function setVSRBounds(uint256 minVSR_, uint256 maxVSR_) external;
+
+    /**
+     * @notice Unpauses the vault.
+     * @dev    This function can only be called by accounts with DEFAULT_ADMIN_ROLE.
+     */
+    function unpause() external;
+
+    /**********************************************************************************************/
+    /*** VSR Setter external functions                                                          ***/
+    /**********************************************************************************************/
+
+    /**
+     * @notice Sets the Vault Savings Rate (VSR) within the configured bounds.
+     * @dev    This function can only be called by accounts with VSR_SETTER_ROLE.
+     *         The VSR determines the rate at which user shares grow over time. A higher VSR
+     *         means faster share growth and higher yields for depositors.
+     * @param  vsr_ The new VSR value [ray]
+     */
+    function setVSR(uint256 vsr_) external;
+
+    /**********************************************************************************************/
+    /*** Taker external functions                                                               ***/
+    /**********************************************************************************************/
+
+    /**
+     * @notice Allows authorized accounts to withdraw savings shares from the vault.
+     * @dev    This function can only be called by accounts with TAKER_ROLE.
+     *         The function transfers the specified amount of savings shares to the caller.
+     * @param  savingsShares_ The amount of savings shares to withdraw [savings share units]
+     */
+    function take(uint256 savingsShares_) external;
+
+    /**********************************************************************************************/
+    /*** Processor external functions                                                           ***/
+    /**********************************************************************************************/
+
+    /**
+     * @notice Fills pending deposit requests in queue order, minting shares to their recipients.
+     * @dev    This function can only be called by accounts with PROCESSOR_ROLE while the vault is
+     *         not paused. Processing is limited by `maxSavingsShares_`, `maxRequests_`, and the
+     *         available capacity. The last processed request may be partially filled.
+     * @param  maxSavingsShares_ The maximum amount of savings shares to process
+     *                           [savings share units]
+     * @param  maxRequests_      The maximum number of requests to process
+     */
+    function processPendingDeposits(uint256 maxSavingsShares_, uint256 maxRequests_) external;
 
     /**
      * @notice Fills pending deposit cancellation requests in queue order, redeeming their savings
@@ -419,17 +592,6 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
         external;
 
     /**
-     * @notice Fills pending deposit requests in queue order, minting shares to their recipients.
-     * @dev    This function can only be called by accounts with PROCESSOR_ROLE while the vault is
-     *         not paused. Processing is limited by `maxSavingsShares_`, `maxRequests_`, and the
-     *         available capacity. The last processed request may be partially filled.
-     * @param  maxSavingsShares_ The maximum amount of savings shares to process
-     *                           [savings share units]
-     * @param  maxRequests_      The maximum number of requests to process
-     */
-    function processPendingDeposits(uint256 maxSavingsShares_, uint256 maxRequests_) external;
-
-    /**
      * @notice Fills pending redeem requests in queue order, burning their shares and withdrawing
      *         assets for their recipients.
      * @dev    This function can only be called by accounts with PROCESSOR_ROLE while the vault is
@@ -440,6 +602,33 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @param  maxRequests_ The maximum number of requests to process
      */
     function processPendingRedeems(uint256 maxShares_, uint256 maxRequests_) external;
+
+    /**********************************************************************************************/
+    /*** Redeem Fee Setter external functions                                                   ***/
+    /**********************************************************************************************/
+
+    /**
+     * @notice Sets the redeem fee rate within the configured maximum.
+     * @dev    This function can only be called by accounts with REDEEM_FEE_SETTER_ROLE.
+     *         The rate must be less than or equal to maxRedeemFeeRate.
+     * @param  feeRate_ The new redeem fee rate [wad]
+     */
+    function setRedeemFeeRate(uint256 feeRate_) external;
+
+    /**********************************************************************************************/
+    /*** Guardian external functions                                                            ***/
+    /**********************************************************************************************/
+
+    /**
+     * @notice Pauses the vault.
+     * @dev    This function can only be called by accounts with GUARDIAN_ROLE.
+     *         While paused, new requests and queue processing are disabled.
+     */
+    function pause() external;
+
+    /**********************************************************************************************/
+    /*** Request functions                                                                      ***/
+    /**********************************************************************************************/
 
     /**
      * @notice Requests a deposit of assets, which are deposited into the savings vault and queued
@@ -482,82 +671,9 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
         external
         returns (uint256 requestId_);
 
-    /**
-     * @notice Sets the maximum capacity of the vault.
-     * @dev    This function can only be called by accounts with DEFAULT_ADMIN_ROLE.
-     *         Deposit requests are only filled while totalSupply is below this value.
-     * @param  capacity_ The new maximum capacity [share units]
-     */
-    function setCapacity(uint256 capacity_) external;
-
-    /**
-     * @notice Sets the maximum redeem fee rate.
-     * @dev    This function can only be called by accounts with DEFAULT_ADMIN_ROLE.
-     *         The rate must be less than or equal to MAX_REDEEM_FEE.
-     * @param  feeRate_ The new maximum redeem fee rate [wad]
-     */
-    function setMaxRedeemFeeRate(uint256 feeRate_) external;
-
-    /**
-     * @notice Sets the minimum amount of assets for a deposit request.
-     * @dev    This function can only be called by accounts with DEFAULT_ADMIN_ROLE.
-     * @param  minDeposit_ The new minimum deposit [asset units]
-     */
-    function setMinDeposit(uint256 minDeposit_) external;
-
-    /**
-     * @notice Sets the minimum amount of shares for a redeem request.
-     * @dev    This function can only be called by accounts with DEFAULT_ADMIN_ROLE.
-     * @param  minRedeem_ The new minimum redeem [share units]
-     */
-    function setMinRedeem(uint256 minRedeem_) external;
-
-    /**
-     * @notice Sets the redeem fee rate within the configured maximum.
-     * @dev    This function can only be called by accounts with REDEEM_FEE_SETTER_ROLE.
-     *         The rate must be less than or equal to maxRedeemFeeRate.
-     * @param  feeRate_ The new redeem fee rate [wad]
-     */
-    function setRedeemFeeRate(uint256 feeRate_) external;
-
-    /**
-     * @notice Sets the Vault Savings Rate (VSR) within the configured bounds.
-     * @dev    This function can only be called by accounts with VSR_SETTER_ROLE.
-     *         The VSR determines the rate at which user shares grow over time. A higher VSR
-     *         means faster share growth and higher yields for depositors.
-     * @param  vsr_ The new VSR value [ray]
-     */
-    function setVSR(uint256 vsr_) external;
-
-    /**
-     * @notice Sets the bounds for the Vault Savings Rate (VSR).
-     * @dev    This function can only be called by accounts with DEFAULT_ADMIN_ROLE.
-     * @param  minVSR_ The new minimum allowed VSR value [ray]
-     * @param  maxVSR_ The new maximum allowed VSR value [ray]
-     */
-    function setVSRBounds(uint256 minVSR_, uint256 maxVSR_) external;
-
-    /**
-     * @notice Allows authorized accounts to withdraw savings shares from the vault.
-     * @dev    This function can only be called by accounts with TAKER_ROLE.
-     *         The function transfers the specified amount of savings shares to the caller.
-     * @param  savingsShares_ The amount of savings shares to withdraw [savings share units]
-     */
-    function take(uint256 savingsShares_) external;
-
-    /**
-     * @notice Unpauses the vault.
-     * @dev    This function can only be called by accounts with DEFAULT_ADMIN_ROLE.
-     */
-    function unpause() external;
-
-    /**
-     * @notice Updates the recipient of a deposit cancellation request.
-     * @dev    Can only be called by the owner of the request.
-     * @param  requestId_ The ID of the deposit cancellation request
-     * @param  recipient_ The new address to receive the assets when the request is filled
-     */
-    function updateDepositCancellationRecipient(uint256 requestId_, address recipient_) external;
+    /**********************************************************************************************/
+    /*** Request update functions                                                               ***/
+    /**********************************************************************************************/
 
     /**
      * @notice Updates the recipient of a deposit request.
@@ -568,6 +684,14 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     function updateDepositRecipient(uint256 requestId_, address recipient_) external;
 
     /**
+     * @notice Updates the recipient of a deposit cancellation request.
+     * @dev    Can only be called by the owner of the request.
+     * @param  requestId_ The ID of the deposit cancellation request
+     * @param  recipient_ The new address to receive the assets when the request is filled
+     */
+    function updateDepositCancellationRecipient(uint256 requestId_, address recipient_) external;
+
+    /**
      * @notice Updates the recipient of a redeem request.
      * @dev    Can only be called by the owner of the request.
      * @param  requestId_ The ID of the redeem request
@@ -576,131 +700,160 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     function updateRedeemRecipient(uint256 requestId_, address recipient_) external;
 
     /**********************************************************************************************/
-    /*** Variables                                                                              ***/
+    /*** Claim functions                                                                        ***/
     /**********************************************************************************************/
 
-    /// @notice Returns the identifier of the role that can pause the vault.
-    function GUARDIAN_ROLE() external view returns (bytes32);
-
-    /// @notice Returns the absolute maximum allowed redeem fee rate [wad].
-    function MAX_REDEEM_FEE() external view returns (uint256);
-
-    /// @notice Returns the absolute maximum allowed Vault Savings Rate (VSR).
-    function MAX_VSR() external view returns (uint256);
-
-    /// @notice Returns the EIP-712 typehash of the permit struct.
-    function PERMIT_TYPEHASH() external view returns (bytes32);
-
-    /// @notice Returns the identifier of the role that can process the request queues.
-    function PROCESSOR_ROLE() external view returns (bytes32);
-
-    /// @notice Returns the precision multiplier representing 1.0 (1e27).
-    function RAY() external view returns (uint256);
-
-    /// @notice Returns the identifier of the role that can set the redeem fee rate.
-    function REDEEM_FEE_SETTER_ROLE() external view returns (bytes32);
-
-    /// @notice Returns the identifier of the role that can take savings shares.
-    function TAKER_ROLE() external view returns (bytes32);
-
-    /// @notice Returns the identifier of the role that can set the VSR.
-    function VSR_SETTER_ROLE() external view returns (bytes32);
-
-    /// @notice Returns the precision multiplier representing 1.0 (1e18).
-    function WAD() external view returns (uint256);
-
-    /// @notice Returns the address of the underlying asset.
-    function asset() external view returns (address);
-
     /**
-     * @notice Returns the current rate accumulator (chi).
-     * @dev    Chi represents the cumulative growth factor for all shares. It starts at 1e27 (RAY) and
-     *         increases exponentially over time based on the Vault Savings Rate (VSR). The formula is:
-     *         chi = chi_old * (vsr)^(time_delta) / RAY where time_delta is the time since last drip.
-     *         User assets = user_shares * nowChi() / RAY
-     *         It can also be set directly by adjustTotalAssets().
-     * @return The current rate accumulator value [ray]
+     * @notice Transfers all claimable assets of `recipient_` to `recipient_`.
+     * @dev    Permissionless, assets always go to `recipient_`.
+     *         Reverts in the asset while `recipient_` is still blacklisted.
+     * @param  recipient_ The address whose claimable assets are transferred to it
+     * @return assets_    The amount of assets transferred [asset units]
      */
-    function chi() external view returns (uint192);
-
-    /**
-     * @notice Returns the assets of `account` that are claimable via claim().
-     * @param  account The address of the recipient
-     * @return assets  The amount of claimable assets [asset units]
-     */
-    function claimableAssets(address account) external view returns (uint256 assets);
-
-    /// @notice Returns the first unfilled request ID of the deposit cancellation queue.
-    function firstPendingDepositCancellationId() external view returns (uint256);
-
-    /// @notice Returns the first unfilled request ID of the deposit queue.
-    function firstPendingDepositId() external view returns (uint256);
-
-    /// @notice Returns the first unfilled request ID of the redeem queue.
-    function firstPendingRedeemId() external view returns (uint256);
-
-    /// @notice Returns the maximum total supply of shares [share units].
-    function maxCapacity() external view returns (uint256);
-
-    /// @notice Returns the maximum allowed redeem fee rate [wad].
-    function maxRedeemFeeRate() external view returns (uint256);
-
-    /// @notice Returns the maximum allowed VSR value.
-    function maxVSR() external view returns (uint256);
-
-    /// @notice Returns the minimum amount of assets for a deposit request [asset units].
-    function minDeposit() external view returns (uint256);
-
-    /// @notice Returns the minimum amount of shares for a redeem request [share units].
-    function minRedeem() external view returns (uint256);
-
-    /// @notice Returns the minimum allowed VSR value.
-    function minVSR() external view returns (uint256);
-
-    /// @notice Returns whether the vault is paused.
-    function paused() external view returns (bool);
-
-    /**
-     * @notice Returns the total savings shares in the deposit cancellation queue
-     *         [savings share units].
-     */
-    function pendingCancelledDepositSavingsShares() external view returns (uint256);
-
-    /// @notice Returns the total savings shares in the deposit queue [savings share units].
-    function pendingDepositSavingsShares() external view returns (uint256);
-
-    /// @notice Returns the total vault shares in the redeem queue [share units].
-    function pendingRedeemShares() external view returns (uint256);
-
-    /// @notice Returns the fee rate burned from the shares of redeem requests [wad].
-    function redeemFeeRate() external view returns (uint256);
-
-    /**
-     * @notice Returns the timestamp of the last drip operation.
-     * @dev    rho tracks when the rate accumulator was last updated.
-     * @return The timestamp of the last drip [unix epoch time]
-     */
-    function rho() external view returns (uint64);
-
-    /// @notice Returns the address of the ERC-4626 savings vault the deposited assets are held in.
-    function savings() external view returns (address);
-
-    /**
-     * @notice Returns the version of the vault implementation.
-     * @return The version string.
-     */
-    function version() external view returns (string memory);
-
-    /**
-     * @notice Returns the current Vault Savings Rate (VSR).
-     * @dev    The VSR is the rate at which the vault's shares appreciate in value over time.
-     *         It's expressed in ray (1e27).
-     * @return The current VSR value [ray]
-     */
-    function vsr() external view returns (uint256);
+    function claim(address recipient_) external returns (uint256 assets_);
 
     /**********************************************************************************************/
-    /*** View/Pure Functions                                                                    ***/
+    /*** EIP712 external mutating functions                                                     ***/
+    /**********************************************************************************************/
+
+    /**
+     * @notice Approves `spender_` to spend `value_` shares of `owner_` with an EIP-712 signature.
+     * @dev    Supports ECDSA signatures from EOAs and ERC-1271 signatures from contracts.
+     * @param  owner_     The address approving the spender
+     * @param  spender_   The address being approved
+     * @param  value_     The amount of shares approved [share units]
+     * @param  deadline_  The timestamp after which the signature is no longer valid
+     *                    [unix epoch time]
+     * @param  signature_ The signature of `owner_` over the permit
+     */
+    function permit(
+        address        owner_,
+        address        spender_,
+        uint256        value_,
+        uint256        deadline_,
+        bytes   memory signature_
+    ) external;
+
+    /**********************************************************************************************/
+    /*** Rate accumulation                                                                      ***/
+    /**********************************************************************************************/
+
+    /**
+     * @notice Updates the rate accumulator and returns the new value.
+     * @dev    This function calculates the new chi value based on the time elapsed since the last drip
+     *         and the current VSR. The formula used is:
+     *         new_chi = old_chi * (vsr)^(block.timestamp - rho) / RAY
+     * @return nChi_ The new Chi value [ray]
+     */
+    function drip() external returns (uint192 nChi_);
+
+    /**********************************************************************************************/
+    /*** Request getter functions                                                               ***/
+    /**********************************************************************************************/
+
+    /**
+     * @notice Returns a pending deposit request.
+     * @dev    Reverts if `requestId_` is before the first pending request or does not exist.
+     * @param  requestId_ The ID of the deposit request
+     * @return owner_     The owner of the request
+     * @return recipient_ The address to receive the shares when the request is filled
+     * @return shares_    The unfilled savings shares of the request [savings share units]
+     */
+    function getPendingDepositRequest(uint256 requestId_)
+        external
+        view
+        returns (address owner_, address recipient_, uint256 shares_);
+
+    /**
+     * @notice Returns the deposit requests from the first pending request to the end of the queue.
+     * @dev    Includes cancelled requests, which have zero shares.
+     * @return requests_ The deposit requests
+     */
+    function getPendingDepositRequests() external view returns (Request[] memory requests_);
+
+    /**
+     * @notice Returns the deposit requests with IDs from `startId_` (inclusive) to `endId_`
+     *         (exclusive).
+     * @dev    Includes filled and cancelled requests, which have zero shares.
+     * @param  startId_  The first request ID to return
+     * @param  endId_    The request ID to stop before
+     * @return requests_ The deposit requests
+     */
+    function getPendingDepositRequests(uint256 startId_, uint256 endId_)
+        external
+        view
+        returns (Request[] memory requests_);
+
+    /**
+     * @notice Returns a pending deposit cancellation request.
+     * @dev    Reverts if `requestId_` is before the first pending request or does not exist.
+     * @param  requestId_ The ID of the deposit cancellation request
+     * @return owner_     The owner of the request
+     * @return recipient_ The address to receive the assets when the request is filled
+     * @return shares_    The unfilled savings shares of the request [savings share units]
+     */
+    function getPendingDepositCancellationRequest(uint256 requestId_)
+        external
+        view
+        returns (address owner_, address recipient_, uint256 shares_);
+
+    /**
+     * @notice Returns the deposit cancellation requests from the first pending request to the end
+     *         of the queue.
+     * @return requests_ The deposit cancellation requests
+     */
+    function getPendingDepositCancellationRequests()
+        external
+        view
+        returns (Request[] memory requests_);
+
+    /**
+     * @notice Returns the deposit cancellation requests with IDs from `startId_` (inclusive) to
+     *         `endId_` (exclusive).
+     * @dev    Includes filled requests, which have zero shares.
+     * @param  startId_  The first request ID to return
+     * @param  endId_    The request ID to stop before
+     * @return requests_ The deposit cancellation requests
+     */
+    function getPendingDepositCancellationRequests(uint256 startId_, uint256 endId_)
+        external
+        view
+        returns (Request[] memory requests_);
+
+    /**
+     * @notice Returns a pending redeem request.
+     * @dev    Reverts if `requestId_` is before the first pending request or does not exist.
+     * @param  requestId_ The ID of the redeem request
+     * @return owner_     The owner of the request
+     * @return recipient_ The address to receive the assets when the request is filled
+     * @return shares_    The unfilled vault shares of the request [share units]
+     */
+    function getPendingRedeemRequest(uint256 requestId_)
+        external
+        view
+        returns (address owner_, address recipient_, uint256 shares_);
+
+    /**
+     * @notice Returns the redeem requests from the first pending request to the end of the queue.
+     * @return requests_ The redeem requests
+     */
+    function getPendingRedeemRequests() external view returns (Request[] memory requests_);
+
+    /**
+     * @notice Returns the redeem requests with IDs from `startId_` (inclusive) to `endId_`
+     *         (exclusive).
+     * @dev    Includes filled requests, which have zero shares.
+     * @param  startId_  The first request ID to return
+     * @param  endId_    The request ID to stop before
+     * @return requests_ The redeem requests
+     */
+    function getPendingRedeemRequests(uint256 startId_, uint256 endId_)
+        external
+        view
+        returns (Request[] memory requests_);
+
+    /**********************************************************************************************/
+    /*** External view functions                                                                ***/
     /**********************************************************************************************/
 
     /**
@@ -740,107 +893,6 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @return The amount of shares [share units]
      */
     function convertToShares(uint256 assets_) external view returns (uint256);
-
-    /**
-     * @notice Returns a pending deposit cancellation request.
-     * @dev    Reverts if `requestId_` is before the first pending request or does not exist.
-     * @param  requestId_ The ID of the deposit cancellation request
-     * @return owner_     The owner of the request
-     * @return recipient_ The address to receive the assets when the request is filled
-     * @return shares_    The unfilled savings shares of the request [savings share units]
-     */
-    function getPendingDepositCancellationRequest(uint256 requestId_)
-        external
-        view
-        returns (address owner_, address recipient_, uint256 shares_);
-
-    /**
-     * @notice Returns the deposit cancellation requests from the first pending request to the end
-     *         of the queue.
-     * @return requests_ The deposit cancellation requests
-     */
-    function getPendingDepositCancellationRequests()
-        external
-        view
-        returns (Request[] memory requests_);
-
-    /**
-     * @notice Returns the deposit cancellation requests with IDs from `startId_` (inclusive) to
-     *         `endId_` (exclusive).
-     * @dev    Includes filled requests, which have zero shares.
-     * @param  startId_  The first request ID to return
-     * @param  endId_    The request ID to stop before
-     * @return requests_ The deposit cancellation requests
-     */
-    function getPendingDepositCancellationRequests(uint256 startId_, uint256 endId_)
-        external
-        view
-        returns (Request[] memory requests_);
-
-    /**
-     * @notice Returns a pending deposit request.
-     * @dev    Reverts if `requestId_` is before the first pending request or does not exist.
-     * @param  requestId_ The ID of the deposit request
-     * @return owner_     The owner of the request
-     * @return recipient_ The address to receive the shares when the request is filled
-     * @return shares_    The unfilled savings shares of the request [savings share units]
-     */
-    function getPendingDepositRequest(uint256 requestId_)
-        external
-        view
-        returns (address owner_, address recipient_, uint256 shares_);
-
-    /**
-     * @notice Returns the deposit requests from the first pending request to the end of the queue.
-     * @dev    Includes cancelled requests, which have zero shares.
-     * @return requests_ The deposit requests
-     */
-    function getPendingDepositRequests() external view returns (Request[] memory requests_);
-
-    /**
-     * @notice Returns the deposit requests with IDs from `startId_` (inclusive) to `endId_`
-     *         (exclusive).
-     * @dev    Includes filled and cancelled requests, which have zero shares.
-     * @param  startId_  The first request ID to return
-     * @param  endId_    The request ID to stop before
-     * @return requests_ The deposit requests
-     */
-    function getPendingDepositRequests(uint256 startId_, uint256 endId_)
-        external
-        view
-        returns (Request[] memory requests_);
-
-    /**
-     * @notice Returns a pending redeem request.
-     * @dev    Reverts if `requestId_` is before the first pending request or does not exist.
-     * @param  requestId_ The ID of the redeem request
-     * @return owner_     The owner of the request
-     * @return recipient_ The address to receive the assets when the request is filled
-     * @return shares_    The unfilled vault shares of the request [share units]
-     */
-    function getPendingRedeemRequest(uint256 requestId_)
-        external
-        view
-        returns (address owner_, address recipient_, uint256 shares_);
-
-    /**
-     * @notice Returns the redeem requests from the first pending request to the end of the queue.
-     * @return requests_ The redeem requests
-     */
-    function getPendingRedeemRequests() external view returns (Request[] memory requests_);
-
-    /**
-     * @notice Returns the redeem requests with IDs from `startId_` (inclusive) to `endId_`
-     *         (exclusive).
-     * @dev    Includes filled requests, which have zero shares.
-     * @param  startId_  The first request ID to return
-     * @param  endId_    The request ID to stop before
-     * @return requests_ The redeem requests
-     */
-    function getPendingRedeemRequests(uint256 startId_, uint256 endId_)
-        external
-        view
-        returns (Request[] memory requests_);
 
     /// @notice Returns the address of the current implementation contract.
     function implementation() external view returns (address);
