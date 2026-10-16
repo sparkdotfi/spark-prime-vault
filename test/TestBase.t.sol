@@ -247,6 +247,14 @@ abstract contract TestBase is Test {
         return _requestRedeem(account, account, shares);
     }
 
+    function _processPendingDepositCancellations(
+        uint256 maxSavingsShares,
+        uint256 maxRequests
+    ) internal {
+        vm.prank(processor);
+        spPrime.processPendingDepositCancellations(maxSavingsShares, maxRequests);
+    }
+
     function _processPendingRedeems(uint256 maxShares, uint256 maxRequests) internal {
         vm.prank(processor);
         spPrime.processPendingRedeems(maxShares, maxRequests);
@@ -467,7 +475,91 @@ abstract contract TestBase is Test {
             shareValue,
             "redeemRequest.shareValue"
         );
+    }
 
+    function _assertRedeemRequest(
+        SparkPrimeVault.Request memory request,
+        address                        owner,
+        address                        recipient,
+        uint256                        shareValue
+    )
+        internal view
+    {
+        assertEq(
+            request.owner,
+            owner,
+            "owner"
+        );
+        assertEq(
+            request.recipient,
+            recipient,
+            "recipient"
+        );
+        assertEq(
+            spPrime.convertToAssets(request.shares),
+            shareValue,
+            "shareValue"
+        );
+    }
+
+    function _assertPendingDepositCancellationRequest(
+        uint256 requestId,
+        address owner,
+        address recipient,
+        uint256 savingsShareValue
+    )
+        internal view
+    {
+        (
+            address requestOwner_,
+            address requestRecipient_,
+            uint256 requestShares_
+        ) = spPrime.getPendingDepositCancellationRequest(requestId);
+
+        assertEq(
+            requestOwner_,
+            owner,
+            "DepositCancellationRequest.owner"
+        );
+        assertEq(
+            requestRecipient_,
+            recipient,
+            "DepositCancellationRequest.recipient"
+        );
+        assertEq(
+            spUSDC.convertToAssets(requestShares_),
+            savingsShareValue,
+            "DepositCancellationRequest.shares"
+        );
+    }
+
+    function _assertRequest(
+        SparkPrimeVault.Request memory request,
+        address                        owner,
+        address                        recipient,
+        uint256                        savingsShareValue
+    )
+        internal view
+    {
+        assertEq(
+            request.owner,
+            owner,
+            "owner"
+        );
+        assertEq(
+            request.recipient,
+            recipient,
+            "recipient"
+        );
+        assertEq(
+            spUSDC.convertToAssets(request.shares),
+            savingsShareValue,
+            "savingsShareValue"
+        );
+    }
+
+    function _assertEmptyRequest(SparkPrimeVault.Request memory request) internal view {
+        _assertRequest(request, address(0), address(0), 0);
     }
 
 }

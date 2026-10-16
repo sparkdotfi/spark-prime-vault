@@ -756,6 +756,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         view
         returns (Request[] memory requests_)
     {
+        require(startId_ >= firstPendingDepositId,                           InvalidRequestId());
         require((startId_ <= endId_) && (endId_ <= _depositRequests.length), InvalidRange());
 
         requests_ = new Request[](endId_ - startId_);
@@ -800,6 +801,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         view
         returns (Request[] memory requests_)
     {
+        require(startId_ >= firstPendingDepositCancellationId, InvalidRequestId());
         require(
             (startId_ <= endId_) && (endId_ <= _depositCancellationRequests.length),
             InvalidRange()
@@ -842,6 +844,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         view
         returns (Request[] memory requests_)
     {
+        require(startId_ >= firstPendingRedeemId, InvalidRequestId());
         require((startId_ <= endId_) && (endId_ <= _redeemRequests.length), InvalidRange());
 
         requests_ = new Request[](endId_ - startId_);
