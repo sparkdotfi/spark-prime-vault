@@ -723,3 +723,127 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
     }
 
 }
+
+contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
+
+    address internal ali = makeAddr("ali");
+    address internal bob = makeAddr("bob");
+    address internal cam = makeAddr("cam");
+
+    AccountBalances internal aliBalances;
+    AccountBalances internal bobBalances;
+    AccountBalances internal camBalances;
+    AccountBalances internal vaultBalances;
+
+    function setUp() public override {
+        super.setUp();
+
+        vm.label(ali, "ali");
+        vm.label(bob, "bob");
+        vm.label(cam, "cam");
+
+        // All deposits will be filled instantly
+
+        _requestDeposit(ali, 100_000e6);
+        _requestDeposit(bob, 200_000e6);
+        _requestDeposit(cam, 300_000e6);
+        _requestDeposit(ali, 400_000e6);
+        _requestDeposit(bob, 500_000e6);
+        _requestDeposit(cam, 600_000e6);
+
+        _requestRedeem(ali, 100_000e6);  // Will be filled
+        _requestRedeem(bob, 200_000e6);  // Will be filled
+        _requestRedeem(cam, 300_000e6);  // Will be filled
+        _requestRedeem(ali, 300_000e6);  // Will be filled
+        _requestRedeem(bob, 400_000e6);  // Will be filled
+        _requestRedeem(cam, 500_000e6);  // Will be partially filled
+
+        uint256 depositedAssets        = 2_100_000e6;
+        uint256 depositedShareValue    = depositedAssets - 9;
+        uint256 availableCapacityValue = spPrime.convertToAssets(VAULT_CAPACITY) - depositedShareValue;
+
+        uint256 pendingRedeemAssets = spPrime.convertToAssets(1_800_000e6);  // All redeemed shares
+
+        uint256 targetAssets = spPrime.convertToAssets(1_500_000e6);  // Only 200k of the last 500k redeem shares
+
+        // Take the excess liquidity, so only the target assets can be withdrawn
+        uint256 takenSavingsShares = spUSDC.convertToShares(depositedAssets - targetAssets);
+
+        vm.prank(taker);
+        spPrime.take(takenSavingsShares);
+
+        vaultState.rho                    = vm.getBlockTimestamp();
+        vaultState.chi                    = 1.049999999999999999961070145e27;
+        vaultState.totalAssets            = depositedShareValue;
+        vaultState.availableCapacityValue = availableCapacityValue;
+        vaultState.availableLiquidAssets  = targetAssets - 2;
+
+        vaultState.depositRequests.firstPendingId = 6;
+
+        vaultState.redeemRequests.pendingShareValue = pendingRedeemAssets;
+        vaultState.redeemRequests.length            = 6;
+        vaultState.redeemRequests.firstPendingId    = 0;
+
+        aliBalances = AccountBalances({
+            account           : ali,
+            assets            : 0,
+            shareValue        : 80_000e6 - 3,  // 500k deposited, 420k (400k shares) requested for redeem
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        bobBalances = AccountBalances({
+            account           : bob,
+            assets            : 0,
+            shareValue        : 70_000e6 - 3,  // 700k deposited, 630k (600k shares) requested for redeem
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        camBalances = AccountBalances({
+            account           : cam,
+            assets            : 0,
+            shareValue        : 60_000e6 - 4,  // 900k deposited, 840k (800k shares) requested for redeem
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        vaultBalances = AccountBalances({
+            account           : address(spPrime),
+            assets            : 0,
+            shareValue        : pendingRedeemAssets,
+            savingsShareValue : targetAssets - 2,
+            claimableAssets   : 0
+        });
+
+        _assertVaultState();
+
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(camBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 5% APY for all spPRIME shares
+        _assertRedeemRequest(0, ali, ali, 105_000e6 - 1);
+        _assertRedeemRequest(1, bob, bob, 210_000e6 - 1);
+        _assertRedeemRequest(2, cam, cam, 315_000e6 - 1);
+        _assertRedeemRequest(3, ali, ali, 315_000e6 - 1);
+        _assertRedeemRequest(4, bob, bob, 420_000e6 - 1);
+        _assertRedeemRequest(5, cam, cam, 525_000e6 - 1);
+    }
+
+    function test_processPendingRedeems_infiniteMaxShares_infiniteMaxRequests() external {
+
+    }
+    function test_processPendingRedeems_infiniteMaxShares_limitedMaxRequests() external {
+
+    }
+    function test_processPendingRedeems_limitedMaxShares_infiniteMaxRequests() external {
+
+    }
+
+    function test_processPendingRedeems_blacklistedRecipient() external {
+
+    }
+
+}
