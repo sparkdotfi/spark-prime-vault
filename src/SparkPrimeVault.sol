@@ -53,8 +53,6 @@ interface IBlacklistableLike {
 
 }
 
-// TODO: requestDepositWithPermit?
-
 /// @dev If the inheritance is updated, the functions in `initialize` must be updated as well.
 ///      Last updated for: `Initializable, UUPSUpgradeable, AccessControlEnumerableUpgradeable`.
 contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
@@ -91,7 +89,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         uint256 indexed requestId,
         address indexed owner,
         address indexed recipient,
-        uint256         savingsSharesBurned,
+        uint256         savingsSharesConsumed,
         uint256         assetsConverted,
         uint256         sharesMinted
     );
@@ -447,6 +445,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         returns (uint256 newRequestId_)
     {
         require(recipient_ != address(0),     "SparkPrimeVault/zero-recipient");
+        require(recipient_ != address(this),  "SparkPrimeVault/vault-recipient");
         require(_canReceiveAsset(recipient_), "SparkPrimeVault/recipient-cannot-receive");
 
         Request memory request_ = _depositRequests[requestId_];
@@ -474,6 +473,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         returns (uint256 requestId_)
     {
         require(recipient_ != address(0),     "SparkPrimeVault/zero-recipient");
+        require(recipient_ != address(this),  "SparkPrimeVault/vault-recipient");
         require(_canReceiveAsset(recipient_), "SparkPrimeVault/recipient-cannot-receive");
         require(shares_ >= minRedeem,         "SparkPrimeVault/below-minimum");
 
@@ -515,6 +515,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     function updateDepositCancellationRecipient(uint256 requestId_, address recipient_) external {
         require(recipient_ != address(0),     "SparkPrimeVault/zero-recipient");
+        require(recipient_ != address(this),  "SparkPrimeVault/vault-recipient");
         require(_canReceiveAsset(recipient_), "SparkPrimeVault/recipient-cannot-receive");
 
         Request storage request_ = _depositCancellationRequests[requestId_];
@@ -530,6 +531,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     function updateRedeemRecipient(uint256 requestId_, address recipient_) external {
         require(recipient_ != address(0),     "SparkPrimeVault/zero-recipient");
+        require(recipient_ != address(this),  "SparkPrimeVault/vault-recipient");
         require(_canReceiveAsset(recipient_), "SparkPrimeVault/recipient-cannot-receive");
 
         Request storage request_ = _redeemRequests[requestId_];
@@ -966,9 +968,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         internal
         returns (uint256 assets_)
     {
-        if (_canReceiveAsset(recipient_)) {
-            return IERC4626Like(savings).redeem(savingsShares_, recipient_, address(this));
-        }
+        try IERC4626Like(savings).redeem(savingsShares_, recipient_, address(this))
+            returns (uint256 assetsRedeemed_)
+        {
+            return assetsRedeemed_;
+        } catch {}
 
         assets_ = IERC4626Like(savings).redeem(savingsShares_, address(this), address(this));
 
@@ -979,9 +983,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         internal
         returns (uint256 savingsShares_)
     {
-        if (_canReceiveAsset(recipient_)) {
-            return IERC4626Like(savings).withdraw(assets_, recipient_, address(this));
-        }
+        try IERC4626Like(savings).withdraw(assets_, recipient_, address(this))
+            returns (uint256 savingsSharesBurned_)
+        {
+            return savingsSharesBurned_;
+        } catch {}
 
         savingsShares_ = IERC4626Like(savings).withdraw(assets_, address(this), address(this));
 
