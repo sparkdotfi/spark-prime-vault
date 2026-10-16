@@ -47,12 +47,12 @@ contract InitializeTests is TestBase {
 
     function test_initialize_zeroMinDepositCancellation() external {
         vm.expectRevert(SparkPrimeVault.ZeroMinDepositCancellation.selector);
-        _deploy(MINIMUM_DEPOSIT, 0, 0);
+        _deploy(1, 0, 0);
     }
 
     function test_initialize_zeroMinRedeem() external {
         vm.expectRevert(SparkPrimeVault.ZeroMinRedeem.selector);
-        _deploy(MINIMUM_DEPOSIT, MINIMUM_DEPOSIT_CANCELLATION, 0);
+        _deploy(1, 1, 0);
     }
 
     function test_initialize() external {
