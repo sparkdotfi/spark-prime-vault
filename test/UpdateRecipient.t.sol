@@ -103,8 +103,8 @@ contract UpdateRecipientTests is TestBase {
 
     function test_updateDepositCancellationRecipient_invalidRequestIdBoundary() external {
         _setCapacity(0);
-        _requestDeposit(user, 1_000_000e6);                 // Request 0 queued
-        _requestDepositCancellation(user, 0, 1_000_000e6);  // Request 0 cancellation queued
+        _requestDeposit(user, 1_000_000e6);                                         // Request 0 queued
+        _requestDepositCancellation(user, 0, spUSDC.convertToShares(1_000_000e6));  // Request 0 cancellation queued
 
         vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vm.prank(user);
@@ -116,9 +116,9 @@ contract UpdateRecipientTests is TestBase {
 
     function test_updateDepositCancellationRecipient_noRequest() external {
         _setCapacity(0);
-        _requestDeposit(user, 1_000_000e6);                 // Request 0 queued
-        _requestDepositCancellation(user, 0, 1_000_000e6);  // Request 0 cancellation queued
-        _processPendingDepositCancellations(1);             // Request 0 processed
+        _requestDeposit(user, 1_000_000e6);                                         // Request 0 queued
+        _requestDepositCancellation(user, 0, spUSDC.convertToShares(1_000_000e6));  // Request 0 cancellation queued
+        _processPendingDepositCancellations(1);                                     // Request 0 processed
 
         vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vm.prank(user);
@@ -127,8 +127,8 @@ contract UpdateRecipientTests is TestBase {
 
     function test_updateDepositCancellationRecipient_notRequestOwner() external {
         _setCapacity(0);
-        _requestDeposit(user, 1_000_000e6);                 // Request 0 queued
-        _requestDepositCancellation(user, 0, 1_000_000e6);  // Request 0 cancellation queued
+        _requestDeposit(user, 1_000_000e6);                                         // Request 0 queued
+        _requestDepositCancellation(user, 0, spUSDC.convertToShares(1_000_000e6));  // Request 0 cancellation queued
 
         vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
         vm.prank(makeAddr("unauthorized"));
@@ -139,8 +139,8 @@ contract UpdateRecipientTests is TestBase {
         address newRecipient = makeAddr("newRecipient");
 
         _setCapacity(0);
-        _requestDeposit(user, 1_000_000e6);                 // Request 0 queued
-        _requestDepositCancellation(user, 0, 1_000_000e6);  // Request 0 cancellation queued
+        _requestDeposit(user, 1_000_000e6);                                         // Request 0 queued
+        _requestDepositCancellation(user, 0, spUSDC.convertToShares(1_000_000e6));  // Request 0 cancellation queued
 
         _assertDepositCancellationRequest(0, user, user, 1_000_000e6 - 1);
 

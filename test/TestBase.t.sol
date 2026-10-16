@@ -22,6 +22,8 @@ interface IERC20Like {
 
 interface ISparkVaultLike {
 
+    function redeem(uint256 shares, address to, address from) external returns (uint256);
+
     function transfer(address to, uint256 amount) external returns (bool);
 
     function assetsOf(address owner) external view returns (uint256);
@@ -58,6 +60,7 @@ abstract contract TestBase is Test {
         uint256 rho;                     // Last chi update timestamp
         uint256 chi;                     // Rate accumulator [ray]
         uint256 totalAssets;             // USDC value of supply
+        uint256 totalClaimable;          // USDC value of all claimable assets
         uint256 availableCapacityValue;  // USDC value of spPrime shares left to mint
         uint256 availableLiquidAssets;   // USDC the vault can withdraw from spUSDC now (maxWithdraw)
         PendingRequestsState depositRequests;
@@ -164,6 +167,7 @@ abstract contract TestBase is Test {
             rho                         : vm.getBlockTimestamp(),
             chi                         : uint192(RAY),
             totalAssets                 : 0,
+            totalClaimable              : 0,
             availableCapacityValue      : spPrime.convertToAssets(VAULT_CAPACITY),
             availableLiquidAssets       : 0,
             depositRequests             : depositRequests,
@@ -228,18 +232,16 @@ abstract contract TestBase is Test {
         return _requestDeposit(account, account, assets);
     }
 
-    function _requestDepositCancellation(address account, uint256 requestId, address recipient, uint256 assets)
+    function _requestDepositCancellation(address account, uint256 requestId, address recipient, uint256 savingShares)
         internal
         returns (uint256 newRequestId)
     {
-        uint256 savingsShares = spUSDC.convertToShares(assets);
-
         vm.prank(account);
-        return spPrime.requestDepositCancellation(requestId, recipient, savingsShares);
+        return spPrime.requestDepositCancellation(requestId, recipient, savingShares);
     }
 
-    function _requestDepositCancellation(address account, uint256 requestId, uint256 assets) internal returns (uint256 newRequestId) {
-        return _requestDepositCancellation(account, requestId, account, assets);
+    function _requestDepositCancellation(address account, uint256 requestId, uint256 savingShares) internal returns (uint256 newRequestId) {
+        return _requestDepositCancellation(account, requestId, account, savingShares);
     }
 
     function _requestRedeem(address account, address recipient, uint256 shares) internal returns (uint256 requestId) {
@@ -317,6 +319,13 @@ abstract contract TestBase is Test {
             vaultState.totalAssets,
             tolerance,
             "vaultState.totalAssets"
+        );
+
+        assertApproxEqAbs(
+            spPrime.totalClaimable(),
+            vaultState.totalClaimable,
+            tolerance,
+            "vaultState.totalClaimable"
         );
 
         assertApproxEqAbs(
@@ -444,7 +453,8 @@ abstract contract TestBase is Test {
     )
         internal view
     {
-        ( address owner_, address recipient_, uint256 shares_ ) = spPrime.getPendingDepositRequest(requestId);
+        ( address owner_, address recipient_, uint256 shares_ ) =
+            spPrime.getPendingDepositRequest(requestId);
 
         assertEq(
             owner_,
@@ -474,11 +484,8 @@ abstract contract TestBase is Test {
     )
         internal view
     {
-        (
-            address owner_,
-            address recipient_,
-            uint256 shares_
-        ) = spPrime.getPendingDepositCancellationRequest(requestId);
+        ( address owner_, address recipient_, uint256 shares_ ) =
+            spPrime.getPendingDepositCancellationRequest(requestId);
 
         assertEq(
             owner_,
@@ -507,7 +514,8 @@ abstract contract TestBase is Test {
     )
         internal view
     {
-        ( address owner_, address recipient_, uint256 shares_ ) = spPrime.getPendingRedeemRequest(requestId);
+        ( address owner_, address recipient_, uint256 shares_ ) =
+            spPrime.getPendingRedeemRequest(requestId);
 
         assertEq(
             owner_,

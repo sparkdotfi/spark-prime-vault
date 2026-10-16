@@ -425,21 +425,19 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     function rho() external view returns (uint64);
 
     /**
-     * @notice Returns the current rate accumulator (chi).
+     * @notice Returns the current rate accumulator value [ray].
      * @dev    Chi represents the cumulative growth factor for all shares. It starts at 1e27 (RAY) and
      *         increases exponentially over time based on the Vault Savings Rate (VSR). The formula is:
      *         chi = chi_old * (vsr)^(time_delta) / RAY where time_delta is the time since last drip.
      *         User assets = user_shares * nowChi() / RAY
      *         It can also be set directly by adjustTotalAssets().
-     * @return The current rate accumulator value [ray]
      */
     function chi() external view returns (uint192);
 
     /**
-     * @notice Returns the current Vault Savings Rate (VSR).
+     * @notice Returns the current Vault Savings Rate [ray].
      * @dev    The VSR is the rate at which the vault's shares appreciate in value over time.
      *         It's expressed in ray (1e27).
-     * @return The current VSR value [ray]
      */
     function vsr() external view returns (uint256);
 
@@ -949,14 +947,13 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
 
     /**
      * @notice Returns the amount of shares that can still be minted before reaching the maximum
-     *         capacity.
-     * @return The remaining capacity [share units]
+     *         capacity. [share units]
      */
     function availableCapacity() external view returns (uint256);
 
     /**
      * @notice Returns the amount of assets the vault can currently withdraw from the savings vault.
-     * @return The withdrawable assets [asset units]
+     *         [asset units]
      */
     function availableLiquidAssets() external view returns (uint256);
 
@@ -964,33 +961,35 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @notice Returns the value of `shares_`, calculated up to the current block timestamp.
      * @dev    Rounds down.
      * @param  shares_ The amount of shares [share units]
-     * @return The value of the shares [asset units]
+     * @return assets_ The value of the shares [asset units]
      */
-    function convertToAssets(uint256 shares_) external view returns (uint256);
+    function convertToAssets(uint256 shares_) external view returns (uint256 assets_);
 
     /**
      * @notice Returns the amount of shares worth `assets_`, calculated up to the current block
      *         timestamp.
      * @dev    Rounds down.
      * @param  assets_ The amount of assets [asset units]
-     * @return The amount of shares [share units]
+     * @return shares_ The amount of shares [share units]
      */
-    function convertToShares(uint256 assets_) external view returns (uint256);
+    function convertToShares(uint256 assets_) external view returns (uint256 shares_);
 
     /// @notice Returns the address of the current implementation contract.
     function implementation() external view returns (address);
 
     /**
-     * @notice Returns the current rate accumulator (chi) calculated up to the current block timestamp.
-     * @return The current rate accumulator value [ray]
+     * @notice Returns the current rate accumulator calculated up to the current block timestamp.
+     *         [ray]
      */
     function nowChi() external view returns (uint192);
 
     /**
      * @notice Returns the value of the total supply of shares, calculated up to the current block
-     *         timestamp.
-     * @return The total assets [asset units]
+     *         timestamp. [asset units]
      */
     function totalAssets() external view returns (uint256);
+
+    /// @notice Returns the total claimable assets in the vault.
+    function totalClaimable() external view returns (uint256);
 
 }
