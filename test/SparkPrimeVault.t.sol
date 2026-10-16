@@ -30,19 +30,19 @@ contract RequestDepositTests is SparkPrimeVaultTests {
     function test_requestDeposit_paused() external {
         _pause();
 
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(SparkPrimeVault.IsPaused.selector);
         vm.prank(user);
         spPrime.requestDeposit(100e6, user, 0);
     }
 
     function test_requestDeposit_zeroRecipient() external {
-        vm.expectRevert("SparkPrimeVault/zero-recipient");
+        vm.expectRevert(SparkPrimeVault.ZeroRecipient.selector);
         vm.prank(user);
         spPrime.requestDeposit(100e6, address(0), 0);
     }
 
     function test_requestDeposit_vaultRecipient() external {
-        vm.expectRevert("SparkPrimeVault/vault-recipient");
+        vm.expectRevert(SparkPrimeVault.VaultIsRecipient.selector);
         vm.prank(user);
         spPrime.requestDeposit(100e6, address(spPrime), 0);
     }
@@ -53,7 +53,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         vm.prank(user);
         usdc.approve(address(spPrime), MINIMUM_DEPOSIT);
 
-        vm.expectRevert("SparkPrimeVault/below-minimum");
+        vm.expectRevert(SparkPrimeVault.BelowMinDeposit.selector);
         vm.prank(user);
         spPrime.requestDeposit(MINIMUM_DEPOSIT - 1, user, 0);
 
@@ -416,7 +416,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _assertAccountBalances(vaultBalances);
 
         for (uint256 i = 0; i < 9; i++) {
-            vm.expectRevert("SparkPrimeVault/invalid-request-id");
+            vm.expectRevert(SparkPrimeVault.InvalidRequestId.selector);
             _assertDepositRequest(i, address(0), address(0), 0);
         }
 
@@ -463,7 +463,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _assertAccountBalances(vaultBalances);
 
         for (uint256 i = 0; i < 6; i++) {
-            vm.expectRevert("SparkPrimeVault/invalid-request-id");
+            vm.expectRevert(SparkPrimeVault.InvalidRequestId.selector);
             _assertDepositRequest(i, address(0), address(0), 0);
         }
 
@@ -521,7 +521,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _assertAccountBalances(vaultBalances);
 
         for (uint256 i = 0; i < 6; i++) {
-            vm.expectRevert("SparkPrimeVault/invalid-request-id");
+            vm.expectRevert(SparkPrimeVault.InvalidRequestId.selector);
             _assertDepositRequest(i, address(0), address(0), 0);
         }
 
