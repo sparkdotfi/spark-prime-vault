@@ -197,6 +197,16 @@ abstract contract TestBase is Test {
         spPrime.setCapacity(capacity);
     }
 
+    function _setMaxRedeemFeeRate(uint256 maxRedeemFeeRate) internal {
+        vm.prank(admin);
+        spPrime.setMaxRedeemFeeRate(maxRedeemFeeRate);
+    }
+
+    function _setRedeemFeeRate(uint256 feeRate) internal {
+        vm.prank(redeemFeeSetter);
+        spPrime.setRedeemFeeRate(feeRate);
+    }
+
     function _requestDeposit(address account, address recipient, uint256 assets) internal returns (uint256 requestId) {
         deal(address(usdc), account, assets);
 
@@ -355,7 +365,7 @@ abstract contract TestBase is Test {
         // Redeem Requests
 
         assertApproxEqAbs(
-            spUSDC.convertToAssets(spPrime.pendingRedeemShares()),
+            spPrime.convertToAssets(spPrime.pendingRedeemShares()),
             vaultState.redeemRequests.pendingShareValue,
             tolerance,
             "vaultState.redeemRequests.pendingShareValue"
