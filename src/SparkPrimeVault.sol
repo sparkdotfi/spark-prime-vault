@@ -91,11 +91,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     error MaxVSRTooHigh();
 
-    error MinDepositTooLow();
+    error ZeroMinDeposit();
 
-    error MinDepositCancellationTooLow();
+    error ZeroMinDepositCancellation();
 
-    error MinRedeemTooLow();
+    error ZeroMinRedeem();
 
     error MinVSRGtMaxVSR();
 
@@ -326,9 +326,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     )
         initializer external
     {
-        require(minDeposit_ > 0,             MinDepositTooLow());
-        require(minDepositCancellation_ > 0, MinDepositCancellationTooLow());
-        require(minRedeem_ > 0,              MinRedeemTooLow());
+        require(minDeposit_             != 0, ZeroMinDeposit());
+        require(minDepositCancellation_ != 0, ZeroMinDepositCancellation());
+        require(minRedeem_              != 0, ZeroMinRedeem());
 
         address asset_ = IERC4626Like(savings_).asset();
 
@@ -390,7 +390,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     function setMinDeposit(uint256 minDeposit_) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(minDeposit_ > 0, MinDepositTooLow());
+        require(minDeposit_ != 0, ZeroMinDeposit());
 
         emit MinDepositSet(minDeposit = minDeposit_);
     }
@@ -399,13 +399,13 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         external
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
-        require(minDepositCancellation_ > 0, MinDepositCancellationTooLow());
+        require(minDepositCancellation_ != 0, ZeroMinDepositCancellation());
 
         emit MinDepositCancellationSet(minDepositCancellation = minDepositCancellation_);
     }
 
     function setMinRedeem(uint256 minRedeem_) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(minRedeem_ > 0, MinRedeemTooLow());
+        require(minRedeem_ != 0, ZeroMinRedeem());
 
         emit MinRedeemSet(minRedeem = minRedeem_);
     }

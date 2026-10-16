@@ -439,13 +439,10 @@ contract RoleBasedTests is TestBase {
         spPrime.setMinDeposit(100e6);
     }
 
-    function test_setMinDeposit_minDepositTooLowBoundary() external {
-        vm.expectRevert(SparkPrimeVault.MinDepositTooLow.selector);
+    function test_setMinDeposit_zeroMinDeposit() external {
+        vm.expectRevert(SparkPrimeVault.ZeroMinDeposit.selector);
         vm.prank(admin);
         spPrime.setMinDeposit(0);
-
-        vm.prank(admin);
-        spPrime.setMinDeposit(1);
     }
 
     function test_setMinDeposit() external {
@@ -478,13 +475,10 @@ contract RoleBasedTests is TestBase {
         spPrime.setMinDepositCancellation(100e6);
     }
 
-    function test_setMinDepositCancellation_minDepositCancellationTooLowBoundary() external {
-        vm.expectRevert(SparkPrimeVault.MinDepositCancellationTooLow.selector);
+    function test_setMinDepositCancellation_zeroMinDepositCancellation() external {
+        vm.expectRevert(SparkPrimeVault.ZeroMinDepositCancellation.selector);
         vm.prank(admin);
         spPrime.setMinDepositCancellation(0);
-
-        vm.prank(admin);
-        spPrime.setMinDepositCancellation(1);
     }
 
     function test_setMinDepositCancellation() external {
@@ -517,13 +511,10 @@ contract RoleBasedTests is TestBase {
         spPrime.setMinRedeem(100e6);
     }
 
-    function test_setMinRedeem_minRedeemTooLowBoundary() external {
-        vm.expectRevert(SparkPrimeVault.MinRedeemTooLow.selector);
+    function test_setMinRedeem_zeroMinRedeem() external {
+        vm.expectRevert(SparkPrimeVault.ZeroMinRedeem.selector);
         vm.prank(admin);
         spPrime.setMinRedeem(0);
-
-        vm.prank(admin);
-        spPrime.setMinRedeem(1);
     }
 
     function test_setMinRedeem() external {
