@@ -243,8 +243,8 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
 contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
 
-    address internal ali   = makeAddr("ali");
-    address internal bob     = makeAddr("bob");
+    address internal ali = makeAddr("ali");
+    address internal bob = makeAddr("bob");
     address internal cam = makeAddr("cam");
 
     AccountBalances internal aliBalances;
@@ -255,8 +255,8 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
     function setUp() public override {
         super.setUp();
 
-        vm.label(ali,   "ali");
-        vm.label(bob,     "bob");
+        vm.label(ali, "ali");
+        vm.label(bob, "bob");
         vm.label(cam, "cam");
 
         _setCapacity(0);
