@@ -9,7 +9,7 @@ contract SparkPrimeVaultTests is TestBase {
 
     address internal user = makeAddr("user");
 
-    function setUp() public override {
+    function setUp() public override virtual {
         super.setUp();
 
         vm.label(address(user), "user");
@@ -571,13 +571,12 @@ contract UpdateDepositRecipientTests is SparkPrimeVaultTests {
     // Success tests
 
     function test_updateDepositRecipient() external {
-        address newRecipient          = makeAddr("newRecipient");
-        uint256 expectedSavingsShares = spUSDC.convertToShares(1_000_000e6);
+        address newRecipient = makeAddr("newRecipient");
 
         _setCapacity(0);
         _requestDeposit(user, 1_000_000e6); // Request 0 queued
 
-        _assertDepositRequest(0, user, user, expectedSavingsShares);
+        _assertDepositRequest(0, user, user, 1_000_000e6 - 1);
 
         vm.expectEmit(address(spPrime));
         emit SparkPrimeVault.DepositRecipientUpdated(0, newRecipient);
@@ -585,7 +584,7 @@ contract UpdateDepositRecipientTests is SparkPrimeVaultTests {
         vm.prank(user);
         spPrime.updateDepositRecipient(0, newRecipient);
 
-        _assertDepositRequest(0, user, newRecipient, expectedSavingsShares);
+        _assertDepositRequest(0, user, newRecipient, 1_000_000e6 - 1);
     }
 
 }
@@ -638,14 +637,13 @@ contract UpdateDepositCancellationRecipientTests is SparkPrimeVaultTests {
     // Success tests
 
     function test_updateDepositCancellationRecipient() external {
-        address newRecipient          = makeAddr("newRecipient");
-        uint256 expectedSavingsShares = spUSDC.convertToShares(1_000_000e6);
+        address newRecipient = makeAddr("newRecipient");
 
         _setCapacity(0);
         _requestDeposit(user, 1_000_000e6);   // Request 0 queued
         _requestDepositCancellation(user, 0); // Request 0 cancellation queued
 
-        _assertDepositCancellationRequest(0, user, user, expectedSavingsShares);
+        _assertDepositCancellationRequest(0, user, user, 1_000_000e6 - 1);
 
         vm.expectEmit(address(spPrime));
         emit SparkPrimeVault.DepositCancellationRecipientUpdated(0, newRecipient);
@@ -653,7 +651,7 @@ contract UpdateDepositCancellationRecipientTests is SparkPrimeVaultTests {
         vm.prank(user);
         spPrime.updateDepositCancellationRecipient(0, newRecipient);
 
-        _assertDepositCancellationRequest(0, user, newRecipient, expectedSavingsShares);
+        _assertDepositCancellationRequest(0, user, newRecipient, 1_000_000e6 - 1);
     }
 
 }
@@ -707,10 +705,10 @@ contract UpdateRedeemRecipientTests is SparkPrimeVaultTests {
     function test_updateRedeemRecipient() external {
         address newRecipient = makeAddr("newRecipient");
 
-        _requestDeposit(user, 1_000_000e6); // Request 0 deposit queued
-        _requestRedeem(user,  100e6);       // Request 0 redeem queued
+        _requestDeposit(user, 1_000_000e6);                    // Request 0 deposit queued
+        _requestRedeem(user,  spPrime.convertToShares(1_000_000e6)); // Request 0 redeem queued
         
-        _assertRedeemRequest(0, user, user, 100e6);
+        _assertRedeemRequest(0, user, user, 1_000_000e6 - 2);
 
         vm.expectEmit(address(spPrime));
         emit SparkPrimeVault.RedeemRecipientUpdated(0, newRecipient);
@@ -718,7 +716,7 @@ contract UpdateRedeemRecipientTests is SparkPrimeVaultTests {
         vm.prank(user);
         spPrime.updateRedeemRecipient(0, newRecipient);
 
-        _assertRedeemRequest(0, user, newRecipient, 100e6);
+        _assertRedeemRequest(0, user, newRecipient, 1_000_000e6 - 2);
     }
 
 }
