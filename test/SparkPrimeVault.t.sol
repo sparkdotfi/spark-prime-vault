@@ -12,7 +12,7 @@ abstract contract SparkPrimeVaultTests is TestBase {
     function setUp() public override virtual {
         super.setUp();
 
-        vm.label(address(user), "user");
+        vm.label(user, "user");
 
         skip(365 days);
     }
@@ -241,22 +241,22 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
 
     // Failure tests
 
-    function test_requestRedeem_paused() external {
+    function test_requestRedeem_isPaused() external {
         _pause();
 
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(SparkPrimeVault.IsPaused.selector);
         vm.prank(user);
         spPrime.requestRedeem(100e6, user);
     }
 
     function test_requestRedeem_zeroRecipient() external {
-        vm.expectRevert("SparkPrimeVault/zero-recipient");
+        vm.expectRevert(SparkPrimeVault.ZeroRecipient.selector);
         vm.prank(user);
         spPrime.requestRedeem(100e6, address(0));
     }
 
-    function test_requestRedeem_vaultRecipient() external {
-        vm.expectRevert("SparkPrimeVault/vault-recipient");
+    function test_requestRedeem_vaultIsRecipient() external {
+        vm.expectRevert(SparkPrimeVault.VaultIsRecipient.selector);
         vm.prank(user);
         spPrime.requestRedeem(100e6, address(spPrime));
     }
@@ -264,15 +264,15 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
     function test_requestRedeem_recipientCannotReceive() external {
         _blacklist(user);
 
-        vm.expectRevert("SparkPrimeVault/recipient-cannot-receive");
+        vm.expectRevert(SparkPrimeVault.RecipientCannotReceive.selector);
         vm.prank(user);
         spPrime.requestRedeem(100e6, user);
     }
 
-    function test_requestRedeem_belowMinimumBoundary() external {
+    function test_requestRedeem_belowMinimumRedeemBoundary() external {
         _requestDeposit(user, 1_000e6);
 
-        vm.expectRevert("SparkPrimeVault/below-minimum");
+        vm.expectRevert(SparkPrimeVault.BelowMinRedeem.selector);
         vm.prank(user);
         spPrime.requestRedeem(MINIMUM_REDEEM - 1, user);
 
