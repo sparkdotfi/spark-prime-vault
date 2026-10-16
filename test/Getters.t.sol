@@ -95,7 +95,7 @@ contract GetPendingDepositRequestTests is GettersTestBase {
     function test_getPendingDepositRequest_cancelled() external {
         _requestDeposit(owner1, recipient1, 1_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, 1_000e6);
+        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
 
         _assertDepositRequest(0, address(0), address(0), 0);
     }
@@ -174,7 +174,7 @@ contract GetPendingDepositRequestTests is GettersTestBase {
         _requestDeposit(owner2, recipient2, 2_000e6);
         _requestDeposit(owner3, recipient3, 3_000e6);
 
-        _requestDepositCancellation(owner2, 1, recipient2, 2_000e6);
+        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
 
         SparkPrimeVault.Request[] memory requests = spPrime.getPendingDepositRequests();
 
@@ -261,7 +261,7 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
 
     function test_getPendingDepositCancellationRequest_idOutOfBoundsBoundary() external {
         _requestDeposit(owner1, recipient1, 1_000e6);
-        _requestDepositCancellation(owner1, 0, recipient1, 1_000e6);
+        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
 
         vm.expectRevert(SparkPrimeVault.InvalidRequestId.selector);
         spPrime.getPendingDepositCancellationRequest(1);
@@ -273,8 +273,8 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, 1_000e6);
-        _requestDepositCancellation(owner2, 1, recipient2, 2_000e6);
+        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
 
         _setCapacity(VAULT_CAPACITY);
         _processPendingDepositCancellations(type(uint256).max, 1);
@@ -291,8 +291,8 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, 1_000e6);
-        _requestDepositCancellation(owner2, 1, recipient2, 2_000e6);
+        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
 
         _assertPendingDepositCancellationRequest(0, owner1, recipient1, 1_000e6 - 1);
         _assertPendingDepositCancellationRequest(1, owner2, recipient2, 2_000e6 - 1);
@@ -302,8 +302,8 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, 1_000e6);
-        _requestDepositCancellation(owner2, 1, recipient2, 2_000e6);
+        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
 
         _setCapacity(VAULT_CAPACITY);
         _processPendingDepositCancellations(
@@ -329,9 +329,9 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDeposit(owner2, recipient2, 2_000e6);
         _requestDeposit(owner3, recipient3, 3_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, 1_000e6);
-        _requestDepositCancellation(owner2, 1, recipient2, 2_000e6);
-        _requestDepositCancellation(owner3, 2, recipient3, 3_000e6);
+        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
+        _requestDepositCancellation(owner3, 2, recipient3, spUSDC.convertToShares(3_000e6));
 
         SparkPrimeVault.Request[] memory requests = spPrime.getPendingDepositCancellationRequests();
 
@@ -347,9 +347,9 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDeposit(owner2, recipient2, 2_000e6);
         _requestDeposit(owner3, recipient3, 3_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, 1_000e6);
-        _requestDepositCancellation(owner2, 1, recipient2, 2_000e6);
-        _requestDepositCancellation(owner3, 2, recipient3, 3_000e6);
+        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
+        _requestDepositCancellation(owner3, 2, recipient3, spUSDC.convertToShares(3_000e6));
 
         _setCapacity(VAULT_CAPACITY);
         _processPendingDepositCancellations(type(uint256).max, 2);
@@ -367,8 +367,8 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, 1_000e6);
-        _requestDepositCancellation(owner2, 1, recipient2, 2_000e6);
+        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
 
         _setCapacity(VAULT_CAPACITY);
         _processPendingDepositCancellations(type(uint256).max, 2);
@@ -382,8 +382,8 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, 1_000e6);
-        _requestDepositCancellation(owner2, 1, recipient2, 2_000e6);
+        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
 
         _setCapacity(VAULT_CAPACITY);
         _processPendingDepositCancellations(spUSDC.convertToShares(1_000e6) / 4, 1);
@@ -409,8 +409,8 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, 1_000e6);
-        _requestDepositCancellation(owner2, 1, recipient2, 2_000e6);
+        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
 
         assertEq(spPrime.firstPendingDepositCancellationId(), 0);
 
@@ -429,8 +429,8 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, 1_000e6);
-        _requestDepositCancellation(owner2, 1, recipient2, 2_000e6);
+        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
 
         vm.expectRevert(SparkPrimeVault.LengthTooLarge.selector);
         spPrime.getPendingDepositCancellationRequests(0, 3);
@@ -448,9 +448,9 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDeposit(owner2, recipient2, 2_000e6);
         _requestDeposit(owner3, recipient3, 3_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, 1_000e6);
-        _requestDepositCancellation(owner2, 1, recipient2, 2_000e6);
-        _requestDepositCancellation(owner3, 2, recipient3, 3_000e6);
+        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
+        _requestDepositCancellation(owner3, 2, recipient3, spUSDC.convertToShares(3_000e6));
 
         SparkPrimeVault.Request[] memory requests
             = spPrime.getPendingDepositCancellationRequests(0, 3);
