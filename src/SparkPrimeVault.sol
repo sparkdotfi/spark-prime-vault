@@ -441,8 +441,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /**********************************************************************************************/
 
     function updateDepositRecipient(uint256 requestId_, address recipient_) external override {
-        require(recipient_ != address(0),    ZeroRecipient());
-        require(recipient_ != address(this), VaultIsRecipient());
+        require(recipient_ != address(0),             ZeroRecipient());
+        require(recipient_ != address(this),          VaultIsRecipient());
+        require(requestId_ < _depositRequests.length, InvalidRequestId());
 
         Request storage request_ = _depositRequests[requestId_];
 
@@ -456,9 +457,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         external
         override
     {
-        require(recipient_ != address(0),     ZeroRecipient());
-        require(recipient_ != address(this),  VaultIsRecipient());
-        require(_canReceiveAsset(recipient_), RecipientCannotReceive());
+        require(recipient_ != address(0),                         ZeroRecipient());
+        require(recipient_ != address(this),                      VaultIsRecipient());
+        require(_canReceiveAsset(recipient_),                     RecipientCannotReceive());
+        require(requestId_ < _depositCancellationRequests.length, InvalidRequestId());
 
         Request storage request_ = _depositCancellationRequests[requestId_];
 
@@ -472,9 +474,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     }
 
     function updateRedeemRecipient(uint256 requestId_, address recipient_) external override {
-        require(recipient_ != address(0),     ZeroRecipient());
-        require(recipient_ != address(this),  VaultIsRecipient());
-        require(_canReceiveAsset(recipient_), RecipientCannotReceive());
+        require(recipient_ != address(0),            ZeroRecipient());
+        require(recipient_ != address(this),         VaultIsRecipient());
+        require(_canReceiveAsset(recipient_),        RecipientCannotReceive());
+        require(requestId_ < _redeemRequests.length, InvalidRequestId());
 
         Request storage request_ = _redeemRequests[requestId_];
 
