@@ -270,7 +270,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
     }
 
     function test_requestRedeem_belowMinimumBoundary() external {
-        _requestDeposit(user, 1_000e6); // Deposit Request 0 (Filled instantly)
+        _requestDeposit(user, 1_000e6);
 
         vm.expectRevert("SparkPrimeVault/below-minimum");
         vm.prank(user);
@@ -281,7 +281,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
     }
 
     function test_requestRedeem_insufficientBalanceBoundary() external {
-        _requestDeposit(user, 1_000e6); // Deposit Request 0 (Filled instantly)
+        _requestDeposit(user, 1_000e6);
 
         uint256 spPrimeShares = spPrime.balanceOf(user);
 
@@ -303,7 +303,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
         vaultState.rho                    = vm.getBlockTimestamp();
         vaultState.chi                    = 1.049999999999999999961070145e27;
         vaultState.totalAssets            = 1_000_000e6 - 2;
-        vaultState.availableCapacityValue = spPrime.convertToAssets(VAULT_CAPACITY - spPrime.convertToShares(1_000_000e6));
+        vaultState.availableCapacityValue = 104_000_000e6;  // (VAULT_CAPACITY - 952_380.952380e6 shares) * chi
         vaultState.availableLiquidAssets  = 1_000_000e6 - 1;
 
         vaultState.depositRequests.firstPendingId = 1;
@@ -337,19 +337,15 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
 
         assertEq(requestId, 0);
 
-        uint256 expectedShareValue = (500_000e6 * spPrime.nowChi()) / RAY;
-
-        assertEq(expectedShareValue, 524_999.999999e6); // 5% APY
-
-        vaultState.redeemRequests.pendingShareValue = expectedShareValue;
+        vaultState.redeemRequests.pendingShareValue = 525_000e6 - 1;
         vaultState.redeemRequests.length            = 1;
         vaultState.redeemRequests.firstPendingId    = 0;
 
-        userBalances.shareValue -= expectedShareValue + 1;
+        userBalances.shareValue -= 525_000e6;
 
-        vaultBalances.shareValue += expectedShareValue;
+        vaultBalances.shareValue += 525_000e6 - 1;
 
-        _assertRedeemRequest(0, user, user, expectedShareValue);
+        _assertRedeemRequest(0, user, user, 525_000e6 - 1);
 
         _assertVaultState();
         _assertAccountBalances(userBalances);
@@ -357,14 +353,15 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
     }
 
     function test_requestRedeem_withFee() external {
-        _setRedeemFeeRate(0.005e18);  // 0.5%
+        _setMaxRedeemFeeRate(0.01e18); // 1%
+        _setRedeemFeeRate(0.005e18);   // 0.5%
 
         _requestDeposit(user, 1_000_000e6); // Deposit Request 0 (Filled instantly)
 
         vaultState.rho                    = vm.getBlockTimestamp();
         vaultState.chi                    = 1.049999999999999999961070145e27;
         vaultState.totalAssets            = 1_000_000e6 - 2;
-        vaultState.availableCapacityValue = spPrime.convertToAssets(VAULT_CAPACITY - spPrime.convertToShares(1_000_000e6));
+        vaultState.availableCapacityValue = 104_000_000e6;  // (VAULT_CAPACITY - 952_380.952380e6 shares) * chi
         vaultState.availableLiquidAssets  = 1_000_000e6 - 1;
 
         vaultState.depositRequests.firstPendingId = 1;
@@ -393,34 +390,27 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
         // Assets held (spUSDC value) match assets owed to spPrime holders, within rounding
         assertEq(spPrime.availableLiquidAssets() - spPrime.totalAssets(), 1);
 
-        uint256 expectedFee = 2_500e6;  // 500_000e6 * 0.5%
-
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.RedeemRequest(0, user, user, 500_000e6, expectedFee);
+        emit SparkPrimeVault.RedeemRequest(0, user, user, 500_000e6, 2_500e6);
 
         vm.prank(user);
         uint256 requestId = spPrime.requestRedeem(500_000e6, user);
 
         assertEq(requestId, 0);
 
-        uint256 expectedShareValue         = 500_000e6 * spPrime.nowChi() / RAY;
-        uint256 expectedShareValueAfterFee = (500_000e6 - expectedFee) * spPrime.nowChi() / RAY;
-
-        assertEq(expectedShareValue, 524_999.999999e6); // 5% APY
-
         // Fee shares are burned, so supply and assets drop and capacity frees up
         vaultState.totalAssets             = 1_000_000e6 - 2_625e6 - 2;  // 2_500e6 fee shares * 1.05 chi
-        vaultState.availableCapacityValue += spPrime.convertToAssets(expectedFee) + 1;
+        vaultState.availableCapacityValue += 2_625e6;
 
-        vaultState.redeemRequests.pendingShareValue = expectedShareValueAfterFee;
+        vaultState.redeemRequests.pendingShareValue = 525_000e6 - 2_625e6 - 1;
         vaultState.redeemRequests.length            = 1;
         vaultState.redeemRequests.firstPendingId    = 0;
 
-        userBalances.shareValue -= expectedShareValue + 1;
+        userBalances.shareValue -= 525_000e6;
 
-        vaultBalances.shareValue += expectedShareValueAfterFee;
+        vaultBalances.shareValue += 525_000e6 - 2_625e6 - 1;
 
-        _assertRedeemRequest(0, user, user, expectedShareValueAfterFee);
+        _assertRedeemRequest(0, user, user, 525_000e6 - 2_625e6 - 1);
 
         _assertVaultState();
         _assertAccountBalances(userBalances);
