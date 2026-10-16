@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+pragma solidity ^0.8.34;
+
+import { ERC1967Proxy, TestBase, SparkPrimeVault } from "./TestBase.t.sol";
+
+contract InitializeTests is TestBase {
+
+    SparkPrimeVault internal implementation;
+
+    function setUp() public override virtual {
+        super.setUp();
+
+        implementation = new SparkPrimeVault();
+    }
+
+    function _deploy(uint256 minDeposit, uint256 minDepositCancellation, uint256 minRedeem)
+        internal
+        returns (SparkPrimeVault)
+    {
+        return SparkPrimeVault(
+            address(new ERC1967Proxy(
+                address(implementation),
+                abi.encodeCall(
+                    SparkPrimeVault.initialize,
+                    (
+                        address(spUSDC),
+                        "Spark Prime USDC",
+                        "spPrime",
+                        admin,
+                        minDeposit,
+                        minDepositCancellation,
+                        minRedeem
+                    )
+                )
+            ))
+        );
+    }
+
+    /**********************************************************************************************/
+    /*** initialize                                                                             ***/
+    /**********************************************************************************************/
+
+    function test_initialize_minDepositTooLow() external {
+        vm.expectRevert(SparkPrimeVault.MinDepositTooLow.selector);
+        _deploy(0, 0, 0);
+    }
+
+    function test_initialize_minDepositCancellationTooLow() external {
+        vm.expectRevert(SparkPrimeVault.MinDepositCancellationTooLow.selector);
+        _deploy(MINIMUM_DEPOSIT, 0, 0);
+    }
+
+    function test_initialize_minRedeemTooLow() external {
+        vm.expectRevert(SparkPrimeVault.MinRedeemTooLow.selector);
+        _deploy(MINIMUM_DEPOSIT, MINIMUM_DEPOSIT_CANCELLATION, 0);
+    }
+
+    function test_initialize() external {
+        SparkPrimeVault vault = _deploy(MINIMUM_DEPOSIT, MINIMUM_DEPOSIT_CANCELLATION, MINIMUM_REDEEM);
+
+        assertEq(vault.savings(),  address(spUSDC));
+        assertEq(vault.asset(),    address(usdc));
+        assertEq(vault.name(),     "Spark Prime USDC");
+        assertEq(vault.symbol(),   "spPrime");
+        assertEq(vault.decimals(), 6);
+
+        assertTrue(vault.hasRole(DEFAULT_ADMIN_ROLE, admin));
+
+        assertEq(vault.chi(),    RAY);
+        assertEq(vault.rho(),    block.timestamp);
+        assertEq(vault.vsr(),    RAY);
+        assertEq(vault.minVSR(), RAY);
+        assertEq(vault.maxVSR(), RAY);
+
+        assertEq(vault.minDeposit(),             MINIMUM_DEPOSIT);
+        assertEq(vault.minDepositCancellation(), MINIMUM_DEPOSIT_CANCELLATION);
+        assertEq(vault.minRedeem(),              MINIMUM_REDEEM);
+
+        assertEq(usdc.allowance(address(vault), address(spUSDC)), type(uint256).max);
+    }
+
+}

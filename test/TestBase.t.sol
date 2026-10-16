@@ -112,7 +112,15 @@ abstract contract TestBase is Test {
                 address(new SparkPrimeVault()),
                 abi.encodeCall(
                     SparkPrimeVault.initialize,
-                    (address(spUSDC), "Spark Prime USDC", "spPrime", admin)
+                    (
+                        address(spUSDC),
+                        "Spark Prime USDC",
+                        "spPrime",
+                        admin,
+                        MINIMUM_DEPOSIT,
+                        MINIMUM_DEPOSIT_CANCELLATION,
+                        MINIMUM_REDEEM
+                    )
                 )
             ))
         );
@@ -126,9 +134,6 @@ abstract contract TestBase is Test {
         spPrime.grantRole(VSR_SETTER_ROLE,        vsrSetter);
 
         spPrime.setCapacity(VAULT_CAPACITY);
-        spPrime.setMinDeposit(MINIMUM_DEPOSIT);
-        spPrime.setMinDepositCancellation(MINIMUM_DEPOSIT_CANCELLATION);
-        spPrime.setMinRedeem(MINIMUM_REDEEM);
         spPrime.setVSRBounds(RAY, spPrime.MAX_VSR());
 
         vm.stopPrank();
