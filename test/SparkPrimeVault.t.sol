@@ -248,7 +248,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
         vm.prank(user);
         spPrime.requestRedeem(100e6, user);
     }
-    
+
     function test_requestRedeem_zeroRecipient() external {
         vm.expectRevert("SparkPrimeVault/zero-recipient");
         vm.prank(user);
@@ -260,7 +260,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
         vm.prank(user);
         spPrime.requestRedeem(100e6, address(spPrime));
     }
-    
+
     function test_requestRedeem_recipientCannotReceive() external {
         _blacklist(user);
 
@@ -303,7 +303,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
         vaultState.rho                    = vm.getBlockTimestamp();
         vaultState.chi                    = 1.049999999999999999961070145e27;
         vaultState.totalAssets            = 1_000_000e6 - 2;
-        vaultState.availableCapacityValue = 104_000_000e6;  // (VAULT_CAPACITY - 952_380.952380e6 shares) * chi
+        vaultState.availableCapacityValue = 104_000_000e6;  // Vault capacity value was 105m because of 5% change in chi prior to the first deposit
         vaultState.availableLiquidAssets  = 1_000_000e6 - 1;
 
         vaultState.depositRequests.firstPendingId = 1;
@@ -337,7 +337,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
 
         assertEq(requestId, 0);
 
-        vaultState.redeemRequests.pendingShareValue = 525_000e6 - 1;
+        vaultState.redeemRequests.pendingShareValue = 525_000e6 - 1; // 500k spPrime == 525k USD because of current exchange rate
         vaultState.redeemRequests.length            = 1;
         vaultState.redeemRequests.firstPendingId    = 0;
 
@@ -361,7 +361,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
         vaultState.rho                    = vm.getBlockTimestamp();
         vaultState.chi                    = 1.049999999999999999961070145e27;
         vaultState.totalAssets            = 1_000_000e6 - 2;
-        vaultState.availableCapacityValue = 104_000_000e6;  // (VAULT_CAPACITY - 952_380.952380e6 shares) * chi
+        vaultState.availableCapacityValue = 104_000_000e6;  // Vault capacity value was 105m because of 5% change in chi prior to the first deposit
         vaultState.availableLiquidAssets  = 1_000_000e6 - 1;
 
         vaultState.depositRequests.firstPendingId = 1;
@@ -399,7 +399,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
         assertEq(requestId, 0);
 
         // Fee shares are burned, so supply and assets drop and capacity frees up
-        vaultState.totalAssets             = 1_000_000e6 - 2_625e6 - 2;  // 2_500e6 fee shares * 1.05 chi
+        vaultState.totalAssets            -= 2_625e6;  // 2_500e6 fee shares * 1.05 chi
         vaultState.availableCapacityValue += 2_625e6;
 
         vaultState.redeemRequests.pendingShareValue = 525_000e6 - 2_625e6 - 1;
