@@ -72,11 +72,12 @@ abstract contract TestBase is Test {
         uint256 claimableAssets;    // USDC claimable
     }
 
-    uint256 internal constant MINIMUM_DEPOSIT = 100e6;
-    uint256 internal constant MINIMUM_REDEEM  = 100e6;
-    uint256 internal constant VAULT_CAPACITY  = 100_000_000e6;
-    uint256 internal constant RAY             = 1e27;
-    uint256 internal constant MAX_VSR         = 1.000000021979553151239153027e27;  // 100% APY
+    uint256 internal constant MINIMUM_DEPOSIT              = 100e6;
+    uint256 internal constant MINIMUM_DEPOSIT_CANCELLATION = 100e6;
+    uint256 internal constant MINIMUM_REDEEM               = 100e6;
+    uint256 internal constant VAULT_CAPACITY               = 100_000_000e6;
+    uint256 internal constant RAY                          = 1e27;
+    uint256 internal constant MAX_VSR                      = 1.000000021979553151239153027e27;  // 100% APY
 
     uint256 internal constant ONE_PCT_VSR  = 1.000000000315522921573372069e27;
     uint256 internal constant FOUR_PCT_VSR = 1.000000001243680656318820312e27;
@@ -126,6 +127,7 @@ abstract contract TestBase is Test {
 
         spPrime.setCapacity(VAULT_CAPACITY);
         spPrime.setMinDeposit(MINIMUM_DEPOSIT);
+        spPrime.setMinDepositCancellation(MINIMUM_DEPOSIT_CANCELLATION);
         spPrime.setMinRedeem(MINIMUM_REDEEM);
         spPrime.setVSRBounds(RAY, spPrime.MAX_VSR());
 
@@ -219,13 +221,13 @@ abstract contract TestBase is Test {
         return _requestDeposit(account, account, assets);
     }
 
-    function _requestDepositCancellation(address account, uint256 requestId, address recipient) internal returns (uint256 newRequestId) {
+    function _requestDepositCancellation(address account, uint256 requestId, address recipient, uint256 shares) internal returns (uint256 newRequestId) {
         vm.prank(account);
-        return spPrime.requestDepositCancellation(requestId, recipient);
+        return spPrime.requestDepositCancellation(requestId, recipient, shares);
     }
 
-    function _requestDepositCancellation(address account, uint256 requestId) internal returns (uint256 newRequestId) {
-        return _requestDepositCancellation(account, requestId, account);
+    function _requestDepositCancellation(address account, uint256 requestId, uint256 shares) internal returns (uint256 newRequestId) {
+        return _requestDepositCancellation(account, requestId, account, shares);
     }
 
     function _requestRedeem(address account, address recipient, uint256 shares) internal returns (uint256 requestId) {

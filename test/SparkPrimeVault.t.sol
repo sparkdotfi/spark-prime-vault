@@ -272,11 +272,20 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _requestDeposit(cam, 900_000e6);    // Will be cancelled
         _requestDeposit(ali, 1_000_000e6);  // Will be partially filled
 
-        _requestDepositCancellation(ali, 0);
-        _requestDepositCancellation(bob, 1);
-        _requestDepositCancellation(cam, 2);
-        _requestDepositCancellation(cam, 5);
-        _requestDepositCancellation(cam, 8);
+        ( , , uint256 shares0) = spPrime.getPendingDepositRequest(0);
+        _requestDepositCancellation(ali, 0, shares0);
+
+        ( , , uint256 shares1) = spPrime.getPendingDepositRequest(1);
+        _requestDepositCancellation(bob, 1, shares1);
+
+        ( , , uint256 shares2) = spPrime.getPendingDepositRequest(2);
+        _requestDepositCancellation(cam, 2, shares2);
+
+        ( , , uint256 shares5) = spPrime.getPendingDepositRequest(5);
+        _requestDepositCancellation(cam, 5, shares5);
+
+        ( , , uint256 shares8) = spPrime.getPendingDepositRequest(8);
+        _requestDepositCancellation(cam, 8, shares8);
 
         uint256 depositedAssets  = 5_500_000e6 - 5;  // All transfers in (net of rounding)
 
