@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
-import { TestBase, SparkPrimeVault } from "./TestBase.t.sol";
+import { TestBase } from "./TestBase.t.sol";
+
+import { ISparkPrimeVault } from "../src/ISparkPrimeVault.sol";
 
 contract UpdateRecipientTests is TestBase {
 
@@ -18,13 +20,13 @@ contract UpdateRecipientTests is TestBase {
     /**********************************************************************************************/
 
     function test_updateDepositRecipient_zeroRecipient() external {
-        vm.expectRevert(SparkPrimeVault.ZeroRecipient.selector);
+        vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
         vm.prank(user);
         spPrime.updateDepositRecipient(0, address(0));
     }
 
     function test_updateDepositRecipient_vaultIsRecipient() external {
-        vm.expectRevert(SparkPrimeVault.VaultIsRecipient.selector);
+        vm.expectRevert(ISparkPrimeVault.VaultIsRecipient.selector);
         vm.prank(user);
         spPrime.updateDepositRecipient(0, address(spPrime));
     }
@@ -33,7 +35,7 @@ contract UpdateRecipientTests is TestBase {
         _setCapacity(0);
         _requestDeposit(user, 1_000_000e6);
 
-        vm.expectRevert(SparkPrimeVault.InvalidRequestId.selector);
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vm.prank(user);
         spPrime.updateDepositRecipient(1, user);
 
@@ -44,7 +46,7 @@ contract UpdateRecipientTests is TestBase {
     function test_updateDepositRecipient_noRequest() external {
         _requestDeposit(user, 1_000_000e6); // Request 0 filled instantly
 
-        vm.expectRevert(SparkPrimeVault.NoRequest.selector);
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vm.prank(user);
         spPrime.updateDepositRecipient(0, user);
     }
@@ -53,7 +55,7 @@ contract UpdateRecipientTests is TestBase {
         _setCapacity(0);
         _requestDeposit(user, 1_000_000e6); // Request 0 queued
 
-        vm.expectRevert(SparkPrimeVault.NotRequestOwner.selector);
+        vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
         vm.prank(makeAddr("unauthorized"));
         spPrime.updateDepositRecipient(0, user);
     }
@@ -67,7 +69,7 @@ contract UpdateRecipientTests is TestBase {
         _assertDepositRequest(0, user, user, 1_000_000e6 - 1);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.DepositRecipientUpdated(0, newRecipient);
+        emit ISparkPrimeVault.DepositRecipientUpdated(0, newRecipient);
 
         vm.prank(user);
         spPrime.updateDepositRecipient(0, newRecipient);
@@ -80,13 +82,13 @@ contract UpdateRecipientTests is TestBase {
     /**********************************************************************************************/
 
     function test_updateDepositCancellationRecipient_zeroRecipient() external {
-        vm.expectRevert(SparkPrimeVault.ZeroRecipient.selector);
+        vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
         vm.prank(user);
         spPrime.updateDepositCancellationRecipient(0, address(0));
     }
 
     function test_updateDepositCancellationRecipient_vaultIsRecipient() external {
-        vm.expectRevert(SparkPrimeVault.VaultIsRecipient.selector);
+        vm.expectRevert(ISparkPrimeVault.VaultIsRecipient.selector);
         vm.prank(user);
         spPrime.updateDepositCancellationRecipient(0, address(spPrime));
     }
@@ -94,7 +96,7 @@ contract UpdateRecipientTests is TestBase {
     function test_updateDepositCancellationRecipient_recipientCannotReceive() external {
         _blacklist(user);
 
-        vm.expectRevert(SparkPrimeVault.RecipientCannotReceive.selector);
+        vm.expectRevert(ISparkPrimeVault.RecipientCannotReceive.selector);
         vm.prank(user);
         spPrime.updateDepositCancellationRecipient(0, user);
     }
@@ -104,7 +106,7 @@ contract UpdateRecipientTests is TestBase {
         _requestDeposit(user, 1_000_000e6);   // Request 0 queued
         _requestDepositCancellation(user, 0); // Request 0 cancellation queued
 
-        vm.expectRevert(SparkPrimeVault.InvalidRequestId.selector);
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vm.prank(user);
         spPrime.updateDepositCancellationRecipient(1, user);
 
@@ -118,7 +120,7 @@ contract UpdateRecipientTests is TestBase {
         _requestDepositCancellation(user, 0);   // Request 0 cancellation queued
         _processPendingDepositCancellations(1); // Request 0 processed
 
-        vm.expectRevert(SparkPrimeVault.NoRequest.selector);
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vm.prank(user);
         spPrime.updateDepositCancellationRecipient(0, user);
     }
@@ -128,7 +130,7 @@ contract UpdateRecipientTests is TestBase {
         _requestDeposit(user, 1_000_000e6);   // Request 0 queued
         _requestDepositCancellation(user, 0); // Request 0 cancellation queued
 
-        vm.expectRevert(SparkPrimeVault.NotRequestOwner.selector);
+        vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
         vm.prank(makeAddr("unauthorized"));
         spPrime.updateDepositCancellationRecipient(0, user);
     }
@@ -143,7 +145,7 @@ contract UpdateRecipientTests is TestBase {
         _assertDepositCancellationRequest(0, user, user, 1_000_000e6 - 1);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.DepositCancellationRecipientUpdated(0, newRecipient);
+        emit ISparkPrimeVault.DepositCancellationRecipientUpdated(0, newRecipient);
 
         vm.prank(user);
         spPrime.updateDepositCancellationRecipient(0, newRecipient);
@@ -156,13 +158,13 @@ contract UpdateRecipientTests is TestBase {
     /**********************************************************************************************/
 
     function test_updateRedeemRecipient_zeroRecipient() external {
-        vm.expectRevert(SparkPrimeVault.ZeroRecipient.selector);
+        vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
         vm.prank(user);
         spPrime.updateRedeemRecipient(0, address(0));
     }
 
     function test_updateRedeemRecipient_vaultIsRecipient() external {
-        vm.expectRevert(SparkPrimeVault.VaultIsRecipient.selector);
+        vm.expectRevert(ISparkPrimeVault.VaultIsRecipient.selector);
         vm.prank(user);
         spPrime.updateRedeemRecipient(0, address(spPrime));
     }
@@ -170,7 +172,7 @@ contract UpdateRecipientTests is TestBase {
     function test_updateRedeemRecipient_recipientCannotReceive() external {
         _blacklist(user);
 
-        vm.expectRevert(SparkPrimeVault.RecipientCannotReceive.selector);
+        vm.expectRevert(ISparkPrimeVault.RecipientCannotReceive.selector);
         vm.prank(user);
         spPrime.updateRedeemRecipient(0, user);
     }
@@ -179,7 +181,7 @@ contract UpdateRecipientTests is TestBase {
         _requestDeposit(user, 1_000_000e6); // Request 0 filled instantly
         _requestRedeem(user,  100e6);       // Request 0 redeem queued
 
-        vm.expectRevert(SparkPrimeVault.InvalidRequestId.selector);
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vm.prank(user);
         spPrime.updateRedeemRecipient(1, user);
 
@@ -193,7 +195,7 @@ contract UpdateRecipientTests is TestBase {
 
         _processPendingRedeems(1);
 
-        vm.expectRevert(SparkPrimeVault.NoRequest.selector);
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vm.prank(user);
         spPrime.updateRedeemRecipient(0, user);
     }
@@ -202,7 +204,7 @@ contract UpdateRecipientTests is TestBase {
         _requestDeposit(user, 1_000_000e6); // Request 0 filled instantly
         _requestRedeem(user,  100e6);       // Request 0 redeem queued
 
-        vm.expectRevert(SparkPrimeVault.NotRequestOwner.selector);
+        vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
         vm.prank(makeAddr("unauthorized"));
         spPrime.updateRedeemRecipient(0, user);
     }
@@ -216,7 +218,7 @@ contract UpdateRecipientTests is TestBase {
         _assertRedeemRequest(0, user, user, 1_000_000e6 - 1);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.RedeemRecipientUpdated(0, newRecipient);
+        emit ISparkPrimeVault.RedeemRecipientUpdated(0, newRecipient);
 
         vm.prank(user);
         spPrime.updateRedeemRecipient(0, newRecipient);
