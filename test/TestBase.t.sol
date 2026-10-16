@@ -197,12 +197,12 @@ abstract contract TestBase is Test {
         spPrime.setCapacity(capacity);
     }
 
-    function _setRedeemFeeRate(uint256 feeRate) internal {
-        vm.startPrank(admin);
-        spPrime.grantRole(REDEEM_FEE_SETTER_ROLE, redeemFeeSetter);
-        spPrime.setMaxRedeemFeeRate(feeRate);
-        vm.stopPrank();
+    function _setMaxRedeemFeeRate(uint256 maxRedeemFeeRate) internal {
+        vm.prank(admin);
+        spPrime.setMaxRedeemFeeRate(maxRedeemFeeRate);
+    }
 
+    function _setRedeemFeeRate(uint256 feeRate) internal {
         vm.prank(redeemFeeSetter);
         spPrime.setRedeemFeeRate(feeRate);
     }
