@@ -63,6 +63,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     error BelowMinDeposit();
 
+    error BelowMinDepositCancellation();
+
     error BelowMinRedeem();
 
     error ChiTooHigh();
@@ -76,6 +78,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     error InvalidRange();
 
     error InvalidRequestId();
+
+    error InvalidShares();
 
     error IsNotPaused();
 
@@ -98,6 +102,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     error NotRequestOwner();
 
     error RecipientCannotReceive();
+
+    error SavingsSharesTooHigh();
 
     error VaultIsRecipient();
 
@@ -149,7 +155,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     event DepositCancellationRequest(
         uint256 indexed depositRequestId,
         uint256 indexed cancelRequestId,
-        address indexed recipient
+        address indexed recipient,
+        uint256         sharesCancelled
     );
 
     event DepositCancellationRecipientUpdated(uint256 indexed requestId, address indexed recipient);
@@ -192,6 +199,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     event MaxRedeemFeeRateSet(uint256 fee);
 
     event MinDepositSet(uint256 minDeposit);
+
+    event MinDepositCancellationSet(uint256 minDepositCancellation);
 
     event MinRedeemSet(uint256 minRedeem);
 
@@ -261,11 +270,12 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     uint256 public minVSR; // The minimum Vault Savings Rate [ray]
     uint256 public maxVSR; // The maximum Vault Savings Rate [ray]
 
-    uint256 public maxCapacity;      // Max totalSupply
-    uint256 public minDeposit;       // [savings asset units]
-    uint256 public minRedeem;        // [shares units]
-    uint256 public redeemFeeRate;    // Fee rate burned in redeem requests [wad]
-    uint256 public maxRedeemFeeRate; // [wad]
+    uint256 public maxCapacity;            // Max totalSupply
+    uint256 public minDeposit;             // [savings asset units]
+    uint256 public minDepositCancellation; // [savings shares units]
+    uint256 public minRedeem;              // [shares units]
+    uint256 public redeemFeeRate;          // Fee rate burned in redeem requests [wad]
+    uint256 public maxRedeemFeeRate;       // [wad]
 
     uint256 public totalSupply;
 
@@ -364,6 +374,13 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     function setMinDeposit(uint256 minDeposit_) external onlyRole(DEFAULT_ADMIN_ROLE) {
         emit MinDepositSet(minDeposit = minDeposit_);
+    }
+
+    function setMinDepositCancellation(uint256 minDepositCancellation_)
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        emit MinDepositCancellationSet(minDepositCancellation = minDepositCancellation_);
     }
 
     function setMinRedeem(uint256 minRedeem_) external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -491,7 +508,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         }
     }
 
-    function requestDepositCancellation(uint256 requestId_, address recipient_)
+    function requestDepositCancellation(
+        uint256 requestId_,
+        address recipient_,
+        uint256 savingsShares_
+    )
         whenNotPaused
         external
         returns (uint256 newRequestId_)
@@ -500,23 +521,29 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         require(recipient_ != address(this),  VaultIsRecipient());
         require(_canReceiveAsset(recipient_), RecipientCannotReceive());
 
-        Request memory request_ = _depositRequests[requestId_];
+        Request memory depositRequest_ = _depositRequests[requestId_];
 
-        require(request_.shares != 0,         NoRequest());
-        require(msg.sender == request_.owner, NotRequestOwner());
-
-        delete _depositRequests[requestId_];
+        require(depositRequest_.shares != 0,              NoRequest());
+        require(msg.sender == depositRequest_.owner,      NotRequestOwner());
+        require(savingsShares_ >= minDepositCancellation, BelowMinDepositCancellation());
+        require(savingsShares_ <= depositRequest_.shares, SavingsSharesTooHigh());
 
         newRequestId_ = _depositCancellationRequests.length;
 
         _depositCancellationRequests.push(
-            Request(request_.owner, recipient_, request_.shares)
+            Request(depositRequest_.owner, recipient_, savingsShares_)
         );
 
-        pendingDepositSavingsShares          -= request_.shares;
-        pendingCancelledDepositSavingsShares += request_.shares;
+        pendingDepositSavingsShares          -= savingsShares_;
+        pendingCancelledDepositSavingsShares += savingsShares_;
 
-        emit DepositCancellationRequest(requestId_, newRequestId_, recipient_);
+        if (depositRequest_.shares == savingsShares_) {
+            delete _depositRequests[requestId_];
+        } else {
+            _depositRequests[requestId_].shares = depositRequest_.shares - savingsShares_;
+        }
+
+        emit DepositCancellationRequest(requestId_, newRequestId_, recipient_, savingsShares_);
     }
 
     function requestRedeem(uint256 shares_, address recipient_)

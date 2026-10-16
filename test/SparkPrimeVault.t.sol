@@ -453,11 +453,11 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _requestDeposit(cam, 900_000e6);    // Will be cancelled
         _requestDeposit(ali, 1_000_000e6);  // Will be partially filled
 
-        _requestDepositCancellation(ali, 0);
-        _requestDepositCancellation(bob, 1);
-        _requestDepositCancellation(cam, 2);
-        _requestDepositCancellation(cam, 5);
-        _requestDepositCancellation(cam, 8);
+        _requestDepositCancellation(ali, 0, 100_000e6);
+        _requestDepositCancellation(bob, 1, 200_000e6);
+        _requestDepositCancellation(cam, 2, 300_000e6);
+        _requestDepositCancellation(cam, 5, 600_000e6);
+        _requestDepositCancellation(cam, 8, 900_000e6);
 
         uint256 depositedAssets  = 5_500_000e6 - 5;  // All transfers in (net of rounding)
 
