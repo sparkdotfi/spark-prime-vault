@@ -7,12 +7,8 @@ abstract contract SparkPrimeVaultTests is TestBase {
 
     uint16 internal constant REFERRAL = type(uint16).max;
 
-    address internal user = makeAddr("user");
-
     function setUp() public override virtual {
         super.setUp();
-
-        vm.label(user, "user");
 
         skip(365 days);
     }
@@ -20,6 +16,14 @@ abstract contract SparkPrimeVaultTests is TestBase {
 }
 
 contract RequestDepositTests is SparkPrimeVaultTests {
+
+    address internal user = makeAddr("user");
+
+    function setUp() public override {
+        super.setUp();
+
+        vm.label(address(user), "user");
+    }
 
     // Failure tests
 
