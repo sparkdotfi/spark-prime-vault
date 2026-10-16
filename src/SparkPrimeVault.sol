@@ -91,6 +91,12 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     error MaxVSRTooHigh();
 
+    error ZeroMinDeposit();
+
+    error ZeroMinDepositCancellation();
+
+    error ZeroMinRedeem();
+
     error MinVSRGtMaxVSR();
 
     error MinVSRTooLow();
@@ -313,10 +319,17 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         address        savings_,
         string  memory name_,
         string  memory symbol_,
-        address        admin
+        address        admin,
+        uint256        minDeposit_,
+        uint256        minDepositCancellation_,
+        uint256        minRedeem_
     )
         initializer external
     {
+        require(minDeposit_             != 0, ZeroMinDeposit());
+        require(minDepositCancellation_ != 0, ZeroMinDepositCancellation());
+        require(minRedeem_              != 0, ZeroMinRedeem());
+
         address asset_ = IERC4626Like(savings_).asset();
 
         savings  = savings_;
@@ -333,6 +346,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         minVSR = RAY;
         maxVSR = RAY;
+
+        minDeposit             = minDeposit_;
+        minDepositCancellation = minDepositCancellation_;
+        minRedeem              = minRedeem_;
 
         SafeERC20.forceApprove(IERC20OZ(asset_), savings_, type(uint256).max);
     }
@@ -373,6 +390,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     function setMinDeposit(uint256 minDeposit_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(minDeposit_ != 0, ZeroMinDeposit());
+
         emit MinDepositSet(minDeposit = minDeposit_);
     }
 
@@ -380,10 +399,14 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         external
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
+        require(minDepositCancellation_ != 0, ZeroMinDepositCancellation());
+
         emit MinDepositCancellationSet(minDepositCancellation = minDepositCancellation_);
     }
 
     function setMinRedeem(uint256 minRedeem_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(minRedeem_ != 0, ZeroMinRedeem());
+
         emit MinRedeemSet(minRedeem = minRedeem_);
     }
 

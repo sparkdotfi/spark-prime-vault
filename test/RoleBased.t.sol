@@ -439,6 +439,12 @@ contract RoleBasedTests is TestBase {
         spPrime.setMinDeposit(100e6);
     }
 
+    function test_setMinDeposit_zeroMinDeposit() external {
+        vm.expectRevert(SparkPrimeVault.ZeroMinDeposit.selector);
+        vm.prank(admin);
+        spPrime.setMinDeposit(0);
+    }
+
     function test_setMinDeposit() external {
         assertEq(spPrime.minDeposit(), MINIMUM_DEPOSIT);
 
@@ -451,12 +457,12 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.minDeposit(), 100e6);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.MinDepositSet(0);
+        emit SparkPrimeVault.MinDepositSet(1);
 
         vm.prank(admin);
-        spPrime.setMinDeposit(0);
+        spPrime.setMinDeposit(1);
 
-        assertEq(spPrime.minDeposit(), 0);
+        assertEq(spPrime.minDeposit(), 1);
     }
 
     /**********************************************************************************************/
@@ -467,6 +473,12 @@ contract RoleBasedTests is TestBase {
         vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
         vm.prank(unauthorized);
         spPrime.setMinDepositCancellation(100e6);
+    }
+
+    function test_setMinDepositCancellation_zeroMinDepositCancellation() external {
+        vm.expectRevert(SparkPrimeVault.ZeroMinDepositCancellation.selector);
+        vm.prank(admin);
+        spPrime.setMinDepositCancellation(0);
     }
 
     function test_setMinDepositCancellation() external {
@@ -481,12 +493,12 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.minDepositCancellation(), 200e6);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.MinDepositCancellationSet(0);
+        emit SparkPrimeVault.MinDepositCancellationSet(1);
 
         vm.prank(admin);
-        spPrime.setMinDepositCancellation(0);
+        spPrime.setMinDepositCancellation(1);
 
-        assertEq(spPrime.minDepositCancellation(), 0);
+        assertEq(spPrime.minDepositCancellation(), 1);
     }
 
     /**********************************************************************************************/
@@ -497,6 +509,12 @@ contract RoleBasedTests is TestBase {
         vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
         vm.prank(unauthorized);
         spPrime.setMinRedeem(100e6);
+    }
+
+    function test_setMinRedeem_zeroMinRedeem() external {
+        vm.expectRevert(SparkPrimeVault.ZeroMinRedeem.selector);
+        vm.prank(admin);
+        spPrime.setMinRedeem(0);
     }
 
     function test_setMinRedeem() external {
@@ -511,12 +529,12 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.minRedeem(), 100e6);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.MinRedeemSet(0);
+        emit SparkPrimeVault.MinRedeemSet(1);
 
         vm.prank(admin);
-        spPrime.setMinRedeem(0);
+        spPrime.setMinRedeem(1);
 
-        assertEq(spPrime.minRedeem(), 0);
+        assertEq(spPrime.minRedeem(), 1);
     }
 
     /**********************************************************************************************/
