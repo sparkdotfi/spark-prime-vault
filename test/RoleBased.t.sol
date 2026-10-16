@@ -460,6 +460,36 @@ contract RoleBasedTests is TestBase {
     }
 
     /**********************************************************************************************/
+    /*** setMinDepositCancellation tests                                                        ***/
+    /**********************************************************************************************/
+
+    function test_setMinDepositCancellation_notAdmin() external {
+        vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
+        vm.prank(unauthorized);
+        spPrime.setMinDepositCancellation(100e6);
+    }
+
+    function test_setMinDepositCancellation() external {
+        assertEq(spPrime.minDepositCancellation(), MINIMUM_DEPOSIT_CANCELLATION);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.MinDepositCancellationSet(200e6);
+
+        vm.prank(admin);
+        spPrime.setMinDepositCancellation(200e6);
+
+        assertEq(spPrime.minDepositCancellation(), 200e6);
+
+        vm.expectEmit(address(spPrime));
+        emit SparkPrimeVault.MinDepositCancellationSet(0);
+
+        vm.prank(admin);
+        spPrime.setMinDepositCancellation(0);
+
+        assertEq(spPrime.minDepositCancellation(), 0);
+    }
+
+    /**********************************************************************************************/
     /*** setMinRedeem tests                                                                     ***/
     /**********************************************************************************************/
 
