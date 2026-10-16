@@ -58,6 +58,58 @@ interface IBlacklistableLike {
 contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
 
     /**********************************************************************************************/
+    /*** Custom Errors                                                                          ***/
+    /**********************************************************************************************/
+
+    error BelowMinDeposit();
+
+    error BelowMinRedeem();
+
+    error ChiTooHigh();
+
+    error ChiTooLow();
+
+    error FeeTooHigh();
+
+    error InsufficientShares();
+
+    error InvalidRange();
+
+    error InvalidRequestId();
+
+    error IsNotPaused();
+
+    error IsPaused();
+
+    error LossTooHigh();
+
+    error MaxFeeTooHigh();
+
+    error MaxVSRTooHigh();
+
+    error MinVSRGtMaxVSR();
+
+    error MinVSRTooLow();
+
+    error NoRequest();
+
+    error NothingToClaim();
+
+    error NotRequestOwner();
+
+    error RecipientCannotReceive();
+
+    error VaultIsRecipient();
+
+    error VSRTooHigh();
+
+    error VSRTooLow();
+
+    error ZeroDeltaTotalAssets();
+
+    error ZeroRecipient();
+
+    /**********************************************************************************************/
     /*** Events and structs                                                                     ***/
     /**********************************************************************************************/
 
@@ -233,7 +285,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     mapping (address account => mapping (address spender => uint256 amount)) public allowance;
 
     modifier whenNotPaused() {
-        require(!paused, "SparkPrimeVault/paused");
+        require(!paused, IsPaused());
         _;
     }
 
@@ -283,20 +335,20 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     /**********************************************************************************************/
 
     function adjustTotalAssets(int256 deltaTotalAssets_) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(paused,                 "SparkPrimeVault/not-paused");
-        require(deltaTotalAssets_ != 0, "SparkPrimeVault/delta-total-assets-zero");
+        require(paused,                 IsNotPaused());
+        require(deltaTotalAssets_ != 0, ZeroDeltaTotalAssets());
 
         drip();
 
         int256 totalAssets_ = int256(totalAssets()) + deltaTotalAssets_;
 
-        require(totalAssets_ > 0, "SparkPrimeVault/loss-too-high");
+        require(totalAssets_ > 0, LossTooHigh());
 
         // NOTE: Assuming totalSupply is not zero
         uint256 updatedChi_ = uint256(totalAssets_) * RAY / totalSupply;
 
-        require(updatedChi_ != 0,                 "SparkPrimeVault/chi-too-low");
-        require(updatedChi_ <= type(uint192).max, "SparkPrimeVault/chi-too-high");
+        require(updatedChi_ != 0,                 ChiTooLow());
+        require(updatedChi_ <= type(uint192).max, ChiTooHigh());
 
         emit TotalAssetsAdjusted(chi = uint192(updatedChi_), deltaTotalAssets_);
     }
@@ -306,7 +358,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     function setMaxRedeemFeeRate(uint256 feeRate_) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(feeRate_ <= MAX_REDEEM_FEE, "SparkPrimeVault/fee-too-high");
+        require(feeRate_ <= MAX_REDEEM_FEE, MaxFeeTooHigh());
         emit MaxRedeemFeeRateSet(maxRedeemFeeRate = feeRate_);
     }
 
@@ -319,9 +371,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     function setVSRBounds(uint256 minVSR_, uint256 maxVSR_) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(minVSR_ >= RAY,     "SparkPrimeVault/vsr-too-low");
-        require(maxVSR_ <= MAX_VSR, "SparkPrimeVault/vsr-too-high");
-        require(minVSR_ <= maxVSR_, "SparkPrimeVault/min-vsr-gt-max-vsr");
+        require(minVSR_ >= RAY,     MinVSRTooLow());
+        require(maxVSR_ <= MAX_VSR, MaxVSRTooHigh());
+        require(minVSR_ <= maxVSR_, MinVSRGtMaxVSR());
 
         emit VSRBoundsSet(minVSR = minVSR_, maxVSR = maxVSR_);
     }
@@ -336,8 +388,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     /**********************************************************************************************/
 
     function setVSR(uint256 vsr_) external onlyRole(VSR_SETTER_ROLE) {
-        require(vsr_ >= minVSR, "SparkPrimeVault/vsr-too-low");
-        require(vsr_ <= maxVSR, "SparkPrimeVault/vsr-too-high");
+        require(vsr_ >= minVSR, VSRTooLow());
+        require(vsr_ <= maxVSR, VSRTooHigh());
 
         drip();
 
@@ -351,7 +403,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     function take(uint256 savingsShares_) external onlyRole(TAKER_ROLE) {
         require(
             savingsShares_ <= IERC20Like(savings).balanceOf(address(this)),
-            "SparkPrimeVault/insufficient-shares"
+            InsufficientShares()
         );
 
         SafeERC20.safeTransfer(IERC20OZ(savings), msg.sender, savingsShares_);
@@ -392,7 +444,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     /**********************************************************************************************/
 
     function setRedeemFeeRate(uint256 feeRate_) external onlyRole(REDEEM_FEE_SETTER_ROLE) {
-        require(feeRate_ <= maxRedeemFeeRate, "SparkPrimeVault/fee-too-high");
+        require(feeRate_ <= maxRedeemFeeRate, FeeTooHigh());
         emit RedeemFeeRateSet(redeemFeeRate = feeRate_);
     }
 
@@ -414,9 +466,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         whenNotPaused
         returns (uint256 requestId_)
     {
-        require(recipient_ != address(0),    "SparkPrimeVault/zero-recipient");
-        require(recipient_ != address(this), "SparkPrimeVault/vault-recipient");
-        require(assets_ >= minDeposit,       "SparkPrimeVault/below-minimum");
+        require(recipient_ != address(0),    ZeroRecipient());
+        require(recipient_ != address(this), VaultIsRecipient());
+        require(assets_ >= minDeposit,       BelowMinDeposit());
 
         drip();
 
@@ -444,14 +496,14 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         external
         returns (uint256 newRequestId_)
     {
-        require(recipient_ != address(0),     "SparkPrimeVault/zero-recipient");
-        require(recipient_ != address(this),  "SparkPrimeVault/vault-recipient");
-        require(_canReceiveAsset(recipient_), "SparkPrimeVault/recipient-cannot-receive");
+        require(recipient_ != address(0),     ZeroRecipient());
+        require(recipient_ != address(this),  VaultIsRecipient());
+        require(_canReceiveAsset(recipient_), RecipientCannotReceive());
 
         Request memory request_ = _depositRequests[requestId_];
 
-        require(request_.shares != 0,         "SparkPrimeVault/no-request");
-        require(msg.sender == request_.owner, "SparkPrimeVault/not-authorized");
+        require(request_.shares != 0,         NoRequest());
+        require(msg.sender == request_.owner, NotRequestOwner());
 
         delete _depositRequests[requestId_];
 
@@ -472,10 +524,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         whenNotPaused
         returns (uint256 requestId_)
     {
-        require(recipient_ != address(0),     "SparkPrimeVault/zero-recipient");
-        require(recipient_ != address(this),  "SparkPrimeVault/vault-recipient");
-        require(_canReceiveAsset(recipient_), "SparkPrimeVault/recipient-cannot-receive");
-        require(shares_ >= minRedeem,         "SparkPrimeVault/below-minimum");
+        require(recipient_ != address(0),     ZeroRecipient());
+        require(recipient_ != address(this),  VaultIsRecipient());
+        require(_canReceiveAsset(recipient_), RecipientCannotReceive());
+        require(shares_ >= minRedeem,         BelowMinRedeem());
 
         drip();
 
@@ -502,23 +554,23 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     /**********************************************************************************************/
 
     function updateDepositRecipient(uint256 requestId_, address recipient_) external {
-        require(recipient_ != address(0),    "SparkPrimeVault/zero-recipient");
-        require(recipient_ != address(this), "SparkPrimeVault/vault-recipient");
+        require(recipient_ != address(0),    ZeroRecipient());
+        require(recipient_ != address(this), VaultIsRecipient());
 
         require(requestId_ < _depositRequests.length, "SparkPrimeVault/invalid-request-id");
 
         Request storage request_ = _depositRequests[requestId_];
 
-        require(request_.shares != 0,         "SparkPrimeVault/no-request");
-        require(msg.sender == request_.owner, "SparkPrimeVault/not-authorized");
+        require(request_.shares != 0,         NoRequest());
+        require(msg.sender == request_.owner, NotRequestOwner());
 
         emit DepositRecipientUpdated(requestId_, request_.recipient = recipient_);
     }
 
     function updateDepositCancellationRecipient(uint256 requestId_, address recipient_) external {
-        require(recipient_ != address(0),     "SparkPrimeVault/zero-recipient");
-        require(recipient_ != address(this),  "SparkPrimeVault/vault-recipient");
-        require(_canReceiveAsset(recipient_), "SparkPrimeVault/recipient-cannot-receive");
+        require(recipient_ != address(0),     ZeroRecipient());
+        require(recipient_ != address(this),  VaultIsRecipient());
+        require(_canReceiveAsset(recipient_), RecipientCannotReceive());
 
         require(
             requestId_ < _depositCancellationRequests.length,
@@ -527,8 +579,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         Request storage request_ = _depositCancellationRequests[requestId_];
 
-        require(request_.shares != 0,         "SparkPrimeVault/no-request");
-        require(msg.sender == request_.owner, "SparkPrimeVault/not-authorized");
+        require(request_.shares != 0,         NoRequest());
+        require(msg.sender == request_.owner, NotRequestOwner());
 
         emit DepositCancellationRecipientUpdated(
             requestId_,
@@ -537,16 +589,16 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     function updateRedeemRecipient(uint256 requestId_, address recipient_) external {
-        require(recipient_ != address(0),     "SparkPrimeVault/zero-recipient");
-        require(recipient_ != address(this),  "SparkPrimeVault/vault-recipient");
-        require(_canReceiveAsset(recipient_), "SparkPrimeVault/recipient-cannot-receive");
+        require(recipient_ != address(0),     ZeroRecipient());
+        require(recipient_ != address(this),  VaultIsRecipient());
+        require(_canReceiveAsset(recipient_), RecipientCannotReceive());
 
         require(requestId_ < _redeemRequests.length, "SparkPrimeVault/invalid-request-id");
 
         Request storage request_ = _redeemRequests[requestId_];
 
-        require(request_.shares != 0,         "SparkPrimeVault/no-request");
-        require(msg.sender == request_.owner, "SparkPrimeVault/not-authorized");
+        require(request_.shares != 0,         NoRequest());
+        require(msg.sender == request_.owner, NotRequestOwner());
 
         emit RedeemRecipientUpdated(requestId_, request_.recipient = recipient_);
     }
@@ -560,7 +612,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     function claim(address recipient_) external returns (uint256 assets_) {
         assets_ = claimableAssets[recipient_];
 
-        require(assets_ != 0, "SparkPrimeVault/nothing-to-claim");
+        require(assets_ != 0, NothingToClaim());
 
         claimableAssets[recipient_] = 0;
 
@@ -591,7 +643,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     function transferFrom(address from_, address to_, uint256 amount_) external returns (bool) {
         require(to_ != address(0) && to_ != address(this), "SparkPrimeVault/invalid-address");
-        require(balanceOf[from_] >= amount_,               "SparkPrimeVault/insufficient-balance");
+
+        _transfer(from_, to_, amount_);
 
         if (from_ != msg.sender) {
             uint256 allowance_ = allowance[from_][msg.sender];
@@ -604,8 +657,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
                 }
             }
         }
-
-        _transfer(from_, to_, amount_);
 
         return true;
     }
@@ -691,7 +742,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     {
         require(
             requestId_ >= firstPendingDepositId && requestId_ < _depositRequests.length,
-            "SparkPrimeVault/invalid-request-id"
+            InvalidRequestId()
         );
 
         Request storage request_ = _depositRequests[requestId_];
@@ -714,8 +765,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         view
         returns (Request[] memory requests_)
     {
-        require(startId_ <= endId_,                "SparkPrimeVault/invalid-range");
-        require(endId_ <= _depositRequests.length, "SparkPrimeVault/invalid-range");
+        require((startId_ <= endId_) && (endId_ <= _depositRequests.length), InvalidRange());
 
         requests_ = new Request[](endId_ - startId_);
 
@@ -732,7 +782,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         require(
             requestId_ >= firstPendingDepositCancellationId &&
             requestId_ < _depositCancellationRequests.length,
-            "SparkPrimeVault/invalid-request-id"
+            InvalidRequestId()
         );
 
         Request storage request_ = _depositCancellationRequests[requestId_];
@@ -759,8 +809,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         view
         returns (Request[] memory requests_)
     {
-        require(startId_ <= endId_,                            "SparkPrimeVault/invalid-range");
-        require(endId_ <= _depositCancellationRequests.length, "SparkPrimeVault/invalid-range");
+        require(
+            (startId_ <= endId_) && (endId_ <= _depositCancellationRequests.length),
+            InvalidRange()
+        );
 
         requests_ = new Request[](endId_ - startId_);
 
@@ -776,7 +828,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     {
         require(
             requestId_ >= firstPendingRedeemId && requestId_ < _redeemRequests.length,
-            "SparkPrimeVault/invalid-request-id"
+            InvalidRequestId()
         );
 
         Request storage request_ = _redeemRequests[requestId_];
@@ -799,8 +851,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         view
         returns (Request[] memory requests_)
     {
-        require(startId_ <= endId_,               "SparkPrimeVault/invalid-range");
-        require(endId_ <= _redeemRequests.length, "SparkPrimeVault/invalid-range");
+        require((startId_ <= endId_) && (endId_ <= _redeemRequests.length), InvalidRange());
 
         requests_ = new Request[](endId_ - startId_);
 
