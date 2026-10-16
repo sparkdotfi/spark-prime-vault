@@ -15,15 +15,23 @@ interface IERC20Like {
 
     function approve(address spender, uint256 amount) external;
 
-    function balanceOf(address user) external view returns (uint256);
+    function balanceOf(address owner) external view returns (uint256);
 
 }
 
 interface ISparkVaultLike {
 
-    event Deposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares);
+    function transfer(address to, uint256 amount) external returns (bool);
 
-    function balanceOf(address user) external view returns (uint256);
+    function assetsOf(address owner) external view returns (uint256);
+
+    function balanceOf(address owner) external view returns (uint256);
+
+    function convertToAssets(uint256 shares) external view returns (uint256);
+
+    function convertToShares(uint256 assets) external view returns (uint256);
+
+    function nowChi() external view returns (uint256);
 
     function convertToAssets(uint256 shares) external view returns (uint256);
 
@@ -46,37 +54,39 @@ interface IUSDCLike {
 abstract contract TestBase is Test {
 
     struct PendingRequestsState {
-        uint256 pendingShares;  // spUSDC shares (deposit queue) or spPrime shares (redeem queue)
-        uint256 length;         // requests from firstPendingId to the end, cancelled included
-        uint256 firstPendingId; // first unfilled request id
+        uint256 pendingShareValue;  // USDC value of spUSDC shares (deposit queue) or spPrime shares (redeem queue)
+        uint256 length;             // Requests from firstPendingId to the end, cancelled included
+        uint256 firstPendingId;     // First unfilled request id
     }
 
     struct VaultState {
-        uint256 rho;                   // last chi update timestamp
-        uint256 chi;                   // rate accumulator [ray]
-        uint256 totalSupply;           // spPrime shares total supply
-        uint256 totalAssets;           // USDC value of supply
-        uint256 availableCapacity;     // spPrime shares left to mint
-        uint256 availableLiquidAssets; // USDC the vault can withdraw from spUSDC now (maxWithdraw)
+        uint256 rho;                     // Last chi update timestamp
+        uint256 chi;                     // Rate accumulator [ray]
+        uint256 totalAssets;             // USDC value of supply
+        uint256 availableCapacityValue;  // USDC value of spPrime shares left to mint
+        uint256 availableLiquidAssets;   // USDC the vault can withdraw from spUSDC now (maxWithdraw)
         PendingRequestsState depositRequests;
         PendingRequestsState depositCancellationRequests;
         PendingRequestsState redeemRequests;
     }
 
     struct AccountBalances {
-        address account;         // account being checked
-        uint256 assets;          // USDC held
-        uint256 shares;          // spPrime held
-        uint256 savingsShares;   // spUSDC held
-        uint256 claimableAssets; // USDC claimable
+        address account;            // Account being checked
+        uint256 assets;             // USDC held
+        uint256 shareValue;         // USDC value of spPrime held
+        uint256 savingsShareValue;  // USDC value of spUSDC held
+        uint256 claimableAssets;    // USDC claimable
     }
 
     uint256 internal constant MINIMUM_DEPOSIT = 100e6;
     uint256 internal constant MINIMUM_REDEEM  = 100e6;
     uint256 internal constant VAULT_CAPACITY  = 100_000_000e6;
     uint256 internal constant RAY             = 1e27;
-    uint256 internal constant FIVE_PCT_VSR    = 1.000000001547125957863212448e27;
     uint256 internal constant MAX_VSR         = 1.000000021979553151239153027e27;  // 100% APY
+
+    uint256 internal constant ONE_PCT_VSR  = 1.000000000315522921573372069e27;
+    uint256 internal constant FOUR_PCT_VSR = 1.000000001243680656318820312e27;
+    uint256 internal constant FIVE_PCT_VSR = 1.000000001547125957863212448e27;
 
     address internal admin           = makeAddr("admin");
     address internal guardian        = makeAddr("guardian");
@@ -114,9 +124,11 @@ abstract contract TestBase is Test {
 
         vm.startPrank(admin);
 
-        spPrime.grantRole(GUARDIAN_ROLE,   guardian);
-        spPrime.grantRole(PROCESSOR_ROLE,  processor);
-        spPrime.grantRole(VSR_SETTER_ROLE, vsrSetter);
+        spPrime.grantRole(GUARDIAN_ROLE,          guardian);
+        spPrime.grantRole(PROCESSOR_ROLE,         processor);
+        spPrime.grantRole(REDEEM_FEE_SETTER_ROLE, redeemFeeSetter);
+        spPrime.grantRole(TAKER_ROLE,             taker);
+        spPrime.grantRole(VSR_SETTER_ROLE,        vsrSetter);
 
         spPrime.setCapacity(VAULT_CAPACITY);
         spPrime.setMinDeposit(MINIMUM_DEPOSIT);
@@ -129,29 +141,28 @@ abstract contract TestBase is Test {
         spPrime.setVSR(FIVE_PCT_VSR);
 
         PendingRequestsState memory depositRequests = PendingRequestsState({
-            pendingShares  : 0,
-            length         : 0,
-            firstPendingId : 0
+            pendingShareValue : 0,
+            length            : 0,
+            firstPendingId    : 0
         });
 
         PendingRequestsState memory depositCancellationRequests = PendingRequestsState({
-            pendingShares  : 0,
-            length         : 0,
-            firstPendingId : 0
+            pendingShareValue : 0,
+            length            : 0,
+            firstPendingId    : 0
         });
 
         PendingRequestsState memory redeemRequests = PendingRequestsState({
-            pendingShares  : 0,
-            length         : 0,
-            firstPendingId : 0
+            pendingShareValue : 0,
+            length            : 0,
+            firstPendingId    : 0
         });
 
         vaultState = VaultState({
             rho                         : vm.getBlockTimestamp(),
             chi                         : uint192(RAY),
-            totalSupply                 : 0,
             totalAssets                 : 0,
-            availableCapacity           : VAULT_CAPACITY,
+            availableCapacityValue      : spPrime.convertToAssets(VAULT_CAPACITY),
             availableLiquidAssets       : 0,
             depositRequests             : depositRequests,
             depositCancellationRequests : depositCancellationRequests,
@@ -182,36 +193,14 @@ abstract contract TestBase is Test {
         spPrime.pause();
     }
 
+    function _unpause() internal {
+        vm.prank(admin);
+        spPrime.unpause();
+    }
+
     function _setCapacity(uint256 capacity) internal {
         vm.prank(admin);
         spPrime.setCapacity(capacity);
-    }
-
-    function _processPendingDeposits(uint256 maxSavingsShares, uint256 maxRequests) internal {
-        vm.prank(processor);
-        spPrime.processPendingDeposits(maxSavingsShares, maxRequests);
-    }
-
-    function _processPendingDeposits(uint256 maxRequests) internal {
-        _processPendingDeposits(type(uint256).max, maxRequests);
-    }
-
-    function _processPendingDepositCancellations(uint256 maxSavingsShares, uint256 maxRequests) internal {
-        vm.prank(processor);
-        spPrime.processPendingDepositCancellations(maxSavingsShares, maxRequests);
-    }
-
-    function _processPendingDepositCancellations(uint256 maxRequests) internal {
-        _processPendingDepositCancellations(type(uint256).max, maxRequests);
-    }
-
-    function _processPendingRedeems(uint256 maxSavingsShares, uint256 maxRequests) internal {
-        vm.prank(processor);
-        spPrime.processPendingRedeems(maxSavingsShares, maxRequests);
-    }
-
-    function _processPendingRedeems(uint256 maxRequests) internal {
-        _processPendingRedeems(type(uint256).max, maxRequests);
     }
 
     function _requestDeposit(address account, address recipient, uint256 assets) internal returns (uint256 requestId) {
@@ -245,6 +234,37 @@ abstract contract TestBase is Test {
         return _requestRedeem(account, account, shares);
     }
 
+    function _processPendingDeposits(uint256 maxSavingsShares, uint256 maxRequests) internal {
+        vm.prank(processor);
+        spPrime.processPendingDeposits(maxSavingsShares, maxRequests);
+    }
+
+    function _processPendingDeposits(uint256 maxRequests) internal {
+        _processPendingDeposits(type(uint256).max, maxRequests);
+    }
+
+    function _processPendingDepositCancellations(uint256 maxSavingsShares, uint256 maxRequests) internal {
+        vm.prank(processor);
+        spPrime.processPendingDepositCancellations(maxSavingsShares, maxRequests);
+    }
+
+    function _processPendingDepositCancellations(uint256 maxRequests) internal {
+        _processPendingDepositCancellations(type(uint256).max, maxRequests);
+    }
+
+    function _processPendingRedeems(uint256 maxShares, uint256 maxRequests) internal {
+        vm.prank(processor);
+        spPrime.processPendingRedeems(maxShares, maxRequests);
+    }
+
+    function _processPendingRedeems(uint256 maxRequests) internal {
+        _processPendingRedeems(type(uint256).max, maxRequests);
+    }
+
+    function _processPendingRedeems() internal {
+        _processPendingRedeems(type(uint256).max, type(uint256).max);
+    }
+
     function _blacklist(address account) internal {
         vm.prank(IUSDCLike(Ethereum.USDC).blacklister());
         IUSDCLike(Ethereum.USDC).blacklist(account);
@@ -259,7 +279,7 @@ abstract contract TestBase is Test {
     /*** Assertion helpers                                                                      ***/
     /**********************************************************************************************/
 
-    function _assertVaultState() internal view {
+    function _assertVaultState(uint256 tolerance) internal view {
         // General state variables
 
         assertEq(
@@ -268,48 +288,47 @@ abstract contract TestBase is Test {
             "vaultState.rho"
         );
 
-        assertEq(
+        assertApproxEqAbs(
             spPrime.chi(),
             vaultState.chi,
+            tolerance,
             "vaultState.chi"
         );
 
-        assertEq(
-            spPrime.totalSupply(),
-            vaultState.totalSupply,
-            "vaultState.totalSupply"
-        );
-
-        assertEq(
+        assertApproxEqAbs(
             spPrime.totalAssets(),
             vaultState.totalAssets,
+            tolerance,
             "vaultState.totalAssets"
         );
 
-        assertEq(
-            spPrime.availableCapacity(),
-            vaultState.availableCapacity,
-            "vaultState.availableCapacity"
+        assertApproxEqAbs(
+            spPrime.convertToAssets(spPrime.availableCapacity()),
+            vaultState.availableCapacityValue,
+            tolerance,
+            "vaultState.availableCapacityValue"
         );
 
-        assertEq(
+        assertApproxEqAbs(
             spPrime.availableLiquidAssets(),
             vaultState.availableLiquidAssets,
+            tolerance,
             "vaultState.availableLiquidAssets"
         );
 
         // Deposit Requests
 
-        assertEq(
-            spPrime.pendingDepositSavingsShares(),
-            vaultState.depositRequests.pendingShares,
-            "vaultState.depositRequests.pendingShares"
+        assertApproxEqAbs(
+            spUSDC.convertToAssets(spPrime.pendingDepositSavingsShares()),
+            vaultState.depositRequests.pendingShareValue,
+            tolerance,
+            "vaultState.depositRequests.pendingShareValue"
         );
 
         assertEq(
-            spPrime.getPendingDepositRequests().
-            length, vaultState.depositRequests.length,
-            "length, vaultState.depositRequests.length"
+            spPrime.getPendingDepositRequests().length,
+            vaultState.depositRequests.length,
+            "vaultState.depositRequests.length"
         );
 
         assertEq(
@@ -320,16 +339,17 @@ abstract contract TestBase is Test {
 
         // Deposit Cancellation Requests
 
-        assertEq(
-            spPrime.pendingCancelledDepositSavingsShares(),
-            vaultState.depositCancellationRequests.pendingShares,
-            "vaultState.depositCancellationRequests.pendingShares"
+        assertApproxEqAbs(
+            spUSDC.convertToAssets(spPrime.pendingCancelledDepositSavingsShares()),
+            vaultState.depositCancellationRequests.pendingShareValue,
+            tolerance,
+            "vaultState.depositCancellationRequests.pendingShareValue"
         );
 
         assertEq(
-            spPrime.getPendingDepositCancellationRequests().
-            length, vaultState.depositCancellationRequests.length,
-            "length, vaultState.depositCancellationRequests.length"
+            spPrime.getPendingDepositCancellationRequests().length,
+            vaultState.depositCancellationRequests.length,
+            "vaultState.depositCancellationRequests.length"
         );
 
         assertEq(
@@ -340,16 +360,17 @@ abstract contract TestBase is Test {
 
         // Redeem Requests
 
-        assertEq(
-            spPrime.pendingRedeemShares(),
-            vaultState.redeemRequests.pendingShares,
-            "vaultState.redeemRequests.pendingShares"
+        assertApproxEqAbs(
+            spUSDC.convertToAssets(spPrime.pendingRedeemShares()),
+            vaultState.redeemRequests.pendingShareValue,
+            tolerance,
+            "vaultState.redeemRequests.pendingShareValue"
         );
 
         assertEq(
-            spPrime.getPendingRedeemRequests().
-            length, vaultState.redeemRequests.length,
-            "length, vaultState.redeemRequests.length"
+            spPrime.getPendingRedeemRequests().length,
+            vaultState.redeemRequests.length,
+            "vaultState.redeemRequests.length"
         );
 
         assertEq(
@@ -360,38 +381,49 @@ abstract contract TestBase is Test {
 
     }
 
-    function _assertAccountBalances(AccountBalances memory accountState) internal view {
-        assertEq(
+    function _assertVaultState() internal view {
+        _assertVaultState(0);
+    }
+
+    function _assertAccountBalances(AccountBalances memory accountState, uint256 tolerance) internal view {
+        assertApproxEqAbs(
             usdc.balanceOf(accountState.account),
             accountState.assets,
+            tolerance,
             "accountState.assets"
         );
 
-        assertEq(
-            spPrime.balanceOf(accountState.account),
-            accountState.shares,
-            "accountState.shares"
+        assertApproxEqAbs(
+            spPrime.assetsOf(accountState.account),
+            accountState.shareValue,
+            tolerance,
+            "accountState.shareValue"
         );
 
-        assertEq(
-            spUSDC.balanceOf(accountState.account),
-            accountState.savingsShares,
-            "accountState.savingsShares"
+        assertApproxEqAbs(
+            spUSDC.assetsOf(accountState.account),
+            accountState.savingsShareValue,
+            tolerance,
+            "accountState.savingsShareValue"
         );
 
-        assertEq(
+        assertApproxEqAbs(
             spPrime.claimableAssets(accountState.account),
             accountState.claimableAssets,
+            tolerance,
             "accountState.claimableAssets"
         );
+    }
 
+    function _assertAccountBalances(AccountBalances memory accountState) internal view {
+        _assertAccountBalances(accountState, 0);
     }
 
     function _assertDepositRequest(
         uint256 requestId,
         address owner,
         address recipient,
-        uint256 sparkVaultShares
+        uint256 savingsShareValue
     )
         internal view
     {
@@ -410,9 +442,9 @@ abstract contract TestBase is Test {
         );
 
         assertEq(
-            shares_,
-            sparkVaultShares,
-            "depositRequest.sparkVaultShares"
+            spUSDC.convertToAssets(shares_),
+            savingsShareValue,
+            "depositRequest.savingsShareValue"
         );
 
     }
@@ -421,7 +453,7 @@ abstract contract TestBase is Test {
         uint256 requestId,
         address owner,
         address recipient,
-        uint256 sparkVaultShares
+        uint256 savingsShareValue
     )
         internal view
     {
@@ -444,9 +476,9 @@ abstract contract TestBase is Test {
         );
 
         assertEq(
-            shares_,
-            sparkVaultShares,
-            "depositCancellationRequest.sparkVaultShares"
+            spUSDC.convertToAssets(shares_),
+            savingsShareValue,
+            "depositCancellationRequest.savingsShareValue"
         );
     }
 
@@ -454,7 +486,7 @@ abstract contract TestBase is Test {
         uint256 requestId,
         address owner,
         address recipient,
-        uint256 shares
+        uint256 shareValue
     )
         internal view
     {
@@ -465,7 +497,7 @@ abstract contract TestBase is Test {
             owner,
             "redeemRequest.owner"
         );
-        
+
         assertEq(
             recipient_,
             recipient,
@@ -473,10 +505,11 @@ abstract contract TestBase is Test {
         );
 
         assertEq(
-            shares_,
-            shares,
-            "redeemRequest.shares"
+            spPrime.convertToAssets(shares_),
+            shareValue,
+            "redeemRequest.shareValue"
         );
+
     }
 
 }
