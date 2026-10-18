@@ -7,7 +7,8 @@ import { ERC1967Proxy } from "../lib/oz/contracts/proxy/ERC1967/ERC1967Proxy.sol
 
 import { Ethereum } from "../lib/spark-address-registry/src/Ethereum.sol";
 
-import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
+import { ISparkPrimeVault } from "../src/ISparkPrimeVault.sol";
+import { SparkPrimeVault }  from "../src/SparkPrimeVault.sol";
 
 interface IERC20Like {
 
@@ -528,7 +529,7 @@ abstract contract TestBase is Test {
     }
 
     function _assertRedeemRequest(
-        SparkPrimeVault.Request memory request,
+        ISparkPrimeVault.Request memory request,
         address                        owner,
         address                        recipient,
         uint256                        shareValue
@@ -584,7 +585,7 @@ abstract contract TestBase is Test {
     }
 
     function _assertRequest(
-        SparkPrimeVault.Request memory request,
+        ISparkPrimeVault.Request memory request,
         address                        owner,
         address                        recipient,
         uint256                        savingsShareValue
@@ -608,7 +609,7 @@ abstract contract TestBase is Test {
         );
     }
 
-    function _assertEmptyRequest(SparkPrimeVault.Request memory request) internal view {
+    function _assertEmptyRequest(ISparkPrimeVault.Request memory request) internal view {
         _assertRequest(request, address(0), address(0), 0);
     }
 
