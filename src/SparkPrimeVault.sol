@@ -1042,7 +1042,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     function _processPendingRedeems(uint256 maxShares_, uint256 maxRequests_) internal {
         drip();
 
-        uint256 remaining_ = _min(maxShares_, convertToShares(availableLiquidAssets()));
+        uint256 remaining_ = maxShares_;
 
         uint256 i_   = firstPendingRedeemId;
         uint256 end_ = i_ + _min(_redeemRequests.length - i_, maxRequests_);
@@ -1052,7 +1052,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
             if (request_.shares == 0) continue;  // Empty
 
-            uint256 shares_ = _min(request_.shares, remaining_);
+            uint256 fillable_ = _min(remaining_, convertToShares(availableLiquidAssets()));
+
+            if (fillable_ == 0) break;  // Out of liquidity
+
+            uint256 shares_ = _min(request_.shares, fillable_);
             uint256 assets_ = convertToAssets(shares_);
 
             pendingRedeemShares -= shares_;
