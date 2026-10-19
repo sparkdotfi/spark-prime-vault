@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
-import { TestBase, SparkPrimeVault, ISparkVaultLike } from "./TestBase.t.sol";
+import { IERC20 } from "../lib/oz/contracts/token/ERC20/IERC20.sol";
+
+import { TestBase, ISparkVaultLike } from "./TestBase.t.sol";
+
+import { ISparkPrimeVault } from "../src/ISparkPrimeVault.sol";
 
 abstract contract SparkPrimeVaultTests is TestBase {
 
@@ -26,19 +30,19 @@ contract RequestDepositTests is SparkPrimeVaultTests {
     function test_requestDeposit_paused() external {
         _pause();
 
-        vm.expectRevert(SparkPrimeVault.IsPaused.selector);
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vm.prank(user);
         spPrime.requestDeposit(100e6, user, 0);
     }
 
     function test_requestDeposit_zeroRecipient() external {
-        vm.expectRevert(SparkPrimeVault.ZeroRecipient.selector);
+        vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
         vm.prank(user);
         spPrime.requestDeposit(100e6, address(0), 0);
     }
 
     function test_requestDeposit_vaultRecipient() external {
-        vm.expectRevert(SparkPrimeVault.VaultIsRecipient.selector);
+        vm.expectRevert(ISparkPrimeVault.VaultIsRecipient.selector);
         vm.prank(user);
         spPrime.requestDeposit(100e6, address(spPrime), 0);
     }
@@ -49,7 +53,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         vm.prank(user);
         usdc.approve(address(spPrime), MINIMUM_DEPOSIT);
 
-        vm.expectRevert(SparkPrimeVault.BelowMinDeposit.selector);
+        vm.expectRevert(ISparkPrimeVault.BelowMinDeposit.selector);
         vm.prank(user);
         spPrime.requestDeposit(MINIMUM_DEPOSIT - 1, user, 0);
 
@@ -134,13 +138,13 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         uint256 expectedSharesMinted          = spPrime.convertToShares(expectedConvertedAssets);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Referral(REFERRAL, 1, user, user, 800_000e6);
+        emit ISparkPrimeVault.Referral(REFERRAL, 1, user, user, 800_000e6);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.DepositRequest(1, user, user, 800_000e6, expectedSavingsSharesMinted);
+        emit ISparkPrimeVault.DepositRequest(1, user, user, 800_000e6, expectedSavingsSharesMinted);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Deposit(1, user, user, expectedSavingsSharesConsumed, expectedConvertedAssets, expectedSharesMinted);
+        emit ISparkPrimeVault.Deposit(1, user, user, expectedSavingsSharesConsumed, expectedConvertedAssets, expectedSharesMinted);
 
         vm.prank(user);
         uint256 requestId = spPrime.requestDeposit(800_000e6, user, REFERRAL);
@@ -210,10 +214,10 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         uint256 expectedSavingsSharesMinted = spUSDC.convertToShares(800_000e6);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Referral(REFERRAL, 1, user, user, 800_000e6);
+        emit ISparkPrimeVault.Referral(REFERRAL, 1, user, user, 800_000e6);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.DepositRequest(1, user, user, 800_000e6, expectedSavingsSharesMinted);
+        emit ISparkPrimeVault.DepositRequest(1, user, user, 800_000e6, expectedSavingsSharesMinted);
 
         vm.prank(user);
         uint256 requestId = spPrime.requestDeposit(800_000e6, user, REFERRAL);
@@ -244,19 +248,19 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
     function test_requestRedeem_isPaused() external {
         _pause();
 
-        vm.expectRevert(SparkPrimeVault.IsPaused.selector);
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vm.prank(user);
         spPrime.requestRedeem(100e6, user);
     }
 
     function test_requestRedeem_zeroRecipient() external {
-        vm.expectRevert(SparkPrimeVault.ZeroRecipient.selector);
+        vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
         vm.prank(user);
         spPrime.requestRedeem(100e6, address(0));
     }
 
     function test_requestRedeem_vaultIsRecipient() external {
-        vm.expectRevert(SparkPrimeVault.VaultIsRecipient.selector);
+        vm.expectRevert(ISparkPrimeVault.VaultIsRecipient.selector);
         vm.prank(user);
         spPrime.requestRedeem(100e6, address(spPrime));
     }
@@ -264,7 +268,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
     function test_requestRedeem_recipientCannotReceive() external {
         _blacklist(user);
 
-        vm.expectRevert(SparkPrimeVault.RecipientCannotReceive.selector);
+        vm.expectRevert(ISparkPrimeVault.RecipientCannotReceive.selector);
         vm.prank(user);
         spPrime.requestRedeem(100e6, user);
     }
@@ -272,7 +276,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
     function test_requestRedeem_belowMinimumRedeemBoundary() external {
         _requestDeposit(user, 1_000e6);
 
-        vm.expectRevert(SparkPrimeVault.BelowMinRedeem.selector);
+        vm.expectRevert(ISparkPrimeVault.BelowMinRedeem.selector);
         vm.prank(user);
         spPrime.requestRedeem(MINIMUM_REDEEM - 1, user);
 
@@ -330,7 +334,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
         _assertAccountBalances(vaultBalances);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.RedeemRequest(0, user, user, 500_000e6, 0);
+        emit ISparkPrimeVault.RedeemRequest(0, user, user, 500_000e6, 0);
 
         vm.prank(user);
         uint256 requestId = spPrime.requestRedeem(500_000e6, user);
@@ -391,7 +395,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
         assertEq(spPrime.availableLiquidAssets() - spPrime.totalAssets(), 1);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.RedeemRequest(0, user, user, 500_000e6, 2_500e6);
+        emit ISparkPrimeVault.RedeemRequest(0, user, user, 500_000e6, 2_500e6);
 
         vm.prank(user);
         uint256 requestId = spPrime.requestRedeem(500_000e6, user);
@@ -538,42 +542,42 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         // Deposit Request 3
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Transfer(address(0), ali, spPrime.convertToShares(400_000e6) - 1);
+        emit IERC20.Transfer(address(0), ali, spPrime.convertToShares(400_000e6) - 1);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Deposit(3, ali, ali, spUSDC.convertToShares(400_000e6), 400_000e6 - 1, spPrime.convertToShares(400_000e6) - 1);
+        emit ISparkPrimeVault.Deposit(3, ali, ali, spUSDC.convertToShares(400_000e6), 400_000e6 - 1, spPrime.convertToShares(400_000e6) - 1);
 
         // Deposit Request 4
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Transfer(address(0), bob, spPrime.convertToShares(500_000e6) - 1);
+        emit IERC20.Transfer(address(0), bob, spPrime.convertToShares(500_000e6) - 1);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Deposit(4, bob, bob, spUSDC.convertToShares(500_000e6), 500_000e6 - 1, spPrime.convertToShares(500_000e6) - 1);
+        emit ISparkPrimeVault.Deposit(4, bob, bob, spUSDC.convertToShares(500_000e6), 500_000e6 - 1, spPrime.convertToShares(500_000e6) - 1);
 
         // Deposit Request 6
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Transfer(address(0), ali, spPrime.convertToShares(700_000e6) - 1);
+        emit IERC20.Transfer(address(0), ali, spPrime.convertToShares(700_000e6) - 1);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Deposit(6, ali, ali, spUSDC.convertToShares(700_000e6), 700_000e6 - 1, spPrime.convertToShares(700_000e6) - 1);
+        emit ISparkPrimeVault.Deposit(6, ali, ali, spUSDC.convertToShares(700_000e6), 700_000e6 - 1, spPrime.convertToShares(700_000e6) - 1);
 
         // Deposit Request 7
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Transfer(address(0), bob, spPrime.convertToShares(800_000e6) - 1);
+        emit IERC20.Transfer(address(0), bob, spPrime.convertToShares(800_000e6) - 1);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Deposit(7, bob, bob, spUSDC.convertToShares(800_000e6), 800_000e6 - 1, spPrime.convertToShares(800_000e6) - 1);
+        emit ISparkPrimeVault.Deposit(7, bob, bob, spUSDC.convertToShares(800_000e6), 800_000e6 - 1, spPrime.convertToShares(800_000e6) - 1);
 
         // Deposit Request 9 (Partial)
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Transfer(address(0), ali, spPrime.convertToShares(200_000e6));
+        emit IERC20.Transfer(address(0), ali, spPrime.convertToShares(200_000e6));
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Deposit(9, ali, ali, spUSDC.convertToShares(200_000e6) + 1, 200_000e6, spPrime.convertToShares(200_000e6));
+        emit ISparkPrimeVault.Deposit(9, ali, ali, spUSDC.convertToShares(200_000e6) + 1, 200_000e6, spPrime.convertToShares(200_000e6));
 
         vm.prank(processor);
         spPrime.processPendingDeposits(type(uint256).max, type(uint256).max);
@@ -597,7 +601,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _assertAccountBalances(vaultBalances);
 
         for (uint256 i = 0; i < 9; i++) {
-            vm.expectRevert(SparkPrimeVault.InvalidRequestId.selector);
+            vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
             _assertDepositRequest(i, address(0), address(0), 0);
         }
 
@@ -608,18 +612,18 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         // Deposit Request 3
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Transfer(address(0), ali, spPrime.convertToShares(400_000e6) - 1);
+        emit IERC20.Transfer(address(0), ali, spPrime.convertToShares(400_000e6) - 1);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Deposit(3, ali, ali, spUSDC.convertToShares(400_000e6), 400_000e6 - 1, spPrime.convertToShares(400_000e6) - 1);
+        emit ISparkPrimeVault.Deposit(3, ali, ali, spUSDC.convertToShares(400_000e6), 400_000e6 - 1, spPrime.convertToShares(400_000e6) - 1);
 
         // Deposit Request 4
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Transfer(address(0), bob, spPrime.convertToShares(500_000e6) - 1);
+        emit IERC20.Transfer(address(0), bob, spPrime.convertToShares(500_000e6) - 1);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Deposit(4, bob, bob, spUSDC.convertToShares(500_000e6), 500_000e6 - 1, spPrime.convertToShares(500_000e6) - 1);
+        emit ISparkPrimeVault.Deposit(4, bob, bob, spUSDC.convertToShares(500_000e6), 500_000e6 - 1, spPrime.convertToShares(500_000e6) - 1);
 
         // Skips 3 cancelled deposits, then fills 2 deposits, then skips 1 cancelled deposit
         vm.prank(processor);
@@ -644,7 +648,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _assertAccountBalances(vaultBalances);
 
         for (uint256 i = 0; i < 6; i++) {
-            vm.expectRevert(SparkPrimeVault.InvalidRequestId.selector);
+            vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
             _assertDepositRequest(i, address(0), address(0), 0);
         }
 
@@ -658,26 +662,26 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         // Deposit Request 3
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Transfer(address(0), ali, spPrime.convertToShares(400_000e6) - 1);
+        emit IERC20.Transfer(address(0), ali, spPrime.convertToShares(400_000e6) - 1);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Deposit(3, ali, ali, spUSDC.convertToShares(400_000e6), 400_000e6 - 1, spPrime.convertToShares(400_000e6) - 1);
+        emit ISparkPrimeVault.Deposit(3, ali, ali, spUSDC.convertToShares(400_000e6), 400_000e6 - 1, spPrime.convertToShares(400_000e6) - 1);
 
         // Deposit Request 4
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Transfer(address(0), bob, spPrime.convertToShares(500_000e6) - 1);
+        emit IERC20.Transfer(address(0), bob, spPrime.convertToShares(500_000e6) - 1);
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Deposit(4, bob, bob, spUSDC.convertToShares(500_000e6), 500_000e6 - 1, spPrime.convertToShares(500_000e6) - 1);
+        emit ISparkPrimeVault.Deposit(4, bob, bob, spUSDC.convertToShares(500_000e6), 500_000e6 - 1, spPrime.convertToShares(500_000e6) - 1);
 
         // Deposit Request 6 (Partial)
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Transfer(address(0), ali, spPrime.convertToShares(300_000e6));
+        emit IERC20.Transfer(address(0), ali, spPrime.convertToShares(300_000e6));
 
         vm.expectEmit(address(spPrime));
-        emit SparkPrimeVault.Deposit(6, ali, ali, spUSDC.convertToShares(300_000e6) + 1, 300_000e6, spPrime.convertToShares(300_000e6));
+        emit ISparkPrimeVault.Deposit(6, ali, ali, spUSDC.convertToShares(300_000e6) + 1, 300_000e6, spPrime.convertToShares(300_000e6));
 
         vm.startPrank(processor);
         spPrime.processPendingDeposits(spUSDC.convertToShares(1_200_000e6), type(uint256).max);
@@ -702,7 +706,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _assertAccountBalances(vaultBalances);
 
         for (uint256 i = 0; i < 6; i++) {
-            vm.expectRevert(SparkPrimeVault.InvalidRequestId.selector);
+            vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
             _assertDepositRequest(i, address(0), address(0), 0);
         }
 

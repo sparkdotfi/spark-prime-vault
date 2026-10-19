@@ -5,6 +5,8 @@ import { Initializable } from "../lib/oz/contracts/proxy/utils/Initializable.sol
 
 import { ERC1967Proxy, TestBase, SparkPrimeVault } from "./TestBase.t.sol";
 
+import { ISparkPrimeVault } from "../src/ISparkPrimeVault.sol";
+
 contract InitializeTests is TestBase {
 
     SparkPrimeVault internal implementation;
@@ -43,17 +45,17 @@ contract InitializeTests is TestBase {
     /**********************************************************************************************/
 
     function test_initialize_zeroMinDeposit() external {
-        vm.expectRevert(SparkPrimeVault.ZeroMinDeposit.selector);
+        vm.expectRevert(ISparkPrimeVault.ZeroMinDeposit.selector);
         _deploy(0, 0, 0);
     }
 
     function test_initialize_zeroMinDepositCancellation() external {
-        vm.expectRevert(SparkPrimeVault.ZeroMinDepositCancellation.selector);
+        vm.expectRevert(ISparkPrimeVault.ZeroMinDepositCancellation.selector);
         _deploy(1, 0, 0);
     }
 
     function test_initialize_zeroMinRedeem() external {
-        vm.expectRevert(SparkPrimeVault.ZeroMinRedeem.selector);
+        vm.expectRevert(ISparkPrimeVault.ZeroMinRedeem.selector);
         _deploy(1, 1, 0);
     }
 
