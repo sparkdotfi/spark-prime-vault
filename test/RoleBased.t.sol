@@ -169,6 +169,33 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.chi(), 1);
     }
 
+    function test_adjustTotalAssets_chiTooHighBoundary() external {
+        _pause();
+
+        // Small supply so that `totalAssets * RAY / totalSupply` can exceed uint192.
+        uint256 supply = 1e8;
+
+        stdstore.target(address(spPrime)).sig("totalSupply()").checked_write(supply);
+
+        int256 totalAssets = int256(spPrime.totalAssets());
+
+        assertEq(uint256(totalAssets), supply);  // chi == RAY
+
+        // Largest totalAssets for which chi still fits in uint192.
+        int256 maxTotalAssets = int256(type(uint192).max * supply / RAY);
+
+        assertEq(uint256(maxTotalAssets), 627710173538668076383578942320766.64161e6);
+
+        // chi = (maxTotalAssets + 1) * RAY / supply > uint192.max
+        vm.expectRevert(ISparkPrimeVault.ChiTooHigh.selector);
+        vm.prank(admin);
+        spPrime.adjustTotalAssets(maxTotalAssets + 1 - totalAssets);
+
+        // chi = maxTotalAssets * RAY / supply <= uint192.max
+        vm.prank(admin);
+        spPrime.adjustTotalAssets(maxTotalAssets - totalAssets);
+    }
+
     function test_adjustTotalAssets_loss() external {
         uint256 loss = 100_000e6;
 
