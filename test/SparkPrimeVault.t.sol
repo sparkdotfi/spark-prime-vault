@@ -29,7 +29,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
     // Failure tests
 
-    function test_requestDeposit_paused() external {
+    function test_requestDeposit_isPaused() external {
         _pause();
 
         vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
@@ -43,13 +43,13 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         spPrime.requestDeposit(100e6, address(0), 0);
     }
 
-    function test_requestDeposit_vaultRecipient() external {
+    function test_requestDeposit_vaultIsRecipient() external {
         vm.expectRevert(ISparkPrimeVault.VaultIsRecipient.selector);
         vm.prank(user);
         spPrime.requestDeposit(100e6, address(spPrime), 0);
     }
 
-    function test_requestDeposit_belowMinimumBoundary() external {
+    function test_requestDeposit_belowMinDepositBoundary() external {
         deal(address(usdc), user, MINIMUM_DEPOSIT);
 
         vm.prank(user);
@@ -275,7 +275,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
         spPrime.requestRedeem(100e6, user);
     }
 
-    function test_requestRedeem_belowMinimumRedeemBoundary() external {
+    function test_requestRedeem_belowMinRedeemBoundary() external {
         _requestDeposit(user, 1_000e6);
 
         vm.expectRevert(ISparkPrimeVault.BelowMinRedeem.selector);

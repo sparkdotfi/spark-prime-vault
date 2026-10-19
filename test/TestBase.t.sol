@@ -483,6 +483,33 @@ abstract contract TestBase is Test {
 
     }
 
+    function _assertDepositRequest(
+        ISparkPrimeVault.Request memory request,
+        address                         owner,
+        address                         recipient,
+        uint256                         savingsShareValue
+    )
+        internal view
+    {
+        assertEq(
+            request.owner,
+            owner,
+            "depositRequest.owner"
+        );
+
+        assertEq(
+            request.recipient,
+            recipient,
+            "depositRequest.recipient"
+        );
+
+        assertEq(
+            spUSDC.convertToAssets(request.shares),
+            savingsShareValue,
+            "depositRequest.savingsShareValue"
+        );
+    }
+
     function _assertDepositCancellationRequest(
         uint256 requestId,
         address owner,
@@ -508,6 +535,33 @@ abstract contract TestBase is Test {
 
         assertEq(
             spUSDC.convertToAssets(shares_),
+            savingsShareValue,
+            "depositCancellationRequest.savingsShareValue"
+        );
+    }
+
+    function _assertDepositCancellationRequest(
+        ISparkPrimeVault.Request memory request,
+        address                         owner,
+        address                         recipient,
+        uint256                         savingsShareValue
+    )
+        internal view
+    {
+        assertEq(
+            request.owner,
+            owner,
+            "depositCancellationRequest.owner"
+        );
+
+        assertEq(
+            request.recipient,
+            recipient,
+            "depositCancellationRequest.recipient"
+        );
+
+        assertEq(
+            spUSDC.convertToAssets(request.shares),
             savingsShareValue,
             "depositCancellationRequest.savingsShareValue"
         );
@@ -545,87 +599,49 @@ abstract contract TestBase is Test {
 
     function _assertRedeemRequest(
         ISparkPrimeVault.Request memory request,
-        address                        owner,
-        address                        recipient,
-        uint256                        shareValue
+        address                         owner,
+        address                         recipient,
+        uint256                         shareValue
     )
         internal view
     {
         assertEq(
             request.owner,
             owner,
-            "owner"
+            "redeemRequest.owner"
         );
+
         assertEq(
             request.recipient,
             recipient,
-            "recipient"
+            "redeemRequest.recipient"
         );
+
         assertEq(
             spPrime.convertToAssets(request.shares),
             shareValue,
-            "shareValue"
-        );
-    }
-
-    function _assertPendingDepositCancellationRequest(
-        uint256 requestId,
-        address owner,
-        address recipient,
-        uint256 savingsShareValue
-    )
-        internal view
-    {
-        (
-            address requestOwner_,
-            address requestRecipient_,
-            uint256 requestShares_
-        ) = spPrime.getPendingDepositCancellationRequest(requestId);
-
-        assertEq(
-            requestOwner_,
-            owner,
-            "DepositCancellationRequest.owner"
-        );
-        assertEq(
-            requestRecipient_,
-            recipient,
-            "DepositCancellationRequest.recipient"
-        );
-        assertEq(
-            spUSDC.convertToAssets(requestShares_),
-            savingsShareValue,
-            "DepositCancellationRequest.shares"
-        );
-    }
-
-    function _assertRequest(
-        ISparkPrimeVault.Request memory request,
-        address                        owner,
-        address                        recipient,
-        uint256                        savingsShareValue
-    )
-        internal view
-    {
-        assertEq(
-            request.owner,
-            owner,
-            "owner"
-        );
-        assertEq(
-            request.recipient,
-            recipient,
-            "recipient"
-        );
-        assertEq(
-            spUSDC.convertToAssets(request.shares),
-            savingsShareValue,
-            "savingsShareValue"
+            "redeemRequest.shareValue"
         );
     }
 
     function _assertEmptyRequest(ISparkPrimeVault.Request memory request) internal view {
-        _assertRequest(request, address(0), address(0), 0);
+        assertEq(
+            request.owner,
+            address(0),
+            "request.owner not zero"
+        );
+
+        assertEq(
+            request.recipient,
+            address(0),
+            "request.recipient not zero"
+        );
+
+        assertEq(
+            request.shares,
+            0,
+            "request.shares not zero"
+        );
     }
 
 }

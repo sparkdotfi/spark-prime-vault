@@ -75,7 +75,7 @@ contract RequestDepositCancellationTests is TestBase {
 
     // Failure tests
 
-    function test_requestDepositCancellation_paused() external {
+    function test_requestDepositCancellation_isPaused() external {
         _pause();
 
         vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
@@ -89,7 +89,7 @@ contract RequestDepositCancellationTests is TestBase {
         spPrime.requestDepositCancellation(requestId, address(0), requestShares);
     }
 
-    function test_requestDepositCancellation_vaultRecipient() external {
+    function test_requestDepositCancellation_vaultIsRecipient() external {
         vm.expectRevert(ISparkPrimeVault.VaultIsRecipient.selector);
         vm.prank(user);
         spPrime.requestDepositCancellation(requestId, address(spPrime), requestShares);
@@ -112,7 +112,7 @@ contract RequestDepositCancellationTests is TestBase {
         spPrime.requestDepositCancellation(0, recipient, requestShares);
     }
 
-    function test_requestDepositCancellation_requestFilled() external {
+    function test_requestDepositCancellation_noRequest() external {
         _setCapacity(VAULT_CAPACITY);
 
         _processPendingDeposits(type(uint256).max);
@@ -122,7 +122,7 @@ contract RequestDepositCancellationTests is TestBase {
         spPrime.requestDepositCancellation(requestId, user, requestShares);
     }
 
-    function test_requestDepositCancellation_notAuthorized() external {
+    function test_requestDepositCancellation_notRequestOwner() external {
         uint256 requestId2 = _requestDeposit(user, recipient, 1_000_000e6);
 
         ( , , uint256 requestShares2 ) = spPrime.getPendingDepositRequest(requestId2);
@@ -136,7 +136,7 @@ contract RequestDepositCancellationTests is TestBase {
         spPrime.requestDepositCancellation(requestId2, recipient, requestShares2);
     }
 
-    function test_requestDepositCancellation_belowMinimumBoundary() external {
+    function test_requestDepositCancellation_belowMinDepositCancellationBoundary() external {
         vm.expectRevert(ISparkPrimeVault.BelowMinDepositCancellation.selector);
         vm.prank(user);
         spPrime.requestDepositCancellation(requestId, user, MINIMUM_DEPOSIT_CANCELLATION - 1);
@@ -145,7 +145,7 @@ contract RequestDepositCancellationTests is TestBase {
         spPrime.requestDepositCancellation(requestId, user, MINIMUM_DEPOSIT_CANCELLATION);
     }
 
-    function test_requestDepositCancellation_aboveRequestSharesBoundary() external {
+    function test_requestDepositCancellation_savingsSharesTooHighBoundary() external {
         vm.expectRevert(ISparkPrimeVault.SavingsSharesTooHigh.selector);
         vm.prank(user);
         spPrime.requestDepositCancellation(requestId, user, requestShares + 1);

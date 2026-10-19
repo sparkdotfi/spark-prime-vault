@@ -104,15 +104,12 @@ contract RoleBasedTests is TestBase {
     /**********************************************************************************************/
 
     function test_adjustTotalAssets_notAdmin() external {
-        vm.expectRevert(abi.encodeWithSelector(
-            IAccessControl.AccessControlUnauthorizedAccount.selector,
-            address(this),
-            DEFAULT_ADMIN_ROLE
-        ));
+        vm.expectRevert(_notAuthorized(user, DEFAULT_ADMIN_ROLE));
+        vm.prank(user);
         spPrime.adjustTotalAssets(-1e6);
     }
 
-    function test_adjustTotalAssets_notPaused() external {
+    function test_adjustTotalAssets_isNotPaused() external {
         vm.expectRevert(ISparkPrimeVault.IsNotPaused.selector);
         vm.prank(admin);
         spPrime.adjustTotalAssets(-1e6);
@@ -148,7 +145,7 @@ contract RoleBasedTests is TestBase {
         spPrime.adjustTotalAssets(1e6);
     }
 
-    function test_adjustTotalAssets_invalidChiBoundary() external {
+    function test_adjustTotalAssets_chiTooLowBoundary() external {
         _pause();
 
         // Inflate supply so that `totalAssets * RAY / totalSupply` can round down to zero.
@@ -401,7 +398,7 @@ contract RoleBasedTests is TestBase {
         spPrime.setMaxRedeemFeeRate(0.01e18);
     }
 
-    function test_setMaxRedeemFee_feeTooHighBoundary() external {
+    function test_setMaxRedeemFeeRate_maxFeeTooHighBoundary() external {
         vm.expectRevert(ISparkPrimeVault.MaxFeeTooHigh.selector);
         vm.prank(admin);
         spPrime.setMaxRedeemFeeRate(0.01e18 + 1);
@@ -548,7 +545,7 @@ contract RoleBasedTests is TestBase {
         spPrime.setVSRBounds({ minVSR_ : RAY, maxVSR_ : FOUR_PCT_VSR });
     }
 
-    function test_setVSRBounds_vsrTooLowBoundary() external {
+    function test_setVSRBounds_minVSRTooLowBoundary() external {
         vm.expectRevert(ISparkPrimeVault.MinVSRTooLow.selector);
         vm.prank(admin);
         spPrime.setVSRBounds({ minVSR_ : RAY - 1, maxVSR_ : FOUR_PCT_VSR });
@@ -557,7 +554,7 @@ contract RoleBasedTests is TestBase {
         spPrime.setVSRBounds({ minVSR_ : RAY, maxVSR_ : FOUR_PCT_VSR });
     }
 
-    function test_setVSRBounds_vsrTooHighBoundary() external {
+    function test_setVSRBounds_maxVSRTooHighBoundary() external {
         uint256 maxVsr = spPrime.MAX_VSR();
 
         vm.expectRevert(ISparkPrimeVault.MaxVSRTooHigh.selector);
