@@ -234,4 +234,366 @@ contract E2ETests is TestBase {
         _assertAccountBalances(takerBalances);
     }
 
+    function test_e2e_flow2() external {
+        AccountBalances memory userBalances = AccountBalances({
+            account           : user,
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        AccountBalances memory vaultBalances = AccountBalances({
+            account           : address(spPrime),
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        // 0. Vault is at capacity, so deposit requests queue instead of filling instantly.
+
+        _setCapacity(0);
+
+        vaultState.availableCapacityValue = 0;
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 1. User requests deposit 0
+
+        _requestDeposit(user, 1_000_000e6);  // Deposit Request 0 (Queued)
+
+        vaultState.availableLiquidAssets = 1_000_000e6 - 1;
+
+        vaultState.depositRequests.pendingShareValue = 1_000_000e6 - 1;
+        vaultState.depositRequests.length            = 1;
+
+        vaultBalances.savingsShareValue = 1_000_000e6 - 1;
+
+        _assertDepositRequest(0, user, user, 1_000_000e6 - 1);
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 2. Warp
+
+        skip(365 days);
+
+        // spUSDC accrues 3.8% on the queued savings shares, spPrime has no supply yet
+        vaultState.availableLiquidAssets = 1_038_000e6 - 1;
+
+        vaultState.depositRequests.pendingShareValue = 1_038_000e6 - 1;
+
+        vaultBalances.savingsShareValue = 1_038_000e6 - 1;
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 3. Taker takes full `availableLiquidAssets()`
+
+        vm.startPrank(taker);
+        spPrime.take(spUSDC.convertToShares(1_038_000e6));  // Deposit Request 0 savings shares
+        vm.stopPrank();
+
+        vaultState.availableLiquidAssets = 0;
+
+        vaultBalances.savingsShareValue = 0;
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 4. User requests deposit 1
+
+        _requestDeposit(user, 1_000_000e6);  // Deposit Request 1 (Queued)
+
+        vaultState.rho = vm.getBlockTimestamp();
+        vaultState.chi = 1.049999999999999999961070145e27;
+
+        vaultState.availableLiquidAssets = 1_000_000e6 - 1;
+
+        vaultState.depositRequests.pendingShareValue = 2_038_000e6 - 1;
+        vaultState.depositRequests.length            = 2;
+
+        vaultBalances.savingsShareValue = 1_000_000e6 - 1;
+
+        _assertDepositRequest(0, user, user, 1_038_000e6 - 1);
+        _assertDepositRequest(1, user, user, 1_000_000e6 - 1);
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 5. Warp
+
+        skip(365 days);
+
+        // Queued deposits keep their spUSDC value growth even though deposit 0 shares were taken
+        vaultState.availableLiquidAssets = 1_038_000e6 - 1;
+
+        vaultState.depositRequests.pendingShareValue = 2_115_444e6 - 1;
+
+        vaultBalances.savingsShareValue = 1_038_000e6 - 1;
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 6. User gets filled for first deposit
+
+        _setCapacity(VAULT_CAPACITY);
+
+        _processPendingDeposits(1);  // Deposit Request 0 (Filled)
+
+        vaultState.rho = vm.getBlockTimestamp();
+        vaultState.chi = 1.102499999999999999918247304e27;
+
+        vaultState.totalAssets            = 1_077_444e6 - 2;
+        vaultState.availableCapacityValue = 109_172_556e6 + 1;
+
+        vaultState.depositRequests.pendingShareValue = 1_038_000e6 - 1;
+        vaultState.depositRequests.length            = 1;
+        vaultState.depositRequests.firstPendingId    = 1;
+
+        userBalances.shareValue = 1_077_444e6 - 2;
+
+        _assertDepositRequest(1, user, user, 1_038_000e6 - 1);
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 7. Warp
+
+        skip(365 days);
+
+        vaultState.totalAssets            = 1_131_316.2e6 - 3;
+        vaultState.availableCapacityValue = 114_631_183.8e6 + 2;
+        vaultState.availableLiquidAssets  = 1_077_444e6 - 1;
+
+        vaultState.depositRequests.pendingShareValue = 1_077_444e6 - 1;
+
+        userBalances.shareValue = 1_131_316.2e6 - 3;
+
+        vaultBalances.savingsShareValue = 1_077_444e6 - 1;
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 8. Taker takes full `availableLiquidAssets()`
+
+        vm.startPrank(taker);
+        spPrime.take(spUSDC.convertToShares(1_077_444e6));  // Deposit Request 1 savings shares
+        vm.stopPrank();
+
+        vaultState.availableLiquidAssets = 0;
+
+        vaultBalances.savingsShareValue = 0;
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 9. Warp
+
+        skip(365 days);
+
+        vaultState.totalAssets            = 1_187_882.01e6 - 3;
+        vaultState.availableCapacityValue = 120_362_742.99e6 + 2;
+
+        vaultState.depositRequests.pendingShareValue = 1_118_386.872e6 - 1;
+
+        userBalances.shareValue = 1_187_882.01e6 - 3;
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 10. User gets filled for second deposit
+
+        _processPendingDeposits(1);  // Deposit Request 1 (Filled)
+
+        vaultState.rho = vm.getBlockTimestamp();
+        vaultState.chi = 1.215506249999999999819735307e27;
+
+        vaultState.totalAssets            = 2_306_268.882e6 - 4;
+        vaultState.availableCapacityValue = 119_244_356.118e6 + 3;
+
+        vaultState.depositRequests.pendingShareValue = 0;
+        vaultState.depositRequests.length            = 0;
+        vaultState.depositRequests.firstPendingId    = 2;
+
+        userBalances.shareValue = 2_306_268.882e6 - 4;
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 11. Warp
+
+        skip(365 days);
+
+        vaultState.totalAssets            = 2_421_582.3261e6 - 4;
+        vaultState.availableCapacityValue = 125_206_573.9239e6 + 3;
+
+        userBalances.shareValue = 2_421_582.3261e6 - 4;
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 12. User requests partial redeem
+
+        _requestRedeem(user, spPrime.balanceOf(user) / 2);  // Redeem Request 0 (Half of the shares)
+
+        vaultState.rho = vm.getBlockTimestamp();
+        vaultState.chi = 1.276281562499999999763402590e27;
+
+        vaultState.redeemRequests.pendingShareValue = 1_210_791.163048e6;
+        vaultState.redeemRequests.length            = 1;
+
+        userBalances.shareValue = 1_210_791.163048e6;
+
+        vaultBalances.shareValue = 1_210_791.163048e6;
+
+        _assertRedeemRequest(0, user, user, 1_210_791.163048e6);
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 13. Warp
+
+        skip(365 days);
+
+        // Shares queued for redemption keep accruing yield
+        vaultState.totalAssets            = 2_542_661.442401e6;
+        vaultState.availableCapacityValue = 131_466_902.620098e6;
+
+        vaultState.redeemRequests.pendingShareValue = 1_271_330.7212e6;
+
+        userBalances.shareValue = 1_271_330.7212e6;
+
+        vaultBalances.shareValue = 1_271_330.7212e6;
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 14. Taker returns liquidity
+
+        // Minimum spUSDC that fills Redeem Request 0 in full (2 extra share units cover rounding)
+        deal(address(spUSDC), address(spPrime), 980_028.044433e6);
+
+        vaultState.availableLiquidAssets = 1_271_330.7212e6 + 1;
+
+        vaultBalances.savingsShareValue = 1_271_330.7212e6 + 1;
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 15. User partial redeem gets fulfilled
+
+        _processPendingRedeems();  // Redeem Request 0 (Filled)
+
+        vaultState.rho = vm.getBlockTimestamp();
+        vaultState.chi = 1.340095640624999999701887263e27;
+
+        vaultState.totalAssets            = 1_271_330.7212e6;
+        vaultState.availableCapacityValue = 132_738_233.341299e6;
+        vaultState.availableLiquidAssets  = 1;  // Rounding
+
+        vaultState.redeemRequests.pendingShareValue = 0;
+        vaultState.redeemRequests.length            = 0;
+        vaultState.redeemRequests.firstPendingId    = 1;
+
+        userBalances.assets = 1_271_330.7212e6;
+
+        vaultBalances.shareValue        = 0;
+        vaultBalances.savingsShareValue = 1;  // Rounding
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 16. User requests partial redeem
+
+        _requestRedeem(user, spPrime.balanceOf(user));  // Redeem Request 1 (Remaining shares)
+
+        vaultState.redeemRequests.pendingShareValue = 1_271_330.7212e6;
+        vaultState.redeemRequests.length            = 1;
+
+        userBalances.shareValue = 0;
+
+        vaultBalances.shareValue = 1_271_330.7212e6;
+
+        _assertRedeemRequest(1, user, user, 1_271_330.7212e6);
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 17. Warp
+
+        skip(365 days);
+
+        vaultState.totalAssets            = 1_334_897.25726e6;
+        vaultState.availableCapacityValue = 139_375_145.008364e6;
+
+        vaultState.redeemRequests.pendingShareValue = 1_334_897.25726e6;
+
+        vaultBalances.shareValue = 1_334_897.25726e6;
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 18. Taker returns liquidity
+
+        // Minimum spUSDC that fills Redeem Request 1 in full (2 extra share units cover rounding)
+        deal(address(spUSDC), address(spPrime), 991_357.848415e6);
+
+        vaultState.availableLiquidAssets = 1_334_897.25726e6 + 2;
+
+        vaultBalances.savingsShareValue = 1_334_897.25726e6 + 2;
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 19. User fully redeems
+
+        _processPendingRedeems();  // Redeem Request 1 (Filled)
+
+        vaultState.rho = vm.getBlockTimestamp();
+        vaultState.chi = 1.407100422656249999634811897e27;
+
+        vaultState.totalAssets            = 0;
+        vaultState.availableCapacityValue = 140_710_042.265624e6;
+        vaultState.availableLiquidAssets  = 1;  // Rounding
+
+        vaultState.redeemRequests.pendingShareValue = 0;
+        vaultState.redeemRequests.length            = 0;
+        vaultState.redeemRequests.firstPendingId    = 2;
+
+        userBalances.assets = 2_606_227.97846e6;  // 1_271_330.7212e6 + 1_334_897.25726e6
+
+        vaultBalances.shareValue        = 0;
+        vaultBalances.savingsShareValue = 1;  // Rounding
+
+        assertEq(spPrime.totalSupply(),         0);
+        assertEq(spPrime.balanceOf(user),       0);
+        assertEq(spPrime.pendingRedeemShares(), 0);
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+    }
+
 }
