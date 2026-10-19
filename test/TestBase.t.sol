@@ -24,6 +24,8 @@ interface ISparkVaultLike {
 
     function redeem(uint256 shares, address to, address from) external returns (uint256);
 
+    function setVsr(uint256 newVsr) external;
+
     function transfer(address to, uint256 amount) external returns (bool);
 
     function withdraw(uint256 assets, address to, address from) external returns (uint256);
@@ -203,6 +205,16 @@ abstract contract TestBase is Test {
     function _setCapacity(uint256 capacity) internal {
         vm.prank(operator);
         spPrime.setCapacity(capacity);
+    }
+
+    function _setVSR(uint256 vsr) internal {
+        vm.prank(operator);
+        spPrime.setVSR(vsr);
+    }
+
+    function _setSavingsVSR(uint256 vsr) internal {
+        vm.prank(Ethereum.ALM_PROXY_FREEZABLE);
+        spUSDC.setVsr(vsr);
     }
 
     function _setMaxRedeemFeeRate(uint256 maxRedeemFeeRate) internal {
