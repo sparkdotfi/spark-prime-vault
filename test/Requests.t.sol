@@ -10,7 +10,7 @@ contract RequestDepositCancellationTests is TestBase {
     address internal user      = makeAddr("user");
     address internal recipient = makeAddr("recipient");
 
-    uint256 internal requestId;
+    uint256 internal depositRequestId;
     uint256 internal requestShares;
 
     AccountBalances internal userBalances;
@@ -27,9 +27,9 @@ contract RequestDepositCancellationTests is TestBase {
 
         _setCapacity(0);
 
-        requestId = _requestDeposit(user, 1_000_000e6);  // Deposit Request 0 (Queued)
+        depositRequestId = _requestDeposit(user, 1_000_000e6);  // Deposit Request 0 (Queued)
 
-        ( , , requestShares ) = spPrime.getPendingDepositRequest(requestId);
+        ( , , requestShares ) = spPrime.getPendingDepositRequest(depositRequestId);
 
         vaultState.rho                    = vm.getBlockTimestamp();
         vaultState.chi                    = 1.049999999999999999961070145e27;
@@ -66,7 +66,7 @@ contract RequestDepositCancellationTests is TestBase {
         });
 
         _assertVaultState();
-        _assertDepositRequest(requestId, user, user, 1_000_000e6 - 1);
+        _assertDepositRequest(depositRequestId, user, user, 1_000_000e6 - 1);
 
         _assertAccountBalances(userBalances);
         _assertAccountBalances(recipientBalances);
@@ -80,19 +80,19 @@ contract RequestDepositCancellationTests is TestBase {
 
         vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vm.prank(user);
-        spPrime.requestDepositCancellation(requestId, user, requestShares);
+        spPrime.requestDepositCancellation(depositRequestId, user, requestShares);
     }
 
     function test_requestDepositCancellation_zeroRecipient() external {
         vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
         vm.prank(user);
-        spPrime.requestDepositCancellation(requestId, address(0), requestShares);
+        spPrime.requestDepositCancellation(depositRequestId, address(0), requestShares);
     }
 
     function test_requestDepositCancellation_vaultIsRecipient() external {
         vm.expectRevert(ISparkPrimeVault.VaultIsRecipient.selector);
         vm.prank(user);
-        spPrime.requestDepositCancellation(requestId, address(spPrime), requestShares);
+        spPrime.requestDepositCancellation(depositRequestId, address(spPrime), requestShares);
     }
 
     function test_requestDepositCancellation_recipientCannotReceive() external {
@@ -100,7 +100,7 @@ contract RequestDepositCancellationTests is TestBase {
 
         vm.expectRevert(ISparkPrimeVault.RecipientCannotReceive.selector);
         vm.prank(user);
-        spPrime.requestDepositCancellation(requestId, recipient, requestShares);
+        spPrime.requestDepositCancellation(depositRequestId, recipient, requestShares);
     }
 
     function test_requestDepositCancellation_invalidRequestIdBoundary() external {
@@ -119,7 +119,7 @@ contract RequestDepositCancellationTests is TestBase {
 
         vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vm.prank(user);
-        spPrime.requestDepositCancellation(requestId, user, requestShares);
+        spPrime.requestDepositCancellation(depositRequestId, user, requestShares);
     }
 
     function test_requestDepositCancellation_notRequestOwner() external {
@@ -139,42 +139,44 @@ contract RequestDepositCancellationTests is TestBase {
     function test_requestDepositCancellation_belowMinDepositCancellationBoundary() external {
         vm.expectRevert(ISparkPrimeVault.BelowMinDepositCancellation.selector);
         vm.prank(user);
-        spPrime.requestDepositCancellation(requestId, user, MINIMUM_DEPOSIT_CANCELLATION - 1);
+        spPrime.requestDepositCancellation(depositRequestId, user, MINIMUM_DEPOSIT_CANCELLATION - 1);
 
         vm.prank(user);
-        spPrime.requestDepositCancellation(requestId, user, MINIMUM_DEPOSIT_CANCELLATION);
+        spPrime.requestDepositCancellation(depositRequestId, user, MINIMUM_DEPOSIT_CANCELLATION);
     }
 
     function test_requestDepositCancellation_savingsSharesTooHighBoundary() external {
         vm.expectRevert(ISparkPrimeVault.SavingsSharesTooHigh.selector);
         vm.prank(user);
-        spPrime.requestDepositCancellation(requestId, user, requestShares + 1);
+        spPrime.requestDepositCancellation(depositRequestId, user, requestShares + 1);
 
         vm.prank(user);
-        spPrime.requestDepositCancellation(requestId, user, requestShares);
+        spPrime.requestDepositCancellation(depositRequestId, user, requestShares);
     }
 
     // Success tests
 
     function test_requestDepositCancellation_full() external {
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.DepositCancellationRequest(requestId, 0, recipient, requestShares);
+        emit ISparkPrimeVault.DepositCancellationRequest(depositRequestId, 0, recipient, requestShares);
 
         vm.prank(user);
-        uint256 cancelRequestId = spPrime.requestDepositCancellation(requestId, recipient, requestShares);
+        uint256 cancelRequestId = spPrime.requestDepositCancellation(depositRequestId, recipient, requestShares);
 
         assertEq(cancelRequestId, 0);
 
-        // The cancelled deposit request stays in the queue as an empty entry.
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
+        spPrime.getPendingDepositRequest(depositRequestId);
 
         vaultState.depositRequests.pendingShareValue = 0;
+        vaultState.depositRequests.length            = 0;
+        vaultState.depositRequests.firstPendingId    = 1;
 
         vaultState.depositCancellationRequests.pendingShareValue = 1_000_000e6 - 1;
         vaultState.depositCancellationRequests.length            = 1;
         vaultState.depositCancellationRequests.firstPendingId    = 0;
 
         _assertVaultState();
-        _assertDepositRequest(requestId, address(0), address(0), 0);
         _assertDepositCancellationRequest(cancelRequestId, user, recipient, 1_000_000e6 - 1);
 
         // No funds move until the cancellation is processed.
@@ -188,10 +190,10 @@ contract RequestDepositCancellationTests is TestBase {
         uint256 cancelShares = spUSDC.convertToShares(400_000e6);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.DepositCancellationRequest(requestId, 0, recipient, cancelShares);
+        emit ISparkPrimeVault.DepositCancellationRequest(depositRequestId, 0, recipient, cancelShares);
 
         vm.prank(user);
-        uint256 cancelRequestId = spPrime.requestDepositCancellation(requestId, recipient, cancelShares);
+        uint256 cancelRequestId = spPrime.requestDepositCancellation(depositRequestId, recipient, cancelShares);
 
         assertEq(cancelRequestId, 0);
 
@@ -204,7 +206,7 @@ contract RequestDepositCancellationTests is TestBase {
         vaultState.depositCancellationRequests.firstPendingId    = 0;
 
         _assertVaultState();
-        _assertDepositRequest(requestId, user, user, 600_000e6 - 1);
+        _assertDepositRequest(depositRequestId, user, user, 600_000e6 - 1);
         _assertDepositCancellationRequest(cancelRequestId, user, recipient, 400_000e6 - 1);
 
         // No funds move until the cancellation is processed.

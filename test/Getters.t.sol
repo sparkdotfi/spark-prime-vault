@@ -99,7 +99,8 @@ contract GetPendingDepositRequestTests is GettersTestBase {
 
         _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
 
-        _assertDepositRequest(0, address(0), address(0), 0);
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
+        spPrime.getPendingDepositRequest(0);
     }
 
     /**********************************************************************************************/
