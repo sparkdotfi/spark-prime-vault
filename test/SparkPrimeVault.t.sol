@@ -302,7 +302,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
     // Success tests
 
     function test_requestRedeem() external {
-        _requestDeposit(user, 1_000_000e6); // Deposit Request 0 (Filled instantly)
+        _requestDeposit(user, 1_000_000e6);  // Deposit Request 0 (Filled instantly)
 
         vaultState.rho                    = vm.getBlockTimestamp();
         vaultState.chi                    = 1.049999999999999999961070145e27;
@@ -341,7 +341,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
 
         assertEq(requestId, 0);
 
-        vaultState.redeemRequests.pendingShareValue = 525_000e6 - 1; // 500k spPrime == 525k USD because of current exchange rate
+        vaultState.redeemRequests.pendingShareValue = 525_000e6 - 1;  // 500k spPrime == 525k USD because of current exchange rate
         vaultState.redeemRequests.length            = 1;
         vaultState.redeemRequests.firstPendingId    = 0;
 
@@ -357,10 +357,10 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
     }
 
     function test_requestRedeem_withFee() external {
-        _setMaxRedeemFeeRate(0.01e18); // 1%
-        _setRedeemFeeRate(0.005e18);   // 0.5%
+        _setMaxRedeemFeeRate(0.01e18);  // 1%
+        _setRedeemFeeRate(0.005e18);    // 0.5%
 
-        _requestDeposit(user, 1_000_000e6); // Deposit Request 0 (Filled instantly)
+        _requestDeposit(user, 1_000_000e6);  // Deposit Request 0 (Filled instantly)
 
         vaultState.rho                    = vm.getBlockTimestamp();
         vaultState.chi                    = 1.049999999999999999961070145e27;
@@ -457,13 +457,13 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _requestDeposit(cam, 900_000e6);    // Will be cancelled
         _requestDeposit(ali, 1_000_000e6);  // Will be partially filled
 
-        _requestDepositCancellation(ali, 0, 100_000e6);
-        _requestDepositCancellation(bob, 1, 200_000e6);
-        _requestDepositCancellation(cam, 2, 300_000e6);
-        _requestDepositCancellation(cam, 5, 600_000e6);
-        _requestDepositCancellation(cam, 8, 900_000e6);
+        _requestDepositCancellation(ali, 0, spUSDC.convertToShares(100_000e6));
+        _requestDepositCancellation(bob, 1, spUSDC.convertToShares(200_000e6));
+        _requestDepositCancellation(cam, 2, spUSDC.convertToShares(300_000e6));
+        _requestDepositCancellation(cam, 5, spUSDC.convertToShares(600_000e6));
+        _requestDepositCancellation(cam, 8, spUSDC.convertToShares(900_000e6));
 
-        uint256 depositedAssets  = 5_500_000e6 - 5;  // All transfers in (net of rounding)
+        uint256 depositedAssets = 5_500_000e6;
 
         uint256 pendingDepositAssets = 400_000e6 + 500_000e6 + 700_000e6 + 800_000e6 + 1_000_000e6;
 
@@ -476,8 +476,9 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         vaultState.rho                    = vm.getBlockTimestamp();
         vaultState.chi                    = 1.049999999999999999961070145e27;
         vaultState.totalAssets            = 0;
+        vaultState.totalClaimable         = 0;
         vaultState.availableCapacityValue = targetAssets - 1;
-        vaultState.availableLiquidAssets  = depositedAssets;
+        vaultState.availableLiquidAssets  = depositedAssets - 5;
 
         vaultState.depositRequests.pendingShareValue = pendingDepositAssets - 3;
         vaultState.depositRequests.length            = 10;
@@ -714,6 +715,434 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _assertDepositRequest(7, bob,        bob,        800_000e6 - 1);
         _assertDepositRequest(8, address(0), address(0), 0);
         _assertDepositRequest(9, ali,        ali,        1_000_000e6 - 1);
+    }
+
+}
+
+contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
+
+    address internal ali = makeAddr("ali");
+    address internal bob = makeAddr("bob");
+    address internal cam = makeAddr("cam");
+    address internal dan = makeAddr("dan");
+
+    AccountBalances internal aliBalances;
+    AccountBalances internal bobBalances;
+    AccountBalances internal camBalances;
+    AccountBalances internal danBalances;
+    AccountBalances internal vaultBalances;
+
+    function setUp() public override {
+        super.setUp();
+
+        vm.label(ali, "ali");
+        vm.label(bob, "bob");
+        vm.label(cam, "cam");
+        vm.label(dan, "dan");
+
+        _setCapacity(0);
+
+        _requestDeposit(ali, 100_000e6);
+        _requestDeposit(bob, 200_000e6);
+        _requestDeposit(cam, 300_000e6);
+        _requestDeposit(ali, 400_000e6);
+        _requestDeposit(bob, 500_000e6);
+        _requestDeposit(cam, 600_000e6);
+        _requestDeposit(ali, 700_000e6);
+        _requestDeposit(bob, 800_000e6);
+        _requestDeposit(cam, 900_000e6);
+        _requestDeposit(ali, 1_000_000e6);
+
+        _requestDepositCancellation(ali, 0, ali, spUSDC.convertToShares(100_000e6));  // Will fail
+        _requestDepositCancellation(bob, 1, bob, spUSDC.convertToShares(200_000e6));
+        _requestDepositCancellation(cam, 2, cam, spUSDC.convertToShares(300_000e6));
+        _requestDepositCancellation(ali, 3, dan, spUSDC.convertToShares(400_000e6));  // Will be blacklisted
+        _requestDepositCancellation(bob, 4, bob, spUSDC.convertToShares(500_000e6));  // Will fail
+        _requestDepositCancellation(cam, 5, cam, spUSDC.convertToShares(600_000e6));
+        _requestDepositCancellation(ali, 6, ali, spUSDC.convertToShares(700_000e6));  // Will fail
+        _requestDepositCancellation(bob, 7, dan, spUSDC.convertToShares(800_000e6));  // Will be blacklisted
+        _requestDepositCancellation(cam, 8, cam, spUSDC.convertToShares(900_000e6));
+        _requestDepositCancellation(ali, 9, ali, spUSDC.convertToShares(1_000_000e6));
+
+        _blacklist(dan);
+
+        uint256 depositedAssets = 5_500_000e6;
+
+        vaultState.rho                    = vm.getBlockTimestamp();
+        vaultState.chi                    = 1.049999999999999999961070145e27;
+        vaultState.totalAssets            = 0;
+        vaultState.totalClaimable         = 0;
+        vaultState.availableCapacityValue = 0;
+        vaultState.availableLiquidAssets  = depositedAssets - 5;
+
+        vaultState.depositRequests.pendingShareValue = 0;
+        vaultState.depositRequests.length            = 10;
+        vaultState.depositRequests.firstPendingId    = 0;
+
+        vaultState.depositCancellationRequests.pendingShareValue = depositedAssets - 5;
+        vaultState.depositCancellationRequests.length            = 10;
+        vaultState.depositCancellationRequests.firstPendingId    = 0;
+
+        aliBalances = AccountBalances({
+            account           : ali,
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        bobBalances = AccountBalances({
+            account           : bob,
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        camBalances = AccountBalances({
+            account           : cam,
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        danBalances = AccountBalances({
+            account           : dan,
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        vaultBalances = AccountBalances({
+            account           : address(spPrime),
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 5_500_000e6 - 5,
+            claimableAssets   : 0
+        });
+
+        _assertVaultState();
+
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(camBalances);
+        _assertAccountBalances(danBalances);
+        _assertAccountBalances(vaultBalances);
+
+        for (uint256 i = 0; i < 10; i++) {
+            _assertDepositRequest(i, address(0), address(0), 0);
+        }
+
+        _assertDepositCancellationRequest(0, ali, ali, 100_000e6 - 1);
+        _assertDepositCancellationRequest(1, bob, bob, 200_000e6 - 1);
+        _assertDepositCancellationRequest(2, cam, cam, 300_000e6 - 1);
+        _assertDepositCancellationRequest(3, ali, dan, 400_000e6 - 1);
+        _assertDepositCancellationRequest(4, bob, bob, 500_000e6 - 1);
+        _assertDepositCancellationRequest(5, cam, cam, 600_000e6 - 1);
+        _assertDepositCancellationRequest(6, ali, ali, 700_000e6 - 1);
+        _assertDepositCancellationRequest(7, bob, dan, 800_000e6 - 1);
+        _assertDepositCancellationRequest(8, cam, cam, 900_000e6 - 1);
+        _assertDepositCancellationRequest(9, ali, ali, 1_000_000e6 - 1);
+    }
+
+    function _setupMockCallReverts() internal {
+        vm.mockCallRevert(
+            address(spUSDC),
+            abi.encodeWithSelector(ISparkVaultLike.redeem.selector, spUSDC.convertToShares(100_000e6), ali, address(spPrime)),
+            ""
+        );
+
+        vm.mockCallRevert(
+            address(spUSDC),
+            abi.encodeWithSelector(ISparkVaultLike.redeem.selector, spUSDC.convertToShares(500_000e6), bob, address(spPrime)),
+            ""
+        );
+
+        vm.mockCallRevert(
+            address(spUSDC),
+            abi.encodeWithSelector(ISparkVaultLike.redeem.selector, spUSDC.convertToShares(700_000e6), ali, address(spPrime)),
+            ""
+        );
+    }
+
+    function test_processPendingDepositCancellations_infiniteMaxSavingsShares_infiniteMaxRequests() external {
+        _setupMockCallReverts();
+
+        // Deposit Request 0
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ClaimableAssetsIncreased(ali, 100_000e6 - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(0, ali, ali, spUSDC.convertToShares(100_000e6), 100_000e6 - 1);
+
+        // Deposit Request 1
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(1, bob, bob, spUSDC.convertToShares(200_000e6), 200_000e6 - 1);
+
+        // Deposit Request 2
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(2, cam, cam, spUSDC.convertToShares(300_000e6), 300_000e6 - 1);
+
+        // Deposit Request 3
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ClaimableAssetsIncreased(dan, 400_000e6 - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(3, ali, dan, spUSDC.convertToShares(400_000e6), 400_000e6 - 1);
+
+        // Deposit Request 4
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ClaimableAssetsIncreased(bob, 500_000e6 - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(4, bob, bob, spUSDC.convertToShares(500_000e6), 500_000e6 - 1);
+
+        // Deposit Request 5
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(5, cam, cam, spUSDC.convertToShares(600_000e6), 600_000e6 - 1);
+
+        // Deposit Request 6
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ClaimableAssetsIncreased(ali, 700_000e6 - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(6, ali, ali, spUSDC.convertToShares(700_000e6), 700_000e6 - 1);
+
+        // Deposit Request 7
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ClaimableAssetsIncreased(dan, 800_000e6 - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(7, bob, dan, spUSDC.convertToShares(800_000e6), 800_000e6 - 1);
+
+        // Deposit Request 8
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(8, cam, cam, spUSDC.convertToShares(900_000e6), 900_000e6 - 1);
+
+        // Deposit Request 9
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(9, ali, ali, spUSDC.convertToShares(1_000_000e6), 1_000_000e6 - 1);
+
+        vm.prank(processor);
+        spPrime.processPendingDepositCancellations(type(uint256).max, type(uint256).max);
+
+        uint256 totalClaimable = 100_000e6 + 400_000e6 + 500_000e6 + 700_000e6 + 800_000e6;
+
+        vaultState.totalClaimable        += totalClaimable - 5;
+        vaultState.availableLiquidAssets  = 0;
+
+        vaultState.depositCancellationRequests.pendingShareValue = 0;
+        vaultState.depositCancellationRequests.length            = 0;
+        vaultState.depositCancellationRequests.firstPendingId    = 10;
+
+        aliBalances.assets          += 1_000_000e6 - 1;
+        aliBalances.claimableAssets += 100_000e6 + 700_000e6 - 2;
+
+        bobBalances.assets          += 200_000e6 - 1;
+        bobBalances.claimableAssets += 500_000e6 - 1;
+
+        camBalances.assets          += 300_000e6 + 600_000e6 + 900_000e6 - 3;
+
+        danBalances.claimableAssets += 400_000e6 + 800_000e6 - 2;
+
+        vaultBalances.assets            += totalClaimable - 5;
+        vaultBalances.savingsShareValue  = 0;
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(camBalances);
+        _assertAccountBalances(danBalances);
+        _assertAccountBalances(vaultBalances);
+
+        for (uint256 i = 0; i < 10; i++) {
+            vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
+            _assertDepositCancellationRequest(i, address(0), address(0), 0);
+        }
+    }
+
+    function test_processPendingDepositCancellations_infiniteMaxSavingsShares_limitedMaxRequests() external {
+        _setupMockCallReverts();
+
+        // Deposit Request 0
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ClaimableAssetsIncreased(ali, 100_000e6 - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(0, ali, ali, spUSDC.convertToShares(100_000e6), 100_000e6 - 1);
+
+        // Deposit Request 1
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(1, bob, bob, spUSDC.convertToShares(200_000e6), 200_000e6 - 1);
+
+        // Deposit Request 2
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(2, cam, cam, spUSDC.convertToShares(300_000e6), 300_000e6 - 1);
+
+        // Deposit Request 3
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ClaimableAssetsIncreased(dan, 400_000e6 - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(3, ali, dan, spUSDC.convertToShares(400_000e6), 400_000e6 - 1);
+
+        // Deposit Request 4
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ClaimableAssetsIncreased(bob, 500_000e6 - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(4, bob, bob, spUSDC.convertToShares(500_000e6), 500_000e6 - 1);
+
+        // Deposit Request 5
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(5, cam, cam, spUSDC.convertToShares(600_000e6), 600_000e6 - 1);
+
+        vm.prank(processor);
+        spPrime.processPendingDepositCancellations(type(uint256).max, 6);
+
+        uint256 assetsWithdrawn = 100_000e6 + 200_000e6 + 300_000e6 + 400_000e6 + 500_000e6 + 600_000e6;
+        uint256 totalClaimable  = 100_000e6 + 400_000e6 + 500_000e6;
+
+        vaultState.totalClaimable        += totalClaimable - 3;
+        vaultState.availableLiquidAssets -= assetsWithdrawn - 2;
+
+        vaultState.depositCancellationRequests.pendingShareValue -= assetsWithdrawn - 2;
+        vaultState.depositCancellationRequests.length            = 4;
+        vaultState.depositCancellationRequests.firstPendingId    = 6;
+
+        aliBalances.claimableAssets += 100_000e6 - 1;
+
+        bobBalances.assets          += 200_000e6 - 1;
+        bobBalances.claimableAssets += 500_000e6 - 1;
+
+        camBalances.assets          += 300_000e6 + 600_000e6 - 2;
+
+        danBalances.claimableAssets += 400_000e6 - 1;
+
+        vaultBalances.assets            += totalClaimable - 3;
+        vaultBalances.savingsShareValue -= assetsWithdrawn - 2;
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(camBalances);
+        _assertAccountBalances(danBalances);
+        _assertAccountBalances(vaultBalances);
+
+        for (uint256 i = 0; i < 6; i++) {
+            vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
+            _assertDepositCancellationRequest(i, address(0), address(0), 0);
+        }
+
+        _assertDepositCancellationRequest(6, ali, ali, 700_000e6 - 1);
+        _assertDepositCancellationRequest(7, bob, dan, 800_000e6 - 1);
+        _assertDepositCancellationRequest(8, cam, cam, 900_000e6 - 1);
+        _assertDepositCancellationRequest(9, ali, ali, 1_000_000e6 - 1);
+    }
+
+    function test_processPendingDepositCancellations_limitedMaxSavingsShares_infiniteMaxRequests() external {
+        _setupMockCallReverts();
+
+        // Deposit Request 0
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ClaimableAssetsIncreased(ali, 100_000e6 - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(0, ali, ali, spUSDC.convertToShares(100_000e6), 100_000e6 - 1);
+
+        // Deposit Request 1
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(1, bob, bob, spUSDC.convertToShares(200_000e6), 200_000e6 - 1);
+
+        // Deposit Request 2
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(2, cam, cam, spUSDC.convertToShares(300_000e6), 300_000e6 - 1);
+
+        // Deposit Request 3
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ClaimableAssetsIncreased(dan, 400_000e6 - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(3, ali, dan, spUSDC.convertToShares(400_000e6), 400_000e6 - 1);
+
+        // Deposit Request 4
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ClaimableAssetsIncreased(bob, 500_000e6 - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(4, bob, bob, spUSDC.convertToShares(500_000e6), 500_000e6 - 1);
+
+        // Deposit Request 5
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellation(5, cam, cam, spUSDC.convertToShares(500_000e6) + 2, 500_000e6 + 1);  // Only 500k of the 600k is processed
+
+        vm.startPrank(processor);
+        spPrime.processPendingDepositCancellations(spUSDC.convertToShares(2_000_000e6), type(uint256).max);
+        vm.stopPrank();
+
+        uint256 assetsWithdrawn = 100_000e6 + 200_000e6 + 300_000e6 + 400_000e6 + 500_000e6 + 500_000e6;  // Only 500k of the last request is processed
+        uint256 totalClaimable  = 100_000e6 + 400_000e6 + 500_000e6;
+
+        vaultState.totalClaimable        += totalClaimable - 3;
+        vaultState.availableLiquidAssets -= assetsWithdrawn;
+
+        vaultState.depositCancellationRequests.pendingShareValue -= assetsWithdrawn;
+        vaultState.depositCancellationRequests.length            = 5;
+        vaultState.depositCancellationRequests.firstPendingId    = 5;
+
+        aliBalances.claimableAssets += 100_000e6 - 1;
+
+        bobBalances.assets          += 200_000e6 - 1;
+        bobBalances.claimableAssets += 500_000e6 - 1;
+
+        camBalances.assets          += 300_000e6 + 500_000e6;
+
+        danBalances.claimableAssets += 400_000e6 - 1;
+
+        vaultBalances.assets            += totalClaimable - 3;
+        vaultBalances.savingsShareValue -= assetsWithdrawn;
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(camBalances);
+        _assertAccountBalances(danBalances);
+        _assertAccountBalances(vaultBalances);
+
+        for (uint256 i = 0; i < 5; i++) {
+            vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
+            _assertDepositCancellationRequest(i, address(0), address(0), 0);
+        }
+
+        _assertDepositCancellationRequest(5, cam, cam, 100_000e6 - 2);
+        _assertDepositCancellationRequest(6, ali, ali, 700_000e6 - 1);
+        _assertDepositCancellationRequest(7, bob, dan, 800_000e6 - 1);
+        _assertDepositCancellationRequest(8, cam, cam, 900_000e6 - 1);
+        _assertDepositCancellationRequest(9, ali, ali, 1_000_000e6 - 1);
     }
 
 }

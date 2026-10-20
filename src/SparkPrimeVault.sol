@@ -142,6 +142,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
     uint256 public override totalSupply;
 
+    uint256 public override totalClaimable;
+
     uint256 public override pendingDepositSavingsShares;
     uint256 public override pendingCancelledDepositSavingsShares;
     uint256 public override pendingRedeemShares;
@@ -533,6 +535,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         require(assets_ != 0, NothingToClaim());
 
         claimableAssets[recipient_] = 0;
+
+        totalClaimable -= assets_;
 
         emit Claim(recipient_, assets_);
 
@@ -1092,6 +1096,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
     function _incrementClaimableAssets(address recipient_, uint256 assets_) internal {
         claimableAssets[recipient_] += assets_;
+        totalClaimable              += assets_;
 
         emit ClaimableAssetsIncreased(recipient_, assets_);
     }
