@@ -29,7 +29,6 @@ contract ClaimTests is TestBase {
 
     function test_claim_nothingToClaim() external {
         vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
-        vm.prank(user);
         spPrime.claim(user);
     }
 
@@ -87,7 +86,6 @@ contract ClaimTests is TestBase {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.Claim(user, 1_000_000e6 - 1);
 
-        vm.prank(user);
         spPrime.claim(user);
 
         userBalances.assets          = 1_000_000e6 - 1;
@@ -153,7 +151,6 @@ contract ClaimTests is TestBase {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.Claim(user, 500_000e6);
 
-        vm.prank(user);
         spPrime.claim(user);
 
         userBalances.assets          = 500_000e6;
