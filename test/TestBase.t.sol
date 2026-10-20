@@ -90,18 +90,20 @@ abstract contract TestBase is Test {
     uint256 internal constant FIVE_PCT_VSR = 1.000000001547125957863212448e27;
 
     address internal admin           = makeAddr("admin");
-    address internal guardian        = makeAddr("guardian");
-    address internal processor       = makeAddr("processor");
+    address internal lossManager     = makeAddr("lossManager");
+    address internal operator        = makeAddr("operator");
+    address internal pauser          = makeAddr("pauser");
     address internal redeemFeeSetter = makeAddr("redeemFeeSetter");
     address internal taker           = makeAddr("taker");
-    address internal vsrSetter       = makeAddr("vsrSetter");
+    address internal unpauser        = makeAddr("unpauser");
 
     bytes32 internal DEFAULT_ADMIN_ROLE     = 0x00;
-    bytes32 internal GUARDIAN_ROLE          = keccak256("GUARDIAN_ROLE");
-    bytes32 internal PROCESSOR_ROLE         = keccak256("PROCESSOR_ROLE");
+    bytes32 internal LOSS_MANAGER_ROLE      = keccak256("LOSS_MANAGER_ROLE");
+    bytes32 internal OPERATOR_ROLE          = keccak256("OPERATOR_ROLE");
+    bytes32 internal PAUSER_ROLE            = keccak256("PAUSER_ROLE");
     bytes32 internal REDEEM_FEE_SETTER_ROLE = keccak256("REDEEM_FEE_SETTER_ROLE");
     bytes32 internal TAKER_ROLE             = keccak256("TAKER_ROLE");
-    bytes32 internal VSR_SETTER_ROLE        = keccak256("VSR_SETTER_ROLE");
+    bytes32 internal UNPAUSER_ROLE          = keccak256("UNPAUSER_ROLE");
 
     IERC20Like      internal usdc   = IERC20Like(Ethereum.USDC);
     ISparkVaultLike internal spUSDC = ISparkVaultLike(Ethereum.SPARK_VAULT_V2_SPUSDC);
@@ -133,19 +135,22 @@ abstract contract TestBase is Test {
 
         vm.startPrank(admin);
 
-        spPrime.grantRole(GUARDIAN_ROLE,          guardian);
-        spPrime.grantRole(PROCESSOR_ROLE,         processor);
+        spPrime.grantRole(LOSS_MANAGER_ROLE,      lossManager);
+        spPrime.grantRole(OPERATOR_ROLE,          operator);
+        spPrime.grantRole(PAUSER_ROLE,            pauser);
         spPrime.grantRole(REDEEM_FEE_SETTER_ROLE, redeemFeeSetter);
         spPrime.grantRole(TAKER_ROLE,             taker);
-        spPrime.grantRole(VSR_SETTER_ROLE,        vsrSetter);
+        spPrime.grantRole(UNPAUSER_ROLE,          unpauser);
 
-        spPrime.setCapacity(VAULT_CAPACITY);
         spPrime.setVSRBounds(RAY, spPrime.MAX_VSR());
 
         vm.stopPrank();
 
-        vm.prank(vsrSetter);
+
+        vm.startPrank(operator);
+        spPrime.setCapacity(VAULT_CAPACITY);
         spPrime.setVSR(FIVE_PCT_VSR);
+        vm.stopPrank();
 
         PendingRequestsState memory depositRequests = PendingRequestsState({
             pendingShareValue : 0,
@@ -178,14 +183,14 @@ abstract contract TestBase is Test {
         });
 
         vm.label(address(admin),           "admin");
-        vm.label(address(guardian),        "guardian");
-        vm.label(address(processor),       "processor");
+        vm.label(address(lossManager),     "lossManager");
+        vm.label(address(operator),        "operator");
         vm.label(address(redeemFeeSetter), "redeemFeeSetter");
         vm.label(address(spPrime),         "spPrime");
         vm.label(address(spUSDC),          "spUSDC");
         vm.label(address(taker),           "taker");
+        vm.label(address(unpauser),        "unpauser");
         vm.label(address(usdc),            "usdc");
-        vm.label(address(vsrSetter),       "vsrSetter");
     }
 
     function _getBlock() internal pure returns (uint256) {
@@ -197,17 +202,17 @@ abstract contract TestBase is Test {
     /**********************************************************************************************/
 
     function _pause() internal {
-        vm.prank(guardian);
+        vm.prank(pauser);
         spPrime.pause();
     }
 
     function _unpause() internal {
-        vm.prank(admin);
+        vm.prank(unpauser);
         spPrime.unpause();
     }
 
     function _setCapacity(uint256 capacity) internal {
-        vm.prank(admin);
+        vm.prank(operator);
         spPrime.setCapacity(capacity);
     }
 
@@ -256,7 +261,7 @@ abstract contract TestBase is Test {
     }
 
     function _processPendingDeposits(uint256 maxSavingsShares, uint256 maxRequests) internal {
-        vm.prank(processor);
+        vm.prank(operator);
         spPrime.processPendingDeposits(maxSavingsShares, maxRequests);
     }
 
@@ -264,8 +269,12 @@ abstract contract TestBase is Test {
         _processPendingDeposits(type(uint256).max, maxRequests);
     }
 
+    function _processPendingDeposits() internal {
+        _processPendingDeposits(type(uint256).max, type(uint256).max);
+    }
+
     function _processPendingDepositCancellations(uint256 maxSavingsShares, uint256 maxRequests) internal {
-        vm.prank(processor);
+        vm.prank(operator);
         spPrime.processPendingDepositCancellations(maxSavingsShares, maxRequests);
     }
 
@@ -274,7 +283,7 @@ abstract contract TestBase is Test {
     }
 
     function _processPendingRedeems(uint256 maxShares, uint256 maxRequests) internal {
-        vm.prank(processor);
+        vm.prank(operator);
         spPrime.processPendingRedeems(maxShares, maxRequests);
     }
 

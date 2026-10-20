@@ -34,21 +34,21 @@ contract RoleBasedTests is TestBase {
     function test_grantRole_notAdmin() external {
         vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
         vm.prank(unauthorized);
-        spPrime.grantRole(PROCESSOR_ROLE, processor);
+        spPrime.grantRole(OPERATOR_ROLE, operator);
     }
 
     function test_grantRole() external {
         address account = makeAddr("account");
 
-        assertEq(spPrime.hasRole(PROCESSOR_ROLE, account), false);
+        assertEq(spPrime.hasRole(OPERATOR_ROLE, account), false);
 
         vm.expectEmit(address(spPrime));
-        emit IAccessControl.RoleGranted(PROCESSOR_ROLE, account, admin);
+        emit IAccessControl.RoleGranted(OPERATOR_ROLE, account, admin);
 
         vm.prank(admin);
-        spPrime.grantRole(PROCESSOR_ROLE, account);
+        spPrime.grantRole(OPERATOR_ROLE, account);
 
-        assertEq(spPrime.hasRole(PROCESSOR_ROLE, account), true);
+        assertEq(spPrime.hasRole(OPERATOR_ROLE, account), true);
     }
 
     /**********************************************************************************************/
@@ -58,19 +58,19 @@ contract RoleBasedTests is TestBase {
     function test_revokeRole_notAdmin() external {
         vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
         vm.prank(unauthorized);
-        spPrime.revokeRole(GUARDIAN_ROLE, guardian);
+        spPrime.revokeRole(PAUSER_ROLE, pauser);
     }
 
     function test_revokeRole() external {
-        assertEq(spPrime.hasRole(GUARDIAN_ROLE, guardian), true);
+        assertEq(spPrime.hasRole(PAUSER_ROLE, pauser), true);
 
         vm.expectEmit(address(spPrime));
-        emit IAccessControl.RoleRevoked(GUARDIAN_ROLE, guardian, admin);
+        emit IAccessControl.RoleRevoked(PAUSER_ROLE, pauser, admin);
 
         vm.prank(admin);
-        spPrime.revokeRole(GUARDIAN_ROLE, guardian);
+        spPrime.revokeRole(PAUSER_ROLE, pauser);
 
-        assertEq(spPrime.hasRole(GUARDIAN_ROLE, guardian), false);
+        assertEq(spPrime.hasRole(PAUSER_ROLE, pauser), false);
     }
 
     /**********************************************************************************************/
@@ -103,15 +103,15 @@ contract RoleBasedTests is TestBase {
     /*** adjustTotalAssets tests                                                                ***/
     /**********************************************************************************************/
 
-    function test_adjustTotalAssets_notAdmin() external {
-        vm.expectRevert(_notAuthorized(user, DEFAULT_ADMIN_ROLE));
+    function test_adjustTotalAssets_notLossManager() external {
+        vm.expectRevert(_notAuthorized(user, LOSS_MANAGER_ROLE));
         vm.prank(user);
         spPrime.adjustTotalAssets(-1e6);
     }
 
     function test_adjustTotalAssets_isNotPaused() external {
         vm.expectRevert(ISparkPrimeVault.IsNotPaused.selector);
-        vm.prank(admin);
+        vm.prank(lossManager);
         spPrime.adjustTotalAssets(-1e6);
     }
 
@@ -119,7 +119,7 @@ contract RoleBasedTests is TestBase {
         _pause();
 
         vm.expectRevert(ISparkPrimeVault.ZeroDeltaTotalAssets.selector);
-        vm.prank(admin);
+        vm.prank(lossManager);
         spPrime.adjustTotalAssets(0);
     }
 
@@ -130,10 +130,10 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.totalAssets(), 1_000_000e6 - 1);  // Rounding
 
         vm.expectRevert(ISparkPrimeVault.LossTooHigh.selector);
-        vm.prank(admin);
+        vm.prank(lossManager);
         spPrime.adjustTotalAssets(-(1_000_000e6 - 1));
 
-        vm.prank(admin);
+        vm.prank(lossManager);
         spPrime.adjustTotalAssets(-(1_000_000e6 - 2));
     }
 
@@ -141,7 +141,7 @@ contract RoleBasedTests is TestBase {
         _pause();
 
         vm.expectRevert(stdError.divisionError);
-        vm.prank(admin);
+        vm.prank(lossManager);
         spPrime.adjustTotalAssets(1e6);
     }
 
@@ -159,11 +159,11 @@ contract RoleBasedTests is TestBase {
 
         // totalAssets -> 9: chi = 9e27 / 1e28 = 0
         vm.expectRevert(ISparkPrimeVault.ChiTooLow.selector);
-        vm.prank(admin);
+        vm.prank(lossManager);
         spPrime.adjustTotalAssets(-(totalAssets - 9));
 
         // totalAssets -> 10: chi = 10e27 / 1e28 = 1
-        vm.prank(admin);
+        vm.prank(lossManager);
         spPrime.adjustTotalAssets(-(totalAssets - 10));
 
         assertEq(spPrime.chi(), 1);
@@ -196,7 +196,7 @@ contract RoleBasedTests is TestBase {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.TotalAssetsAdjusted(expectedChi, -int256(loss));
 
-        vm.prank(admin);
+        vm.prank(lossManager);
         spPrime.adjustTotalAssets(-int256(loss));
 
         assertEq(spPrime.chi(),          expectedChi);
@@ -234,7 +234,7 @@ contract RoleBasedTests is TestBase {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.TotalAssetsAdjusted(expectedChi, int256(gain));
 
-        vm.prank(admin);
+        vm.prank(lossManager);
         spPrime.adjustTotalAssets(int256(gain));
 
         assertEq(spPrime.chi(),          expectedChi);
@@ -270,7 +270,7 @@ contract RoleBasedTests is TestBase {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.TotalAssetsAdjusted(expectedChi, -int256(loss));
 
-        vm.prank(admin);
+        vm.prank(lossManager);
         spPrime.adjustTotalAssets(-int256(loss));
 
         assertEq(spPrime.chi(),          expectedChi);
@@ -316,7 +316,7 @@ contract RoleBasedTests is TestBase {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.TotalAssetsAdjusted(expectedChi, -int256(loss));
 
-        vm.prank(admin);
+        vm.prank(lossManager);
         spPrime.adjustTotalAssets(-int256(loss));
 
         assertEq(spPrime.chi(),          expectedChi);
@@ -350,8 +350,8 @@ contract RoleBasedTests is TestBase {
     /*** setCapacity tests                                                                      ***/
     /**********************************************************************************************/
 
-    function test_setCapacity_notAdmin() external {
-        vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
+    function test_setCapacity_notOperator() external {
+        vm.expectRevert(_notAuthorized(unauthorized, OPERATOR_ROLE));
         vm.prank(unauthorized);
         spPrime.setCapacity(2_000_000e6);
     }
@@ -363,7 +363,7 @@ contract RoleBasedTests is TestBase {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.CapacitySet(2_000_000e6);
 
-        vm.prank(admin);
+        vm.prank(operator);
         spPrime.setCapacity(2_000_000e6);
 
         assertEq(spPrime.maxCapacity(),       2_000_000e6);
@@ -372,7 +372,7 @@ contract RoleBasedTests is TestBase {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.CapacitySet(type(uint256).max);
 
-        vm.prank(admin);
+        vm.prank(operator);
         spPrime.setCapacity(type(uint256).max);
 
         assertEq(spPrime.maxCapacity(),       type(uint256).max);
@@ -381,7 +381,7 @@ contract RoleBasedTests is TestBase {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.CapacitySet(0);
 
-        vm.prank(admin);
+        vm.prank(operator);
         spPrime.setCapacity(0);
 
         assertEq(spPrime.maxCapacity(),       0);
@@ -593,14 +593,14 @@ contract RoleBasedTests is TestBase {
     /**********************************************************************************************/
 
     function test_unpause_notAuthorized() external {
-        vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
+        vm.expectRevert(_notAuthorized(unauthorized, UNPAUSER_ROLE));
         vm.prank(unauthorized);
         spPrime.unpause();
     }
 
-    function test_unpause_guardianCannotUnpause() external {
-        vm.expectRevert(_notAuthorized(guardian, DEFAULT_ADMIN_ROLE));
-        vm.prank(guardian);
+    function test_unpause_pauserCannotUnpause() external {
+        vm.expectRevert(_notAuthorized(pauser, UNPAUSER_ROLE));
+        vm.prank(pauser);
         spPrime.unpause();
     }
 
@@ -612,7 +612,7 @@ contract RoleBasedTests is TestBase {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.Unpaused();
 
-        vm.prank(admin);
+        vm.prank(unpauser);
         spPrime.unpause();
 
         assertEq(spPrime.paused(), false);
@@ -623,7 +623,7 @@ contract RoleBasedTests is TestBase {
     /**********************************************************************************************/
 
     function test_setVSR_notSetter() external {
-        vm.expectRevert(_notAuthorized(unauthorized, VSR_SETTER_ROLE));
+        vm.expectRevert(_notAuthorized(unauthorized, OPERATOR_ROLE));
         vm.prank(unauthorized);
         spPrime.setVSR(ONE_PCT_VSR);
     }
@@ -633,10 +633,10 @@ contract RoleBasedTests is TestBase {
         spPrime.setVSRBounds(ONE_PCT_VSR, FOUR_PCT_VSR);
 
         vm.expectRevert(ISparkPrimeVault.VSRTooLow.selector);
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         spPrime.setVSR(ONE_PCT_VSR - 1);
 
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         spPrime.setVSR(ONE_PCT_VSR);
     }
 
@@ -645,10 +645,10 @@ contract RoleBasedTests is TestBase {
         spPrime.setVSRBounds(RAY, FOUR_PCT_VSR);
 
         vm.expectRevert(ISparkPrimeVault.VSRTooHigh.selector);
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         spPrime.setVSR(FOUR_PCT_VSR + 1);
 
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         spPrime.setVSR(FOUR_PCT_VSR);
     }
 
@@ -667,7 +667,7 @@ contract RoleBasedTests is TestBase {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.VSRSet(FOUR_PCT_VSR);
 
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         spPrime.setVSR(FOUR_PCT_VSR);
 
         assertEq(uint256(spPrime.chi()), 1.001337610630706965934046250e27);
@@ -773,7 +773,7 @@ contract RoleBasedTests is TestBase {
     /**********************************************************************************************/
 
     function test_pause_notAuthorized() external {
-        vm.expectRevert(_notAuthorized(unauthorized, GUARDIAN_ROLE));
+        vm.expectRevert(_notAuthorized(unauthorized, PAUSER_ROLE));
         vm.prank(unauthorized);
         spPrime.pause();
     }
@@ -784,7 +784,7 @@ contract RoleBasedTests is TestBase {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.Paused();
 
-        vm.prank(guardian);
+        vm.prank(pauser);
         spPrime.pause();
 
         assertEq(spPrime.paused(), true);
