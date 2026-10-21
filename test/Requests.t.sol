@@ -103,6 +103,15 @@ contract RequestDepositCancellationTests is TestBase {
         spPrime.requestDepositCancellation(requestId, recipient, requestShares);
     }
 
+    function test_requestDepositCancellation_invalidRequestIdBoundary() external {
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
+        vm.prank(user);
+        spPrime.requestDepositCancellation(1, recipient, requestShares);
+
+        vm.prank(user);
+        spPrime.requestDepositCancellation(0, recipient, requestShares);
+    }
+
     function test_requestDepositCancellation_requestFilled() external {
         _setCapacity(VAULT_CAPACITY);
 

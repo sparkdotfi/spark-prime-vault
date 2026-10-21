@@ -414,9 +414,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         override
         returns (uint256 newRequestId_)
     {
-        require(recipient_ != address(0),     ZeroRecipient());
-        require(recipient_ != address(this),  VaultIsRecipient());
-        require(_canReceiveAsset(recipient_), RecipientCannotReceive());
+        require(recipient_ != address(0),             ZeroRecipient());
+        require(recipient_ != address(this),          VaultIsRecipient());
+        require(_canReceiveAsset(recipient_),         RecipientCannotReceive());
+        require(requestId_ < _depositRequests.length, InvalidRequestId());
 
         Request memory depositRequest_ = _depositRequests[requestId_];
 

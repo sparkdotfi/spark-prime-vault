@@ -7,6 +7,8 @@ import { Ethereum } from "../lib/spark-address-registry/src/Ethereum.sol";
 
 import { TokenFuzzChecks } from "../lib/token-tests/src/TokenFuzzChecks.sol";
 
+import { ISparkPrimeVault } from "../src/ISparkPrimeVault.sol";
+
 import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
 
 contract ERC20Tests is TokenFuzzChecks {
@@ -25,7 +27,7 @@ contract ERC20Tests is TokenFuzzChecks {
             address(new ERC1967Proxy(
                 address(new SparkPrimeVault()),
                 abi.encodeCall(
-                    SparkPrimeVault.initialize,
+                    ISparkPrimeVault.initialize,
                     (Ethereum.SPARK_VAULT_V2_SPUSDC, "Spark Prime USDC", "spPrime", admin, 1, 1, 1)
                 )
             ))
