@@ -443,6 +443,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
         emit DepositCancellationRequest(requestId_, newRequestId_, recipient_, savingsShares_);
 
+        // Clears all empty deposits that are at the front of the queue.
+        // Prevents depositing user from potential reverts on an atomic deposit due many processable
+        // cancelled deposit requests.
         _processPendingDeposits(0, type(uint256).max);
     }
 
@@ -881,6 +884,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
             if (request_.shares == 0) continue;  // Cancelled
 
+            // Allow processing cancelled deposits while `remaining_ == 0`.
             if (remaining_ == 0) break;
 
             uint256 savingsShares_ = _min(request_.shares, remaining_);
@@ -918,12 +922,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         uint256 i_   = firstPendingDepositCancellationId;
         uint256 end_ = i_ + _min(_depositCancellationRequests.length - i_, maxRequests_);
 
-        for (; i_ < end_; ++i_) {
+        for (; i_ < end_ && remaining_ != 0; ++i_) {
             Request storage request_ = _depositCancellationRequests[i_];
-
-            if (request_.shares == 0) continue;  // Cancelled
-
-            if (remaining_ == 0) break;
 
             uint256 savingsShares_ = _min(request_.shares, remaining_);
 
@@ -957,12 +957,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         uint256 i_   = firstPendingRedeemId;
         uint256 end_ = i_ + _min(_redeemRequests.length - i_, maxRequests_);
 
-        for (; i_ < end_; ++i_) {
+        for (; i_ < end_ && remaining_ != 0; ++i_) {
             Request storage request_ = _redeemRequests[i_];
-
-            if (request_.shares == 0) continue;  // Empty
-
-            if (remaining_ == 0) break;
 
             uint256 fillable_ = _min(remaining_, convertToShares(availableLiquidAssets()));
 
