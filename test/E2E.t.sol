@@ -3,14 +3,20 @@ pragma solidity ^0.8.34;
 
 import { TestBase } from "./TestBase.t.sol";
 
+import { ISparkPrimeVault } from "../src/ISparkPrimeVault.sol";
+
 contract E2ETests is TestBase {
 
     address internal user = makeAddr("user");
+    address internal ali  = makeAddr("ali");
+    address internal bob  = makeAddr("bob");
 
     function setUp() public override {
         super.setUp();
 
         vm.label(user, "user");
+        vm.label(ali,  "ali");
+        vm.label(bob,  "bob");
     }
 
     function test_e2e_flow1() external {
@@ -487,8 +493,8 @@ contract E2ETests is TestBase {
 
         // 14. Taker returns liquidity
 
-        // Minimum spUSDC that fills Redeem Request 0 in full (2 extra share units cover rounding)
-        deal(address(spUSDC), address(spPrime), 980_028.044433e6);
+        // Redeem Request 0 is owed 1_271_330.7212e6 + 2 Rounding
+        deal(address(spUSDC), address(spPrime), spUSDC.convertToShares(1_271_330.7212e6 + 2));
 
         vaultState.availableLiquidAssets = 1_271_330.7212e6 + 1;
 
@@ -556,8 +562,8 @@ contract E2ETests is TestBase {
 
         // 18. Taker returns liquidity
 
-        // Minimum spUSDC that fills Redeem Request 1 in full (2 extra share units cover rounding)
-        deal(address(spUSDC), address(spPrime), 991_357.848415e6);
+        // Redeem Request 1 is owed 1_334_897.25726e6 + 3 Rounding
+        deal(address(spUSDC), address(spPrime), spUSDC.convertToShares(1_334_897.25726e6 + 3));
 
         vaultState.availableLiquidAssets = 1_334_897.25726e6 + 2;
 
@@ -593,6 +599,383 @@ contract E2ETests is TestBase {
 
         _assertVaultState();
         _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+    }
+
+    function test_e2e_lossWithPendingQueues() external {
+        AccountBalances memory aliBalances = AccountBalances({
+            account           : ali,
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        AccountBalances memory bobBalances = AccountBalances({
+            account           : bob,
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        AccountBalances memory vaultBalances = AccountBalances({
+            account           : address(spPrime),
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        // 0. Vault capacity only fits Ali's deposit, so Bob's deposit queues.
+
+        _setCapacity(1_000_000e6);
+
+        vaultState.availableCapacityValue = 1_000_000e6;
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 1. Ali requests deposit 0, filled instantly
+
+        _requestDeposit(ali, 1_000_000e6);  // Deposit Request 0 (Filled instantly)
+
+        vaultState.totalAssets            = 1_000_000e6 - 1;
+        vaultState.availableCapacityValue = 1;  // Rounding
+        vaultState.availableLiquidAssets  = 1_000_000e6 - 1;
+
+        vaultState.depositRequests.firstPendingId = 1;
+
+        aliBalances.shareValue = 1_000_000e6 - 1;
+
+        vaultBalances.savingsShareValue = 1_000_000e6 - 1;
+
+        assertEq(spPrime.balanceOf(ali), 1_000_000e6 - 1); // spPrime shares of Ali
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 2. Warp
+
+        skip(365 days);
+
+        // spPrime accrues 5%, spUSDC accrues 3.8%
+        vaultState.totalAssets           = 1_050_000e6 - 2;
+        vaultState.availableLiquidAssets = 1_038_000e6 - 1;
+
+        aliBalances.shareValue = 1_050_000e6 - 2;
+
+        vaultBalances.savingsShareValue = 1_038_000e6 - 1;
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 3. Bob requests deposit 1, queued because the vault is at capacity
+
+        _requestDeposit(bob, 1_000_000e6);  // Deposit Request 1 (Queued)
+
+        vaultState.rho = vm.getBlockTimestamp();
+        vaultState.chi = 1.049999999999999999961070145e27;
+
+        vaultState.availableLiquidAssets = 2_038_000e6 - 1;
+
+        vaultState.depositRequests.pendingShareValue = 1_000_000e6 - 1;
+        vaultState.depositRequests.length            = 1;
+
+        vaultBalances.savingsShareValue = 2_038_000e6 - 1;
+
+        _assertDepositRequest(1, bob, bob, 1_000_000e6 - 1);
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 4. Taker takes full savings shares balance
+
+        vm.startPrank(taker);
+        spPrime.take(spUSDC.balanceOf(address(spPrime)));
+        vm.stopPrank();
+
+        vaultState.availableLiquidAssets = 0;
+
+        vaultBalances.savingsShareValue = 0;
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 5. Warp
+
+        skip(365 days);
+
+        vaultState.totalAssets = 1_102_500e6 - 2; // 5% APY
+
+        vaultState.depositRequests.pendingShareValue = 1_038_000e6 - 1; // 3.8% APY
+
+        aliBalances.shareValue = 1_102_500e6 - 2;
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 6. Ali requests partial redeem, queued because there is no liquidity
+
+        _requestRedeem(ali, spPrime.balanceOf(ali) / 2);  // Redeem Request 0 (Half of the shares)
+
+        vaultState.rho = vm.getBlockTimestamp();
+        vaultState.chi = 1.102499999999999999918247304e27;
+
+        vaultState.redeemRequests.pendingShareValue = 551_250e6 - 2;
+        vaultState.redeemRequests.length            = 1;
+
+        aliBalances.shareValue = 551_250e6 - 1;
+
+        vaultBalances.shareValue = 551_250e6 - 2;
+
+        _assertRedeemRequest(0, ali, ali, 551_250e6 - 2);
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 7. Guardian pauses the vault
+
+        _pause();
+
+        assertEq(spPrime.paused(), true);
+
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
+        _processPendingDeposits(type(uint256).max);
+
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
+        _processPendingRedeems();
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 8. Admin records a 10% loss on deployed funds
+
+        vm.prank(admin);
+        spPrime.adjustTotalAssets(-(110_250e6 - 1));  // 10% of 1_102_500e6 - 2 totalAssets
+
+        // Chi drops by 10%, so Ali's held shares and her pending redeem lose 10% of their value
+        vaultState.chi = 0.992249999999992249999999992e27;
+
+        vaultState.totalAssets            = 992_250e6 - 2;
+        vaultState.availableCapacityValue = 0;  // Rounding
+
+        vaultState.redeemRequests.pendingShareValue = 496_125e6 - 1;
+
+        aliBalances.shareValue = 496_125e6 - 1;
+
+        vaultBalances.shareValue = 496_125e6 - 1;
+
+        _assertRedeemRequest(0, ali, ali, 496_125e6 - 1);
+
+        // Bob's pending deposit is held in spUSDC, so its value is unchanged by the loss
+        _assertDepositRequest(1, bob, bob, 1_038_000e6 - 1);
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 9. Admin unpauses the vault
+
+        _unpause();
+
+        assertEq(spPrime.paused(), false);
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 10. Admin raises capacity
+
+        _setCapacity(VAULT_CAPACITY);
+
+        vaultState.availableCapacityValue = 98_232_750e6;
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 11. Bob gets filled for deposit 1 at the post-loss rate
+
+        _processPendingDeposits(1);  // Deposit Request 1 (Filled)
+
+        vaultState.totalAssets            = 2_030_250e6 - 3;
+        vaultState.availableCapacityValue = 97_194_750e6 + 1;
+
+        vaultState.depositRequests.pendingShareValue = 0;
+        vaultState.depositRequests.length            = 0;
+        vaultState.depositRequests.firstPendingId    = 2;
+
+        bobBalances.shareValue = 1_038_000e6 - 2;
+
+        // Bob gets more shares than Ali did for the same 1m deposit, because each share is cheaper
+        assertEq(spPrime.balanceOf(bob), 1_046_107.331820e6); // spPrime shares of Bob
+
+        // Ali's value is unchanged by Bob's mint (aliBalances is not updated)
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 12. Warp
+
+        skip(365 days);
+
+        vaultState.totalAssets            = 2_131_762.5e6 - 3;
+        vaultState.availableCapacityValue = 102_054_487.5e6 + 1;
+
+        vaultState.redeemRequests.pendingShareValue = 520_931.25e6 - 2;
+
+        aliBalances.shareValue = 520_931.25e6 - 1;
+        bobBalances.shareValue = 1_089_900e6 - 2;
+
+        vaultBalances.shareValue = 520_931.25e6 - 2;
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 13. Taker returns liquidity
+
+        // Redeem Request 0 is owed 520_931.25e6 - 2 + 3 Rounding
+        deal(address(spUSDC), address(spPrime), spUSDC.convertToShares(520_931.25e6 + 1));
+
+        vaultState.availableLiquidAssets = 520_931.25e6;
+
+        vaultBalances.savingsShareValue = 520_931.25e6;
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 14. Ali's partial redeem gets fulfilled at the post-loss value
+
+        _processPendingRedeems();  // Redeem Request 0 (Filled)
+
+        vaultState.rho = vm.getBlockTimestamp();
+        vaultState.chi = 1.041862499999991862461371842e27;
+
+        vaultState.totalAssets            = 1_610_831.25e6 - 2;
+        vaultState.availableCapacityValue = 102_575_418.75e6;
+        vaultState.availableLiquidAssets  = 1;  // Rounding
+
+        vaultState.redeemRequests.pendingShareValue = 0;
+        vaultState.redeemRequests.length            = 0;
+        vaultState.redeemRequests.firstPendingId    = 1;
+
+        aliBalances.assets = 520_931.25e6 - 2;
+
+        vaultBalances.shareValue        = 0;
+        vaultBalances.savingsShareValue = 1;  // Rounding
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 15. Ali and Bob request redeem for all their remaining shares
+
+        _requestRedeem(ali, spPrime.balanceOf(ali));  // Redeem Request 1
+        _requestRedeem(bob, spPrime.balanceOf(bob));  // Redeem Request 2
+
+        vaultState.redeemRequests.pendingShareValue = 1_610_831.25e6 - 2;
+        vaultState.redeemRequests.length            = 2;
+
+        aliBalances.shareValue = 0;
+        bobBalances.shareValue = 0;
+
+        vaultBalances.shareValue = 1_610_831.25e6 - 2;
+
+        _assertRedeemRequest(1, ali, ali, 520_931.25e6 - 1);
+        _assertRedeemRequest(2, bob, bob, 1_089_900e6 - 2);
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 16. Warp
+
+        skip(365 days);
+
+        vaultState.totalAssets            = 1_691_372.8125e6 - 2;
+        vaultState.availableCapacityValue = 107_704_189.6875e6;
+
+        vaultState.redeemRequests.pendingShareValue = 1_691_372.8125e6 - 2;
+
+        vaultBalances.shareValue = 1_691_372.8125e6 - 2;
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 17. Taker returns liquidity
+
+        // Redeem Requests 1 and 2 are owed 1_691_372.8125e6 - 2 + 2 Rounding
+        deal(address(spUSDC), address(spPrime), spUSDC.convertToShares(1_691_372.8125e6));
+
+        vaultState.availableLiquidAssets = 1_691_372.8125e6 - 1;
+
+        vaultBalances.savingsShareValue = 1_691_372.8125e6 - 1;
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
+        _assertAccountBalances(vaultBalances);
+
+        // 18. Ali and Bob fully redeem
+
+        _processPendingRedeems();  // Redeem Requests 1 and 2 (Filled)
+
+        vaultState.rho = vm.getBlockTimestamp();
+        vaultState.chi = 1.093955624999991455543880878e27;
+
+        vaultState.totalAssets            = 0;
+        vaultState.availableCapacityValue = 109_395_562.5e6 - 1;
+        vaultState.availableLiquidAssets  = 2;  // Rounding
+
+        vaultState.redeemRequests.pendingShareValue = 0;
+        vaultState.redeemRequests.length            = 0;
+        vaultState.redeemRequests.firstPendingId    = 3;
+
+        aliBalances.assets = 1_067_909.0625e6 - 3;  // 520_931.25e6 - 2 + 546_977.8125e6 - 1
+        bobBalances.assets = 1_144_395e6 - 2;
+
+        vaultBalances.shareValue        = 0;
+        vaultBalances.savingsShareValue = 2;  // Rounding
+
+        // Ali deposited a year before Bob but gets back less, because Ali held shares through the
+        // loss while Bob's queued deposit was still in spUSDC
+        assertLt(usdc.balanceOf(ali), usdc.balanceOf(bob));
+
+        assertEq(spPrime.totalSupply(),         0);
+        assertEq(spPrime.pendingRedeemShares(), 0);
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(bobBalances);
         _assertAccountBalances(vaultBalances);
     }
 
