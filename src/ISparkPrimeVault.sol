@@ -374,7 +374,10 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /// @notice Returns the absolute maximum allowed Vault Savings Rate (VSR).
     function MAX_VSR() external view returns (uint256);
 
-    /// @notice Returns the identifier of the role that can process the request queues and set VSR.
+    /**
+     * @notice Returns the identifier of the role that can process the request queues set VSR, and
+     *         set capacity.
+     */
     function OPERATOR_ROLE() external view returns (bytes32);
 
     /// @notice Returns the identifier of the role that can pause the vault.
@@ -676,7 +679,7 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     function setRedeemFeeRate(uint256 feeRate_) external;
 
     /**********************************************************************************************/
-    /*** Pauser   external functions                                                            ***/
+    /*** Pauser external functions                                                              ***/
     /**********************************************************************************************/
 
     /**
