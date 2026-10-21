@@ -67,16 +67,7 @@ contract DivupSuccessTests is MathTestBase {
 
 }
 
-contract RpowFailureTests is MathTestBase {
-
-    function test_rpow_squareOverflow() external {
-        vm.expectRevert();
-        harness.rpow(2 ** 128, 2);
-    }
-
-}
-
-contract RpowSuccessTests is MathTestBase {
+contract RpowTests is MathTestBase {
 
     struct ApyVsrTestCase {
         uint256 apy;
@@ -96,6 +87,15 @@ contract RpowSuccessTests is MathTestBase {
             });
         }
     }
+
+    // Failure Tests.
+
+    function test_rpow_squareOverflow() external {
+        vm.expectRevert();
+        harness.rpow(2 ** 128, 2);
+    }
+
+    // Success Tests.
 
     function table_rpow_apyVsr18Decimals(ApyVsrTestCase memory apyVsr) external view {
         uint256 deposit = 1_000_000e18;
