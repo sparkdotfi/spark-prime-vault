@@ -122,10 +122,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
     bool public override paused;
 
+    uint8 public override decimals;
+
     string public override name;
     string public override symbol;
-
-    uint8 public override decimals;
 
     uint64  public override rho;    // Time of last drip              [unix epoch time]
     uint192 public override chi;    // The Rate Accumulator           [ray]
