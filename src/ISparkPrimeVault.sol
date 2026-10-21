@@ -349,9 +349,6 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /// @notice Thrown when the total assets adjustment is zero.
     error ZeroDeltaTotalAssets();
 
-    /// @notice Thrown when a requested range of requests has zero length.
-    error ZeroLength();
-
     /// @notice Thrown when the minimum deposit is set to zero.
     error ZeroMinDeposit();
 
@@ -368,23 +365,29 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /*** Constants                                                                              ***/
     /**********************************************************************************************/
 
-    /// @notice Returns the absolute maximum allowed Vault Savings Rate (VSR).
-    function MAX_VSR() external view returns (uint256);
-
-    /// @notice Returns the precision multiplier representing 1.0 (1e27).
-    function RAY() external view returns (uint256);
-
-    /// @notice Returns the precision multiplier representing 1.0 (1e18).
-    function WAD() external view returns (uint256);
+    /// @notice Returns the identifier of the role that can adjust the total assets.
+    function LOSS_MANAGER_ROLE() external view returns (bytes32);
 
     /// @notice Returns the absolute maximum allowed redeem fee rate [wad].
     function MAX_REDEEM_FEE() external view returns (uint256);
 
-    /// @notice Returns the identifier of the role that can pause the vault.
-    function GUARDIAN_ROLE() external view returns (bytes32);
+    /// @notice Returns the absolute maximum allowed Vault Savings Rate (VSR).
+    function MAX_VSR() external view returns (uint256);
 
-    /// @notice Returns the identifier of the role that can process the request queues.
-    function PROCESSOR_ROLE() external view returns (bytes32);
+    /**
+     * @notice Returns the identifier of the role that can process the request queues set VSR, and
+     *         set capacity.
+     */
+    function OPERATOR_ROLE() external view returns (bytes32);
+
+    /// @notice Returns the identifier of the role that can pause the vault.
+    function PAUSER_ROLE() external view returns (bytes32);
+
+    /// @notice Returns the EIP-712 typehash of the permit struct.
+    function PERMIT_TYPEHASH() external view returns (bytes32);
+
+    /// @notice Returns the precision multiplier representing 1.0 (1e27).
+    function RAY() external view returns (uint256);
 
     /// @notice Returns the identifier of the role that can set the redeem fee rate.
     function REDEEM_FEE_SETTER_ROLE() external view returns (bytes32);
@@ -392,11 +395,11 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /// @notice Returns the identifier of the role that can take savings shares.
     function TAKER_ROLE() external view returns (bytes32);
 
-    /// @notice Returns the identifier of the role that can set the VSR.
-    function VSR_SETTER_ROLE() external view returns (bytes32);
+    /// @notice Returns the identifier of the role that can unpause the vault.
+    function UNPAUSER_ROLE() external view returns (bytes32);
 
-    /// @notice Returns the EIP-712 typehash of the permit struct.
-    function PERMIT_TYPEHASH() external view returns (bytes32);
+    /// @notice Returns the precision multiplier representing 1.0 (1e18).
+    function WAD() external view returns (uint256);
 
     /**
      * @notice Returns the version of the vault implementation.
@@ -533,25 +536,6 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**********************************************************************************************/
 
     /**
-     * @notice Adjusts the total assets of the vault by updating the rate accumulator (chi).
-     * @dev    This function can only be called by accounts with DEFAULT_ADMIN_ROLE while the vault
-     *         is paused. Drips before computing the new chi as:
-     *         chi = (totalAssets() + deltaTotalAssets_) * RAY / totalSupply
-     *         `deltaTotalAssets_` must be nonzero and the resulting total assets must be positive.
-     *         Reverts if totalSupply is zero.
-     * @param  deltaTotalAssets_ The signed change in total assets [asset units]
-     */
-    function adjustTotalAssets(int256 deltaTotalAssets_) external;
-
-    /**
-     * @notice Sets the maximum capacity of the vault.
-     * @dev    This function can only be called by accounts with DEFAULT_ADMIN_ROLE.
-     *         Deposit requests are only filled while totalSupply is below this value.
-     * @param  capacity_ The new maximum capacity [share units]
-     */
-    function setCapacity(uint256 capacity_) external;
-
-    /**
      * @notice Sets the maximum redeem fee rate.
      * @dev    This function can only be called by accounts with DEFAULT_ADMIN_ROLE.
      *         The rate must be less than or equal to MAX_REDEEM_FEE. The current redeem fee rate
@@ -594,25 +578,20 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      */
     function setVSRBounds(uint256 minVSR_, uint256 maxVSR_) external;
 
-    /**
-     * @notice Unpauses the vault.
-     * @dev    This function can only be called by accounts with DEFAULT_ADMIN_ROLE.
-     */
-    function unpause() external;
-
     /**********************************************************************************************/
-    /*** VSR Setter external functions                                                          ***/
+    /*** Loss Manager external functions                                                        ***/
     /**********************************************************************************************/
 
     /**
-     * @notice Sets the Vault Savings Rate (VSR) within the configured bounds.
-     * @dev    This function can only be called by accounts with VSR_SETTER_ROLE.
-     *         Drips before updating the VSR, so the previous rate applies up to the current block.
-     *         The VSR determines the rate at which user shares grow over time. A higher VSR
-     *         means faster share growth and higher yields for depositors.
-     * @param  vsr_ The new VSR value [ray]
+     * @notice Adjusts the total assets of the vault by updating the rate accumulator (chi).
+     * @dev    This function can only be called by accounts with LOSS_MANAGER_ROLE while the vault
+     *         is paused. Drips before computing the new chi as:
+     *         chi = (totalAssets() + deltaTotalAssets_) * RAY / totalSupply
+     *         `deltaTotalAssets_` must be nonzero and the resulting total assets must be positive.
+     *         Reverts if totalSupply is zero.
+     * @param  deltaTotalAssets_ The signed change in total assets [asset units]
      */
-    function setVSR(uint256 vsr_) external;
+    function adjustTotalAssets(int256 deltaTotalAssets_) external;
 
     /**********************************************************************************************/
     /*** Taker external functions                                                               ***/
@@ -627,12 +606,30 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     function take(uint256 savingsShares_) external;
 
     /**********************************************************************************************/
-    /*** Processor external functions                                                           ***/
+    /*** Operator external functions                                                            ***/
     /**********************************************************************************************/
 
     /**
+     * @notice Sets the maximum capacity of the vault.
+     * @dev    This function can only be called by accounts with OPERATOR_ROLE.
+     *         Deposit requests are only filled while totalSupply is below this value.
+     * @param  capacity_ The new maximum capacity [share units]
+     */
+    function setCapacity(uint256 capacity_) external;
+
+    /**
+     * @notice Sets the Vault Savings Rate (VSR) within the configured bounds.
+     * @dev    This function can only be called by accounts with OPERATOR_ROLE.
+     *         Drips before updating the VSR, so the previous rate applies up to the current block.
+     *         The VSR determines the rate at which user shares grow over time. A higher VSR
+     *         means faster share growth and higher yields for depositors.
+     * @param  vsr_ The new VSR value [ray]
+     */
+    function setVSR(uint256 vsr_) external;
+
+    /**
      * @notice Fills pending deposit requests in queue order, minting shares to their recipients.
-     * @dev    This function can only be called by accounts with PROCESSOR_ROLE while the vault is
+     * @dev    This function can only be called by accounts with OPERATOR_ROLE while the vault is
      *         not paused. Processing is limited by `maxSavingsShares_`, `maxRequests_`, and the
      *         available capacity. The last processed request may be partially filled.
      * @param  maxSavingsShares_ The maximum amount of savings shares to process
@@ -645,7 +642,7 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**
      * @notice Fills pending deposit cancellation requests in queue order, redeeming their savings
      *         shares for their recipients.
-     * @dev    This function can only be called by accounts with PROCESSOR_ROLE while the vault is
+     * @dev    This function can only be called by accounts with OPERATOR_ROLE while the vault is
      *         not paused. Processing is limited by `maxSavingsShares_`, `maxRequests_`, and the
      *         savings shares the vault can redeem. The last processed request may be partially
      *         filled. Assets that cannot be sent to a recipient are credited as claimable assets.
@@ -659,7 +656,7 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**
      * @notice Fills pending redeem requests in queue order, burning their shares and withdrawing
      *         assets for their recipients.
-     * @dev    This function can only be called by accounts with PROCESSOR_ROLE while the vault is
+     * @dev    This function can only be called by accounts with OPERATOR_ROLE while the vault is
      *         not paused. Processing is limited by `maxShares_`, `maxRequests_`, and the available
      *         liquid assets, which are re-checked before each request. The last processed request
      *         may be partially filled. Assets that cannot be sent to a recipient are credited as
@@ -682,15 +679,25 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     function setRedeemFeeRate(uint256 feeRate_) external;
 
     /**********************************************************************************************/
-    /*** Guardian external functions                                                            ***/
+    /*** Pauser external functions                                                              ***/
     /**********************************************************************************************/
 
     /**
      * @notice Pauses the vault.
-     * @dev    This function can only be called by accounts with GUARDIAN_ROLE.
+     * @dev    This function can only be called by accounts with PAUSER_ROLE.
      *         While paused, new requests and queue processing are disabled.
      */
     function pause() external;
+
+    /**********************************************************************************************/
+    /*** Unpauser external functions                                                            ***/
+    /**********************************************************************************************/
+
+    /**
+     * @notice Unpauses the vault.
+     * @dev    This function can only be called by accounts with UNPAUSER_ROLE.
+     */
+    function unpause() external;
 
     /**********************************************************************************************/
     /*** Request functions                                                                      ***/
