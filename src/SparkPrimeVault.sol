@@ -400,8 +400,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
         // Fill this request, only while no nonzero requests are queued ahead.
         if (pendingDepositSavingsShares == savingsShares_) {
-            firstPendingDepositId = requestId_;
-            _processPendingDeposits(type(uint256).max, 1);
+            _processPendingDeposits(type(uint256).max, type(uint256).max);
         }
     }
 
