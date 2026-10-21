@@ -785,7 +785,7 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**
      * @notice Transfers all claimable assets of `recipient_` to `recipient_`.
      * @dev    Permissionless, assets always go to `recipient_`.
-     *         Reverts if the asset transfer still reverts.
+     *         Reverts if the asset transfer fails.
      * @param  recipient_ The address whose claimable assets are transferred to it
      * @return assets_    The amount of assets transferred [asset units]
      */

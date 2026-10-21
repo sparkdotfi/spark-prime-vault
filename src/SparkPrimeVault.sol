@@ -987,6 +987,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
             return assetsRedeemed_;
         } catch {}
 
+        // Any recipient-specific reversion of the savingsVault or underlying
+        // asset transfer that occurs as a result of a user-request is added
+        // to claimable funds to be handled asynchronously.
+
         assets_ = IERC4626Like(savings).redeem(savingsShares_, address(this), address(this));
 
         _incrementClaimableAssets(recipient_, assets_);
@@ -1001,6 +1005,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         {
             return savingsSharesBurned_;
         } catch {}
+
+        // Any recipient-specific reversion of the savingsVault or underlying
+        // asset transfer that occurs as a result of a user-request is added
+        // to claimable funds to be handled asynchronously.
 
         savingsShares_ = IERC4626Like(savings).withdraw(assets_, address(this), address(this));
 
@@ -1088,7 +1096,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     }
 
     /**********************************************************************************************/
-    /*** Claim internal helper functions                                                        ***/
+    /*** Claimable assets internal helper functions                                             ***/
     /**********************************************************************************************/
 
     function _incrementClaimableAssets(address recipient_, uint256 assets_) internal {
