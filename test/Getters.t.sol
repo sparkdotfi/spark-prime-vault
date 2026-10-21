@@ -119,9 +119,9 @@ contract GetPendingDepositRequestTests is GettersTestBase {
 
         assertEq(requests.length, 3);
 
-        _assertRequest(requests[0], owner1, recipient1, 1_000e6 - 1);
-        _assertRequest(requests[1], owner2, recipient2, 2_000e6 - 1);
-        _assertRequest(requests[2], owner3, recipient3, 3_000e6 - 1);
+        _assertDepositRequest(requests[0], owner1, recipient1, 1_000e6 - 1);
+        _assertDepositRequest(requests[1], owner2, recipient2, 2_000e6 - 1);
+        _assertDepositRequest(requests[2], owner3, recipient3, 3_000e6 - 1);
     }
 
     function test_getPendingDepositRequests_someProcessed() external {
@@ -138,7 +138,7 @@ contract GetPendingDepositRequestTests is GettersTestBase {
 
         assertEq(requests.length, 1);
 
-        _assertRequest(requests[0], owner3, recipient3, 3_000e6 - 1);
+        _assertDepositRequest(requests[0], owner3, recipient3, 3_000e6 - 1);
     }
 
     function test_getPendingDepositRequests_allProcessed() external {
@@ -167,8 +167,8 @@ contract GetPendingDepositRequestTests is GettersTestBase {
 
         assertEq(requests.length, 2);
 
-        _assertRequest(requests[0], owner1, recipient1, 750e6 - 1);
-        _assertRequest(requests[1], owner2, recipient2, 2_000e6 - 1);
+        _assertDepositRequest(requests[0], owner1, recipient1, 750e6 - 1);
+        _assertDepositRequest(requests[1], owner2, recipient2, 2_000e6 - 1);
     }
 
     function test_getPendingDepositRequests_cancelledRequest() external {
@@ -182,9 +182,9 @@ contract GetPendingDepositRequestTests is GettersTestBase {
 
         assertEq(requests.length, 3);
 
-        _assertRequest(requests[0], owner1, recipient1, 1_000e6 - 1);
+        _assertDepositRequest(requests[0], owner1, recipient1, 1_000e6 - 1);
         _assertEmptyRequest(requests[1]);
-        _assertRequest(requests[2], owner3, recipient3, 3_000e6 - 1);
+        _assertDepositRequest(requests[2], owner3, recipient3, 3_000e6 - 1);
     }
 
     /**********************************************************************************************/
@@ -196,7 +196,7 @@ contract GetPendingDepositRequestTests is GettersTestBase {
         spPrime.getPendingDepositRequests(0, 0);
     }
 
-    function test_getPendingDepositRequests_startLessThanFirstPendingDepositIdBoundary() external {
+    function test_getPendingDepositRequests_startIdTooSmallBoundary() external {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
 
@@ -221,7 +221,7 @@ contract GetPendingDepositRequestTests is GettersTestBase {
         spPrime.getPendingDepositRequests(0, 2);
     }
 
-    function test_getPendingDepositRequestsRange() external {
+    function test_getPendingDepositRequests_range() external {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
         _requestDeposit(owner3, recipient3, 3_000e6);
@@ -230,16 +230,16 @@ contract GetPendingDepositRequestTests is GettersTestBase {
 
         assertEq(requests.length, 3);
 
-        _assertRequest(requests[0], owner1, recipient1, 1_000e6 - 1);
-        _assertRequest(requests[1], owner2, recipient2, 2_000e6 - 1);
-        _assertRequest(requests[2], owner3, recipient3, 3_000e6 - 1);
+        _assertDepositRequest(requests[0], owner1, recipient1, 1_000e6 - 1);
+        _assertDepositRequest(requests[1], owner2, recipient2, 2_000e6 - 1);
+        _assertDepositRequest(requests[2], owner3, recipient3, 3_000e6 - 1);
 
         requests = spPrime.getPendingDepositRequests(1, 2);
 
         assertEq(requests.length, 2);
 
-        _assertRequest(requests[0], owner2, recipient2, 2_000e6 - 1);
-        _assertRequest(requests[1], owner3, recipient3, 3_000e6 - 1);
+        _assertDepositRequest(requests[0], owner2, recipient2, 2_000e6 - 1);
+        _assertDepositRequest(requests[1], owner3, recipient3, 3_000e6 - 1);
     }
 
 }
@@ -296,8 +296,8 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
         _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
 
-        _assertPendingDepositCancellationRequest(0, owner1, recipient1, 1_000e6 - 1);
-        _assertPendingDepositCancellationRequest(1, owner2, recipient2, 2_000e6 - 1);
+        _assertDepositCancellationRequest(0, owner1, recipient1, 1_000e6 - 1);
+        _assertDepositCancellationRequest(1, owner2, recipient2, 2_000e6 - 1);
     }
 
     function test_getPendingDepositCancellationRequest_partialFill() external {
@@ -315,7 +315,7 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
 
         assertEq(spPrime.firstPendingDepositCancellationId(), 1);
 
-        _assertPendingDepositCancellationRequest(1, owner2, recipient2, 1_500e6);
+        _assertDepositCancellationRequest(1, owner2, recipient2, 1_500e6);
     }
 
     /**********************************************************************************************/
@@ -339,9 +339,9 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
 
         assertEq(requests.length, 3);
 
-        _assertRequest(requests[0], owner1, recipient1, 1_000e6 - 1);
-        _assertRequest(requests[1], owner2, recipient2, 2_000e6 - 1);
-        _assertRequest(requests[2], owner3, recipient3, 3_000e6 - 1);
+        _assertDepositCancellationRequest(requests[0], owner1, recipient1, 1_000e6 - 1);
+        _assertDepositCancellationRequest(requests[1], owner2, recipient2, 2_000e6 - 1);
+        _assertDepositCancellationRequest(requests[2], owner3, recipient3, 3_000e6 - 1);
     }
 
     function test_getPendingDepositCancellationRequests_someProcessed() external {
@@ -362,7 +362,7 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
 
         assertEq(requests.length, 1);
 
-        _assertRequest(requests[0], owner3, recipient3, 3_000e6 - 1);
+        _assertDepositCancellationRequest(requests[0], owner3, recipient3, 3_000e6 - 1);
     }
 
     function test_getPendingDepositCancellationRequests_allProcessed() external {
@@ -394,8 +394,8 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
 
         assertEq(requests.length, 2);
 
-        _assertRequest(requests[0], owner1, recipient1, 750e6 - 1);
-        _assertRequest(requests[1], owner2, recipient2, 2_000e6 - 1);
+        _assertDepositCancellationRequest(requests[0], owner1, recipient1, 750e6 - 1);
+        _assertDepositCancellationRequest(requests[1], owner2, recipient2, 2_000e6 - 1);
     }
 
     /**********************************************************************************************/
@@ -407,7 +407,7 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         spPrime.getPendingDepositCancellationRequests(0, 0);
     }
 
-    function test_getPendingDepositCancellationRequests_startLessThanFirstPendingDepositCancellationIdBoundary() external {
+    function test_getPendingDepositCancellationRequests_startIdTooSmallBoundary() external {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
 
@@ -441,8 +441,8 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
 
         assertEq(requests.length, 2);
 
-        _assertRequest(requests[0], owner1, recipient1, 1_000e6 - 1);
-        _assertRequest(requests[1], owner2, recipient2, 2_000e6 - 1);
+        _assertDepositCancellationRequest(requests[0], owner1, recipient1, 1_000e6 - 1);
+        _assertDepositCancellationRequest(requests[1], owner2, recipient2, 2_000e6 - 1);
     }
 
     function test_getPendingDepositCancellationRequestsRange() external {
@@ -459,16 +459,16 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
 
         assertEq(requests.length, 3);
 
-        _assertRequest(requests[0], owner1, recipient1, 1_000e6 - 1);
-        _assertRequest(requests[1], owner2, recipient2, 2_000e6 - 1);
-        _assertRequest(requests[2], owner3, recipient3, 3_000e6 - 1);
+        _assertDepositCancellationRequest(requests[0], owner1, recipient1, 1_000e6 - 1);
+        _assertDepositCancellationRequest(requests[1], owner2, recipient2, 2_000e6 - 1);
+        _assertDepositCancellationRequest(requests[2], owner3, recipient3, 3_000e6 - 1);
 
         requests = spPrime.getPendingDepositCancellationRequests(1, 2);
 
         assertEq(requests.length, 2);
 
-        _assertRequest(requests[0], owner2, recipient2, 2_000e6 - 1);
-        _assertRequest(requests[1], owner3, recipient3, 3_000e6 - 1);
+        _assertDepositCancellationRequest(requests[0], owner2, recipient2, 2_000e6 - 1);
+        _assertDepositCancellationRequest(requests[1], owner3, recipient3, 3_000e6 - 1);
     }
 
 }
@@ -629,7 +629,7 @@ contract GetPendingRedeemRequestTests is GettersTestBase {
         spPrime.getPendingRedeemRequests(0, 0);
     }
 
-    function test_getPendingRedeemRequests_startLessThanFirstPendingRedeemIdBoundary() external {
+    function test_getPendingRedeemRequests_startIdTooSmallBoundary() external {
         _requestDeposit(owner1, 1_000e6);
         _requestDeposit(owner2, 2_000e6);
 
