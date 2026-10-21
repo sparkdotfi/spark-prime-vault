@@ -35,7 +35,7 @@ contract ClaimTests is TestBase {
     function test_claim_fromDepositCancellation() external {
         _setCapacity(0);
         _requestDeposit(user, 1_000_000e6);
-        _requestDepositCancellation(user, 0, 1_000_000e6);
+        _requestDepositCancellation(user, 0, spUSDC.convertToShares(1_000_000e6));
 
         AccountBalances memory userBalances = AccountBalances({
             account           : user,
