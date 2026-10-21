@@ -122,10 +122,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
     bool public override paused;
 
+    uint8 public override decimals;
+
     string public override name;
     string public override symbol;
-
-    uint8 public override decimals;
 
     uint64  public override rho;    // Time of last drip              [unix epoch time]
     uint192 public override chi;    // The Rate Accumulator           [ray]
@@ -400,7 +400,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
         // Fill this request, only while no nonzero requests are queued ahead.
         if (pendingDepositSavingsShares == savingsShares_) {
-            _processPendingDeposits(type(uint256).max, type(uint256).max);
+            firstPendingDepositId = requestId_;
+            _processPendingDeposits(type(uint256).max, 1);
         }
     }
 
