@@ -541,7 +541,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _pause();
 
         vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
-        vm.prank(processor);
+        vm.prank(operator);
         spPrime.processPendingDeposits(type(uint256).max, type(uint256).max);
     }
 

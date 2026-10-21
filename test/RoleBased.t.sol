@@ -188,11 +188,11 @@ contract RoleBasedTests is TestBase {
 
         // chi = (maxTotalAssets + 1) * RAY / supply > uint192.max
         vm.expectRevert(ISparkPrimeVault.ChiTooHigh.selector);
-        vm.prank(admin);
+        vm.prank(lossManager);
         spPrime.adjustTotalAssets(maxTotalAssets + 1 - totalAssets);
 
         // chi = maxTotalAssets * RAY / supply <= uint192.max
-        vm.prank(admin);
+        vm.prank(lossManager);
         spPrime.adjustTotalAssets(maxTotalAssets - totalAssets);
     }
 
