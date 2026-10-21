@@ -30,7 +30,7 @@ Deposits are two-step: the user's assets go to the savings sleeve immediately, a
 
 ### 3. Deposit Cancellation & Cancellation Queue
 
-- **Request**: The request `owner` (only) calls `requestDepositCancellation(requestId, recipient)` on a still-pending deposit. The deposit request is removed from the deposit queue and its remaining savings shares move to the FIFO `_depositCancellationRequests` queue. `recipient` must be able to receive the asset (not blacklisted).
+- **Request**: The request `owner` (only) calls `requestDepositCancellation(requestId, recipient)` on a still-pending deposit. The deposit request is removed from the deposit queue and its remaining savings shares move to the FIFO `_depositCancellationRequests` queue.
 - **Processing**: `OPERATOR_ROLE` calls `processPendingDepositCancellations(maxSavingsShares, maxRequests)`, which redeems the savings shares for the underlying asset and sends it to the `recipient`. Bounded by what the savings vault can redeem (`maxRedeem`). Because the refund is made from the queued savings shares, it includes all savings yield accrued while queued. Partial fills are supported.
 - **Updating the recipient**: The `owner` can call `updateDepositCancellationRecipient(requestId, recipient)`.
 
@@ -38,17 +38,16 @@ Deposits are two-step: the user's assets go to the savings sleeve immediately, a
 
 Redemptions are always asynchronous (there is no instant fill).
 
-- **Request**: `requestRedeem(shares, recipient)` transfers `shares` from the caller into the vault, requires `shares >= minRedeem`, and requires that `recipient` can receive the asset (not blacklisted).
+- **Request**: `requestRedeem(shares, recipient)` transfers `shares` from the caller into the vault, requires `shares >= minRedeem`.
 - **Redeem Fee**: The fee is taken **upfront in shares**: `fee = ceil(shares * redeemFeeRate / WAD)` is burned immediately, and only `shares - fee` is queued. The rate is locked in at request time. Emits `RedeemRequest(requestId, owner, recipient, sharesToBurn, feeSharesBurned)`.
 - **Queueing**: Queued shares are escrowed in the vault (counted in `pendingRedeemShares`) and keep earning vault yield until processed.
 - **Processing**: `OPERATOR_ROLE` calls `processPendingRedeems(maxShares, maxRequests)`. Bounded by `availableLiquidAssets()` (the savings vault's `maxWithdraw` for the vault). For each fill, the escrowed shares are burned and the corresponding assets are withdrawn from the savings vault straight to the `recipient`. Partial fills are supported.
 - **Updating the recipient**: The `owner` can call `updateRedeemRecipient(requestId, recipient)`.
 
-### 5. Blacklist Handling & Claims
+### 5. Handling Failing Redemptions/Withdrawals & Claims
 
-- Assets are paid out to recipients by the savings vault directly. If the recipient is blacklisted by the asset at processing time (`isBlacklisted`, as with USDC/EURC), the assets are instead withdrawn to the vault and credited to `claimableAssets[recipient]`, so a blacklisted recipient cannot block the queue. Emits `ClaimableAssetsIncreased`.
-- `claim(recipient)` is permissionless and always sends the assets to `recipient`; it reverts while the recipient is still blacklisted by the asset.
-- The blacklist check is `_canReceiveAsset`, which assumes the asset exposes `isBlacklisted(address)` and is `virtual` so it can be overridden for other assets.
+- Assets are paid out to recipients by the savings vault directly. If the the redemption or withdrawal of savings shares to a recipient fails, the assets are instead redeemed/withdrawn to the vault and credited to `claimableAssets[recipient]`, so a failing request cannot block the queue. Emits `ClaimableAssetsIncreased`.
+- `claim(recipient)` is permissionless and always sends the assets to `recipient`; it reverts while transferring the assets to the recipient fails.
 
 ### 6. Liquidity
 
@@ -95,6 +94,6 @@ Redemptions are always asynchronous (there is no instant fill).
 | **`PAUSER_ROLE`**            | `pause`                                                                                                                      | Emergency pause of requests and queue processing.                                                                                     |
 | **`UNPAUSER_ROLE`**          | `unpause`                                                                                                                    | Unpause of requests and queue processing.                                                                                             |
 | **Request owner**            | `requestDepositCancellation`, `updateDepositRecipient`, `updateDepositCancellationRecipient`, `updateRedeemRecipient`        | Only the `owner` of a request can cancel it or change its recipient.                                                                  |
-| **Public / Permissionless**  | `requestDeposit`, `requestRedeem`, `claim`, `drip`, ERC-20 (`approve`, `transfer`, `transferFrom`), `permit`, view functions | Standard user interactions, rate accrual, and claiming assets owed to blacklisted-at-payout recipients.                               |
+| **Public / Permissionless**  | `requestDeposit`, `requestRedeem`, `claim`, `drip`, ERC-20 (`approve`, `transfer`, `transferFrom`), `permit`, view functions | Standard user interactions, rate accrual, and claiming assets owed to recipients whose requests failed at process-time.               |
 
 `AccessControlEnumerable` is used, so role members can be enumerated on-chain.

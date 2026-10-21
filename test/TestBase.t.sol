@@ -40,16 +40,6 @@ interface ISparkVaultLike {
 
 }
 
-interface IUSDCLike {
-
-    function blacklist(address account) external;
-
-    function unblacklist(address account) external;
-
-    function blacklister() external view returns (address);
-
-}
-
 abstract contract TestBase is Test {
 
     struct PendingRequestsState {
@@ -293,16 +283,6 @@ abstract contract TestBase is Test {
 
     function _processPendingRedeems() internal {
         _processPendingRedeems(type(uint256).max, type(uint256).max);
-    }
-
-    function _blacklist(address account) internal {
-        vm.prank(IUSDCLike(Ethereum.USDC).blacklister());
-        IUSDCLike(Ethereum.USDC).blacklist(account);
-    }
-
-    function _unblacklist(address account) internal {
-        vm.prank(IUSDCLike(Ethereum.USDC).blacklister());
-        IUSDCLike(Ethereum.USDC).unblacklist(account);
     }
 
     function _take(uint256 savingsShares) internal {

@@ -49,12 +49,6 @@ interface IERC4626Like {
 
 }
 
-interface IBlacklistableLike {
-
-    function isBlacklisted(address account) external view returns (bool);
-
-}
-
 /*
 
   ███████╗██████╗  █████╗ ██████╗ ██╗  ██╗
@@ -421,7 +415,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     {
         require(recipient_ != address(0),             ZeroRecipient());
         require(recipient_ != address(this),          VaultIsRecipient());
-        require(_canReceiveAsset(recipient_),         RecipientCannotReceive());
         require(requestId_ < _depositRequests.length, InvalidRequestId());
 
         Request memory depositRequest_ = _depositRequests[requestId_];
@@ -460,10 +453,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         whenNotPaused
         returns (uint256 requestId_)
     {
-        require(recipient_ != address(0),     ZeroRecipient());
-        require(recipient_ != address(this),  VaultIsRecipient());
-        require(_canReceiveAsset(recipient_), RecipientCannotReceive());
-        require(shares_ >= minRedeem,         BelowMinRedeem());
+        require(recipient_ != address(0),    ZeroRecipient());
+        require(recipient_ != address(this), VaultIsRecipient());
+        require(shares_ >= minRedeem,        BelowMinRedeem());
 
         drip();
 
@@ -508,7 +500,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     {
         require(recipient_ != address(0),                         ZeroRecipient());
         require(recipient_ != address(this),                      VaultIsRecipient());
-        require(_canReceiveAsset(recipient_),                     RecipientCannotReceive());
         require(requestId_ < _depositCancellationRequests.length, InvalidRequestId());
 
         Request storage request_ = _depositCancellationRequests[requestId_];
@@ -525,7 +516,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     function updateRedeemRecipient(uint256 requestId_, address recipient_) external override {
         require(recipient_ != address(0),            ZeroRecipient());
         require(recipient_ != address(this),         VaultIsRecipient());
-        require(_canReceiveAsset(recipient_),        RecipientCannotReceive());
         require(requestId_ < _redeemRequests.length, InvalidRequestId());
 
         Request storage request_ = _redeemRequests[requestId_];
@@ -1098,7 +1088,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     }
 
     /**********************************************************************************************/
-    /*** Blacklist internal helper functions                                                    ***/
+    /*** Claim internal helper functions                                                        ***/
     /**********************************************************************************************/
 
     function _incrementClaimableAssets(address recipient_, uint256 assets_) internal {
@@ -1106,11 +1096,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         totalClaimable              += assets_;
 
         emit ClaimableAssetsIncreased(recipient_, assets_);
-    }
-
-    // NOTE: Assumes the asset exposes `isBlacklisted` (USDC/EURC). Override for other assets.
-    function _canReceiveAsset(address account_) internal view virtual returns (bool) {
-        return !IBlacklistableLike(asset).isBlacklisted(account_);
     }
 
     /**********************************************************************************************/

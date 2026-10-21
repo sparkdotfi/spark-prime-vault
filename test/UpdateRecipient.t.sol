@@ -93,14 +93,6 @@ contract UpdateRecipientTests is TestBase {
         spPrime.updateDepositCancellationRecipient(0, address(spPrime));
     }
 
-    function test_updateDepositCancellationRecipient_recipientCannotReceive() external {
-        _blacklist(user);
-
-        vm.expectRevert(ISparkPrimeVault.RecipientCannotReceive.selector);
-        vm.prank(user);
-        spPrime.updateDepositCancellationRecipient(0, user);
-    }
-
     function test_updateDepositCancellationRecipient_invalidRequestIdBoundary() external {
         _setCapacity(0);
         _requestDeposit(user, 1_000_000e6);                                         // Request 0 queued
@@ -167,14 +159,6 @@ contract UpdateRecipientTests is TestBase {
         vm.expectRevert(ISparkPrimeVault.VaultIsRecipient.selector);
         vm.prank(user);
         spPrime.updateRedeemRecipient(0, address(spPrime));
-    }
-
-    function test_updateRedeemRecipient_recipientCannotReceive() external {
-        _blacklist(user);
-
-        vm.expectRevert(ISparkPrimeVault.RecipientCannotReceive.selector);
-        vm.prank(user);
-        spPrime.updateRedeemRecipient(0, user);
     }
 
     function test_updateRedeemRecipient_invalidRequestIdBoundary() external {

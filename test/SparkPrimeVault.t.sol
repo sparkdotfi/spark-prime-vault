@@ -267,14 +267,6 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
         spPrime.requestRedeem(100e6, address(spPrime));
     }
 
-    function test_requestRedeem_recipientCannotReceive() external {
-        _blacklist(user);
-
-        vm.expectRevert(ISparkPrimeVault.RecipientCannotReceive.selector);
-        vm.prank(user);
-        spPrime.requestRedeem(100e6, user);
-    }
-
     function test_requestRedeem_belowMinRedeemBoundary() external {
         _requestDeposit(user, 1_000e6);
 
@@ -760,15 +752,13 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         _requestDepositCancellation(ali, 0, ali, spUSDC.convertToShares(100_000e6));  // Will fail
         _requestDepositCancellation(bob, 1, bob, spUSDC.convertToShares(200_000e6));
         _requestDepositCancellation(cam, 2, cam, spUSDC.convertToShares(300_000e6));
-        _requestDepositCancellation(ali, 3, dan, spUSDC.convertToShares(400_000e6));  // Will be blacklisted
+        _requestDepositCancellation(ali, 3, dan, spUSDC.convertToShares(400_000e6));  // Will fail
         _requestDepositCancellation(bob, 4, bob, spUSDC.convertToShares(500_000e6));  // Will fail
         _requestDepositCancellation(cam, 5, cam, spUSDC.convertToShares(600_000e6));
         _requestDepositCancellation(ali, 6, ali, spUSDC.convertToShares(700_000e6));  // Will fail
-        _requestDepositCancellation(bob, 7, dan, spUSDC.convertToShares(800_000e6));  // Will be blacklisted
+        _requestDepositCancellation(bob, 7, dan, spUSDC.convertToShares(800_000e6));  // Will fail
         _requestDepositCancellation(cam, 8, cam, spUSDC.convertToShares(900_000e6));
         _requestDepositCancellation(ali, 9, ali, spUSDC.convertToShares(1_000_000e6));
-
-        _blacklist(dan);
 
         uint256 depositedAssets = 5_500_000e6;
 
@@ -861,6 +851,12 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
 
         vm.mockCallRevert(
             address(spUSDC),
+            abi.encodeWithSelector(ISparkVaultLike.redeem.selector, spUSDC.convertToShares(400_000e6), dan, address(spPrime)),
+            ""
+        );
+
+        vm.mockCallRevert(
+            address(spUSDC),
             abi.encodeWithSelector(ISparkVaultLike.redeem.selector, spUSDC.convertToShares(500_000e6), bob, address(spPrime)),
             ""
         );
@@ -868,6 +864,12 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         vm.mockCallRevert(
             address(spUSDC),
             abi.encodeWithSelector(ISparkVaultLike.redeem.selector, spUSDC.convertToShares(700_000e6), ali, address(spPrime)),
+            ""
+        );
+
+        vm.mockCallRevert(
+            address(spUSDC),
+            abi.encodeWithSelector(ISparkVaultLike.redeem.selector, spUSDC.convertToShares(800_000e6), dan, address(spPrime)),
             ""
         );
     }
@@ -1182,15 +1184,13 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
         _requestRedeem(ali, ali, spPrime.convertToShares(100_000e6));  // Will fail
         _requestRedeem(bob, bob, spPrime.convertToShares(200_000e6));
         _requestRedeem(cam, cam, spPrime.convertToShares(300_000e6));
-        _requestRedeem(ali, dan, spPrime.convertToShares(400_000e6));  // Will be blacklisted
+        _requestRedeem(ali, dan, spPrime.convertToShares(400_000e6));  // Will fail
         _requestRedeem(bob, bob, spPrime.convertToShares(500_000e6));  // Will fail
         _requestRedeem(cam, cam, spPrime.convertToShares(600_000e6));
         _requestRedeem(ali, ali, spPrime.convertToShares(700_000e6));  // Will fail
-        _requestRedeem(bob, dan, spPrime.convertToShares(800_000e6));  // Will be blacklisted
+        _requestRedeem(bob, dan, spPrime.convertToShares(800_000e6));  // Will fail
         _requestRedeem(cam, cam, spPrime.convertToShares(900_000e6));
         _requestRedeem(ali, ali, spPrime.convertToShares(1_000_000e6));
-
-        _blacklist(dan);
 
         uint256 depositedAssets = 5_500_000e6;
 
@@ -1286,6 +1286,12 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
 
         vm.mockCallRevert(
             address(spUSDC),
+            abi.encodeWithSelector(ISparkVaultLike.withdraw.selector, 400_000e6 - 1, dan, address(spPrime)),
+            ""
+        );
+
+        vm.mockCallRevert(
+            address(spUSDC),
             abi.encodeWithSelector(ISparkVaultLike.withdraw.selector, 500_000e6 - 1, bob, address(spPrime)),
             ""
         );
@@ -1293,6 +1299,12 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
         vm.mockCallRevert(
             address(spUSDC),
             abi.encodeWithSelector(ISparkVaultLike.withdraw.selector, 700_000e6 - 1, ali, address(spPrime)),
+            ""
+        );
+
+        vm.mockCallRevert(
+            address(spUSDC),
+            abi.encodeWithSelector(ISparkVaultLike.withdraw.selector, 800_000e6 - 1, dan, address(spPrime)),
             ""
         );
     }
