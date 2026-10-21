@@ -692,7 +692,7 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
 
     /**
      * @notice Unpauses the vault.
-     * @dev    This function can only be called by accounts with UNPAUSER.
+     * @dev    This function can only be called by accounts with UNPAUSER_ROLE.
      */
     function unpause() external;
 

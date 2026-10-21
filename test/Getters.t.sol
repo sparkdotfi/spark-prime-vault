@@ -472,7 +472,7 @@ contract GetPendingRedeemRequestTests is GettersTestBase {
         uint256 sharesOfOwner2 = spPrime.balanceOf(owner2);
         _requestRedeem(owner2, recipient2, sharesOfOwner2);
 
-        _processPendingRedeems(sharesOfOwner1/ 4, 1);
+        _processPendingRedeems(sharesOfOwner1 / 4, 1);
 
         _assertRedeemRequest(0, owner1, recipient1, 750e6);
         _assertRedeemRequest(1, owner2, recipient2, 2_000e6 - 1);
