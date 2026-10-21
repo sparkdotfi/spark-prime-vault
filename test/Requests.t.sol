@@ -95,14 +95,6 @@ contract RequestDepositCancellationTests is TestBase {
         spPrime.requestDepositCancellation(depositRequestId, address(spPrime), requestShares);
     }
 
-    function test_requestDepositCancellation_recipientCannotReceive() external {
-        _blacklist(recipient);
-
-        vm.expectRevert(ISparkPrimeVault.RecipientCannotReceive.selector);
-        vm.prank(user);
-        spPrime.requestDepositCancellation(depositRequestId, recipient, requestShares);
-    }
-
     function test_requestDepositCancellation_invalidRequestIdBoundary() external {
         vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vm.prank(user);

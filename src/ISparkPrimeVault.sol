@@ -328,9 +328,6 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /// @notice Thrown when the caller is not the owner of the request.
     error NotRequestOwner();
 
-    /// @notice Thrown when the recipient cannot receive the asset (e.g. it is blacklisted).
-    error RecipientCannotReceive();
-
     /// @notice Thrown when cancelling more savings shares than the deposit request has.
     error SavingsSharesTooHigh();
 
@@ -724,7 +721,6 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @notice Cancels `savingsShares_` of a deposit request and queues them to be redeemed for
      *         `recipient_`.
      * @dev    Can only be called by the owner of the request while the vault is not paused.
-     *         `recipient_` must be able to receive the asset (not blacklisted).
      *         `savingsShares_` must be at least minDepositCancellation and at most the unfilled
      *         savings shares of the request. If all of them are cancelled the deposit request is
      *         removed, otherwise it keeps the rest and its position in the queue.
@@ -742,11 +738,10 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**
      * @notice Requests a redemption of shares, which are transferred to the vault and queued to be
      *         redeemed for assets.
-     * @dev    Can only be called while the vault is not paused. `recipient_` must be able to
-     *         receive the asset (not blacklisted). `shares_` must be at least minRedeem, checked
-     *         before the fee is deducted. Updates the rate accumulator (drips) before transferring.
-     *         The redeem fee is burned upfront from `shares_`, rounding up, and the remaining
-     *         shares are queued.
+     * @dev    Can only be called while the vault is not paused. `shares_` must be at least
+     *         `minRedeem`, checked before the fee is deducted. Updates the rate accumulator (drips)
+     *         before transferring. The redeem fee is burned upfront from `shares_`, rounding up,
+     *         and the remaining shares are queued.
      * @param  shares_    The amount of shares to redeem, including the fee [share units]
      * @param  recipient_ The address to receive the assets when the request is filled
      * @return requestId_ The ID of the redeem request
@@ -769,8 +764,7 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
 
     /**
      * @notice Updates the recipient of a deposit cancellation request.
-     * @dev    Can only be called by the owner of the request. `recipient_` must be able to
-     *         receive the asset (not blacklisted).
+     * @dev    Can only be called by the owner of the request.
      * @param  requestId_ The ID of the deposit cancellation request
      * @param  recipient_ The new address to receive the assets when the request is filled
      */
@@ -778,8 +772,7 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
 
     /**
      * @notice Updates the recipient of a redeem request.
-     * @dev    Can only be called by the owner of the request. `recipient_` must be able to
-     *         receive the asset (not blacklisted).
+     * @dev    Can only be called by the owner of the request.
      * @param  requestId_ The ID of the redeem request
      * @param  recipient_ The new address to receive the assets when the request is filled
      */
@@ -792,7 +785,7 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**
      * @notice Transfers all claimable assets of `recipient_` to `recipient_`.
      * @dev    Permissionless, assets always go to `recipient_`.
-     *         Reverts in the asset while `recipient_` is still blacklisted.
+     *         Reverts if the asset transfer fails.
      * @param  recipient_ The address whose claimable assets are transferred to it
      * @return assets_    The amount of assets transferred [asset units]
      */
