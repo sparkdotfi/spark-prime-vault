@@ -1,5 +1,176 @@
 # Rounding campaign report: `src/SparkPrimeVault.sol`
 
+## Round 6 (`master` @ `c512609`)
+
+Branch `campaign-v6/rounding`, source = `master` @ `c512609`. File `test/ai/Rounding.t.sol`:
+102 tests, 102 pass, 0 deliberate failing proofs (the two round-5 C-1 proofs became
+`test_fixed_C1_*`), 58 fuzz tests. `test/ai/tables/*` unchanged: `python3 -I
+test/ai/tables/drip_reference.py` regenerates `drip.csv` and `DripTable.sol` byte-identical
+(`git status` clean; `drip` `:648-663`, `nowChi` `:843-848`, `_rpow` `:1122-1144` are the same
+code as 0ebb452 modulo the packed `rho`/`chi` slot) and the 112-row table still matches
+`nowChi()`/`drip()`/`chi()` exactly. Final runs: `FOUNDRY_FUZZ_RUNS=20000 forge test --skip
+test/ai/TestBase.t.sol --match-path test/ai/Rounding.t.sol`: 102 passed, 0 failed.
+(`test/ai/TestBase.t.sol` on the branch does not compile, duplicate `operator`/`OPERATOR_ROLE`
+after the sed; it is not mine and not imported by any `test/ai` file, so it is skipped.)
+
+Notation as before: `c_s = chi_s / RAY`, `c_p = chi_p / RAY`, `S = totalSupply`,
+`TA = floor(S chi_p / RAY)`, `C = floor((2^256 - 1) / RAY) = 1.158e50`, harness chis
+`chi_s = 1047633055711877768967605062`, `chi_p = 1009687768242461209408770821`.
+
+### Port notes
+
+- Roles: every `adjustTotalAssets` call goes through `lossManager` (`:265`); `_freshVault` uses
+  the 7-argument `initialize` with 1-wei minimums. `test_fixed_R3_1_*` pins that the admin, the
+  operator and the fee setter can no longer adjust.
+- `requestDepositCancellation` takes `savingsShares`; every cancel in the file passes the entry's
+  exact share count (or a partial amount in the new partial-cancel tests).
+- `chi` moved to slot 7, offset 64 bits (packed after `rho`): `_setPrimeChi` re-pinned by
+  read-back; spUSDC unchanged (slot 3, offset 64).
+- Single-entry getters revert `InvalidRequestId` below the head, so `_depositShares` /
+  `_redeemShares` / `_cancelShares` read `keccak256(slot) + 3 id + 2` with `vm.load`.
+- `Deposit` event now `(requestId, owner, recipient, savingsSharesConsumed, assetsConverted,
+  sharesMinted)`: `_lastDepositEvent` decodes the last two data words.
+- Deleted: `test_R5_zeroShareRequest_isAcceptedWhenMinRedeemIsZero` (the state `minRedeem == 0`
+  no longer exists) -> `test_fixed_R5_zeroShareRequest_rejectedByMinRedeem`.
+  `test_BUG_processPendingRedeems_batchCeilBurnsExceedSpUsdcBalance` +
+  `test_processPendingRedeems_batchCeilBurn_oneRequestPerCallSucceeds` ->
+  `test_fixed_C1_processPendingRedeems_round3Numbers_3548_settlesInOneCall`.
+  `test_R6_feeCeil_oneShareRequest_isEntirelyFee` -> `test_BUG_R5_14_*` (same proof, the ghost
+  entry is now walked as a zero fill, see below). Nothing else removed.
+
+### (a) Findings on `c512609`
+
+| # | Where (`c512609`) | What | Severity | Test |
+|---|---|---|---|---|
+| C-1 **fixed**, residual dust (new, info) | `:953` per-entry clamp vs `:966`/`:1001` ceil burn | The per-entry bound is a proof, not a patch (law below): no batch size, split, liquidity or budget reverts. The residual is dust: the clamp floors twice on every reduced balance, so it is strictly MORE conservative than the old single clamp and strands dust even where the old sum of ceils fitted the balance. Harness: 21 spUSDC (maxWithdraw 22, clamp 21), requests (1, 20): old burns 1 + 20 = 21 <= 21, both paid on 0ebb452; now the second fill sees 20 spUSDC -> maxWithdraw 20 -> clamp 19: pays 19, burns 19, **1 spUSDC share and 1 spPRIME share stranded** (smallest such balance at the harness chis, brute force over every two-way split). Stuck state exact: shares queued while `floor(bal_f c_s) < c_p` (`:953` gives 0, `:955` breaks); at the harness `bal_f <= 1`. Queued dust `q` with `m` fills: `q c_p < c_p + 1 + m c_s`. Only the taker returning spUSDC clears it (3401 case needs 2 returned shares, one per call). | info (liveness of < 2 shares of dust at the harness, bounded) | `test_fixed_C1_perEntryClamp_strandsWhereSingleClampWasSafe`, `testFuzz_fixed_C1_batchRedeem_neverReverts_arbitraryIndexes_dustLaw` (20000 runs), `test_fixed_C1_batchRedeem_3401_settlesInOneCall_dustExact` |
+| V2-7 / CAP-1 wider (new consequence) | `:445` -> `:864` | `requestDepositCancellation` ends with `_processPendingDeposits(0, max)`, whose budget evaluates `convertToShares(convertToAssets(availableCapacity()))` before the `min` with 0. A capacity above `totalSupply + type(uint256).max / nowChi()` therefore reverts every **cancellation** with panic 0x11 as well as every deposit: queued depositors can neither be filled nor get out until the operator lowers it. Settlement of already cancelled entries (`:902-940`) does not read capacity and keeps working. | low (operator-set value; one more liveness consequence of the unbounded `setCapacity`) | `test_BUG_V2_7_capacityOverflow_alsoBricksRequestDepositCancellation` |
+| R5-14 (open, changed) | `:463` ceil, `:950-973` loop | At the harness minimum (`minRedeem == 1`) a 1-share request at any fee > 0 is entirely fee: 0 queued, share burned, `NoRequest` on repoint. The redeem loop has no `continue` for zero entries: the ghost is "filled" with 0 shares, spUSDC `withdraw(0, recipient)` is called, `Redeem(id, .., 0, 0, 0)` is emitted and the entry deleted; this needs `fillable_ != 0`, i.e. at least `c_p` of liquidity, otherwise the head stays on the ghost. Each ghost costs one `maxRequests_` slot. | low | `test_BUG_R5_14_feeCeil_minRedeemRequest_isEntirelyFee_leavesZeroShareEntry` |
+| G-1 / G-2 (open, now `LOSS_MANAGER`) | `:277` + `:280` vs `drip` `:655` | Unchanged numbers: smallest bricking chi at VSR == RAY is `C + 1 = 115792089237316195423570985008687907853269984665641`, at MAX_VSR after 1 s `floor((2^256 - 1) / MAX_VSR) + 1`; harness `G_drip = 114_681_085_459_449_903_921_528_244_645_760_028`, `G_drip + 1` lands chi on `C + 664_435_247_753_226` and every dripping call panics 0x11 from the next second; `adjustTotalAssets` drips first (`:270`) so it cannot undo it. The `:280` bound is `54_210_108` times too loose. The caller is now a `LOSS_MANAGER_ROLE` hot wallet instead of the admin: the one-shot irreversible brick is reachable from a lower-trust key. | low -> **low/medium** (re-rated for the role) | `testFuzz_BUG_G1_adjustTotalAssets_dripOverflowThreshold_exact` (20000), `test_BUG_G1_*` (2), `test_drip_uint192CastNeverTruncates` |
+| C-3 (open, now `LOSS_MANAGER`) | `:274` | No loss floor: `TA - 1` is admissible, leaves `chi = floor(RAY / S)` (harness `1_009_687_768_243_692`), `totalAssets() in {0, 1}`; `ChiTooLow` (`:279`) only for `S > RAY`. Same numbers, lower-trust caller. | high (one call wipes holders; role is no longer the admin) | `testFuzz_BUG_C3_*`, `test_R13_adjustTotalAssets_chiTooLow_onlyAboveRaySupply` |
+| V2-12 (open) | `:277` | 1-wei drift per call, both directions, never in the holders' favour; harness 1e6 loss in 1 call drops TA by 1_000_001, in 6 calls by 1_000_006; loss-then-gain of the same amount ends in `[TA - 2, TA]`. Unchanged. | low | `test_BUG_V2_12_*`, `testFuzz_BUG_V2_12_*` (2), `testFuzz_R13_R14_*` |
+| C-11 (open at 1-wei minimum; closed by config) | `:388` | `X <= floor((chi_s - 1) / RAY)` buys 0 spUSDC, donates X, pushes a 0-share ghost (`NoRequest` on cancel and repoint). With `minDeposit = ceil(chi_s / RAY)` the whole region is `BelowMinDeposit` and the first admitted amount buys exactly 1 share; the guard is static while c_s grows, so it must be re-set each time c_s crosses an integer. | low | `testFuzz_BUG_C11_dustDeposit_exactRegion` (20000), `testFuzz_C11_minDepositCeilChiS_closesDustRegion`, `test_R1_dustDeposit_*` |
+| F-4 (open) | `:883-884` | Zero-mint region `s <= sMax = ceil((K + 1) RAY / chi_s) - 1`, `K = floor((chi_p - 1) / RAY)`, empty once `chi_p <= RAY`; the admitted spUSDC shares are consumed from the head entry and mint nothing; `minDeposit` does not touch it (it is a fill-side region). | low | `testFuzz_BUG_F4_zeroMintRegion_arbitraryIndexes` (20000), `testFuzz_F4_*` (2), `test_F4_zeroMintRegion_table`, `test_capacity_residualTwo_*` |
+| R13-c (open, consequence of C-3) | `:958` after a loss | `s < ceil(RAY / chi_p)` pays 0 and burns the shares; harness after `TA - 1`: `ceil(RAY / chi) = S + 1`. Unchanged. | low | `test_R13_afterLoss_*`, `testFuzz_R13_afterLoss_zeroPayoutRegion_isExact` |
+| `S == 0` panic | `:277` | Gain with no supply: division by zero (0x12); `G > C` overflows first (0x11); loss `LossTooHigh`. | info | `testFuzz_R13_adjustTotalAssets_zeroSupply_lossRevertsGainPanics`, `test_R13_adjustTotalAssets_int256Edges` |
+
+No other new rounding finding: every site keeps its direction (table in (c)); no `(chi_s, chi_p,
+capacity)` pair over-mints at 20000 runs; the try/catch fallback credits the same floors with no
+extra rounding; partial cancellations move `savingsShares` verbatim.
+
+### C-1 on `c512609`: the law, re-derived
+
+Per entry (`:953`): `fillable_i = min(remaining, floor(maxWithdraw_i RAY / chi_p))` with
+`maxWithdraw_i = min(L_i, floor(bal_i chi_s / RAY))` (spUSDC `:354-358`), `sh_i <= fillable_i`,
+`paid_i = floor(sh_i chi_p / RAY)` (`:958`), `burn_i = ceil(paid_i RAY / chi_s)` (`:1001` ->
+spUSDC `withdraw` `:311`). Then
+
+- `paid_i <= floor(fillable_i chi_p / RAY) <= maxWithdraw_i <= L_i`: the USDC push never
+  exceeds spUSDC's liquidity;
+- `burn_i <= ceil(floor(bal_i chi_s / RAY) RAY / chi_s) <= bal_i`: the ceil burn never exceeds
+  the balance the clamp was computed from (`floor(bal c_s) / c_s <= bal`, and the ceiling of a
+  number `<= bal` is `<= bal`).
+
+So the sum of ceil burns over a batch never exceeds the balance, for any `n`, split, `L`,
+`maxShares_`, `maxRequests_`: `processPendingRedeems` cannot revert on spUSDC rounding
+(`testFuzz_fixed_C1_batchRedeem_mirror_anyEntriesAnyLiquidityAnyBudget` checks every observable
+against an exact mirror of `:942-976` at arbitrary index pairs). The residual is not a revert but
+stranded dust, exact:
+
+| case (harness chis) | 0ebb452 | c512609, one call |
+|---|---|---|
+| 3401 spUSDC, (108, 3420) | revert, 1 short | pays 109 + 3451, burns 105 + 3295, **1 spUSDC + 2 spPRIME stranded**; second entry's clamp: 3296 spUSDC -> maxWithdraw 3452 -> 3418 shares |
+| 13625 spUSDC, (7036, 6840, 261) | revert, 2 short | pays 7104 + 6906 + 260, burns 6782 + 6593 + 249, 1 spUSDC + 3 spPRIME stranded; third clamp 250 spUSDC -> 261 USDC -> 258 shares |
+| 3548 spUSDC, (2396, 1285) (round 3) | revert, 1 short | pays 2419 + 1295, burns 2310 + 1237, 1 + 2 stranded (what the one-per-call workaround gave) |
+| whole backing 954_532_691_143 spUSDC, (11, 11, 990_405_184_087) (FE-6) | revert | pays 11 + 11 + 999_999_999_974 = 999_999_999_996, burns 11 + 11 + 954_532_691_120, 1 spUSDC + 2 spPRIME stranded; alice's USDC + remaining notional = 999_999_999_998 exactly, the vault's 1 share (1 USDC) is 1 wei short of backing the 2 queued shares |
+| 21 spUSDC, (1, 20) | both paid (burns 21 <= 21) | pays 1 + 19, 1 + 1 stranded: the fix is stricter than the old clamp |
+
+Who eats what: the queued dust is the user's (shares sit at the vault, `pendingRedeemShares`,
+paid once backing returns at the then-current chi); the stranded spUSDC is the vault's and is
+worth `< c_p + 1` USDC (floor); the difference, up to `m` ceil burns of `< 1` share each, is what
+the backing lost to spUSDC's rounding. In the 3401 case the taker must return 2 spUSDC shares,
+one per call (`_returnToVault(1)` -> clamp 1 share -> paid 1), to clear it. At `chi_s == RAY`
+there is no dust at all: the whole clamp is paid (`testFuzz_C1_chiSEqualsRay_batchPaysWholeClamp_noDust`).
+
+### (b) Status of prior findings
+
+| Finding | Status on c512609 | Pinning test |
+|---|---|---|
+| C-1 / R5-4 batch ceil burn | **fixed** (per-entry bound); residual dust quantified above | `test_fixed_C1_*` (5), `testFuzz_fixed_C1_*` (2, 20000 runs) |
+| C-8 minimums (zero `minRedeem` -> zero-share requests) | **fixed** for the request path (`ZeroMinRedeem` `:186`/`:241`, `BelowMinRedeem` `:456`); still unbounded above | `test_fixed_R5_zeroShareRequest_rejectedByMinRedeem`, `testFuzz_R5_minRedeem_checkIsExactInShares` |
+| R5-14 zero-share entry via the fee ceil | **open, changed**: ghost is walked as a zero fill with `withdraw(0)` once liquidity `>= c_p` | `test_BUG_R5_14_*` |
+| R5-10 unpayable dust at the redeem head | **open, re-characterised**: stuck iff `floor(bal c_s) < c_p`, `<= 1` spUSDC share at the harness; dust law `q c_p < c_p + 1 + m c_s` | `test_fixed_C1_batchRedeem_3401_settlesInOneCall_dustExact`, `testFuzz_fixed_C1_batchRedeem_neverReverts_arbitraryIndexes_dustLaw` |
+| R4-A / R4-B blacklist fallback | **changed to try/catch**: rounding-wise identical, `claimableAssets`/`totalClaimable` credited exactly `floor(shares c_p)` (redeem) / `floor(s c_s)` (cancel), same ceil burn | `testFuzz_fallback_redeemToBlacklisted_*`, `testFuzz_fallback_cancelToBlacklisted_*` |
+| R3-1 gain sandwich | fixed in the contract; residual (deposit between payload and `pause()`) unchanged, 25_000_000_000 of a 50_000e6 gain captured | `test_fixed_R3_1_*` (now also: admin/operator/fee setter cannot adjust), `test_R3_1_depositBeforePause_*` |
+| R4-A/B uint192 wrap | fixed (`ChiTooHigh` `:280`), harness gain `6_216_874_099_906_568_962_213_193_772_735_334_179_364_221` rejected | `test(Fuzz)_fixed_adjustTotalAssets_uint192Wrap*` |
+| G-1/G-2 drip brick | **open**, re-rated for `LOSS_MANAGER` | see (a) |
+| C-3 no loss floor | **open**, re-rated for `LOSS_MANAGER` | see (a) |
+| V2-7 / CAP-1 `setCapacity` unbounded | **open, wider**: also bricks `requestDepositCancellation`; usable bound `maxCapacity <= totalSupply + type(uint256).max / nowChi()` (harness `1.1468e50`, after 365 d at 5% `1.0922e50`) | `test_BUG_V2_7_*`, `testFuzz_capacity_overflowThreshold_isMaxUintOverChi` (20000), `test_capacity_overflowThreshold_shrinksAsChiGrows` |
+| V2-12 drift, C-11, F-4, R13-c, `S == 0` panic, N-2 | **open**, unchanged numbers | see (a) |
+| `convertToAssets` overflow | **open**: panics iff `shares > floor((2^256 - 1) / nowChi())` (harness `114681085459589801375833087904206311575507395147570`); `convertToShares` iff `assets > C` | `testFuzz_convertToAssets_overflowThreshold_isMaxUintOverChi` (20000), `test_convertToAssets_overflowThreshold_harness` |
+| `_rpow` revert bound | **unchanged**: MAX_VSR reverts from `dt = 2_416_158_483` s, last value `115792088269848880294669100449313013875845939851551`; harness `nowChi` overflows 438_642 s earlier | `test_rpow_maxVsr_revertBound_exact` |
+| `uint192` casts | never truncate (`< C < 2^192`); `:280` is the only loose bound | `test_drip_uint192CastNeverTruncates`, `testFuzz_R13_adjustTotalAssets_loss_castNeverTruncates` |
+
+### (c) Code paths and the full rounding table on `c512609`
+
+| # | Site (`src/SparkPrimeVault.sol` @ c512609) | Direction | Favours | Proven bound | Test |
+|---|---|---|---|---|---|
+| R1 | `:388` spUSDC `deposit`: `floor(X RAY / chi_s)` | down | spUSDC | `< 1` spUSDC share below; `X RAY < chi_s` gives 0 (C-11); `minDeposit = ceil(c_s)` closes it | `testFuzz_R1_*`, `test_R1_*`, `testFuzz_BUG_C11_*`, `testFuzz_C11_*` |
+| R2 | `:862-865` `spUSDC.convertToShares(convertToAssets(availableCapacity()))` | down, down | vault | admitted `<= A c_p / c_s`, gap `< 1 + 1/c_s <= 2`; `totalSupply <= maxCapacity` after instant and batch fills for `chi_s in [RAY, 10 RAY]`, `chi_p in [RAY/1000, 10 RAY]`, cap `[1, 1e12]` (20000 runs), also after a loss; residual `< 1 + (2 + c_s) / c_p` shares, 2 at harness; product overflows above `totalSupply + 2^256 / chi_p` (deposits AND cancellations) | `testFuzz_R2_*`, `testFuzz_capacity_*` (7), `test_capacity_*` (4), `test_BUG_V2_7_*` |
+| R3 | `:883` `spUSDC.convertToAssets(s)` | down | vault | `< 1` USDC wei below `s c_s` | `testFuzz_R3_R4_*` |
+| R4 | `:884` `convertToShares(assets)` | down | vault | `< 1` share below; zero-mint region exactly `s <= sMax`, empty for `chi_p <= RAY` | same, `testFuzz_BUG_F4_*`, `testFuzz_F4_*`, `test_F4_*` |
+| R5 | `:456` `shares_ >= minRedeem`, `minRedeem != 0` (`:186`, `:241`) | none | n/a | exact in shares; value `floor(minRedeem c_p)` grows with chi (1000e6 shares: 1_009_687_768 -> 1_060_172_156 after 365 d at 5%, 1_644_674_980 after 10 y); 0 shares rejected | `testFuzz_R5_*`, `test_R5_*`, `test_fixed_R5_*` |
+| R6 | `:463` `_divUp(shares * fee, WAD)` | up | vault | `>= exact`, `< 1` share above; `s < WAD / fee` pays exactly 1; `minRedeem`-sized request at any fee > 0 is entirely fee (ghost) | `testFuzz_R6_*`, `test_BUG_R5_14_*`, `testFuzz_fee_*`, `test(Fuzz)_divUp_*` (5) |
+| R7 | `:953` `min(remaining_, convertToShares(availableLiquidAssets()))`, **per entry** | down | vault | clamp `<= maxWithdraw_i / c_p`, `< 1` share below; paid `<= maxWithdraw_i <= L_i`; liquidity-bound strand `< c_p + 1` per call, `< c_p` final | `testFuzz_R7_*`, `testFuzz_redeemQueue_liquidityBinds_strandBelowOneShare`, `testFuzz_availableLiquidAssets_*`, `testFuzz_fixed_C1_*` |
+| R8 | `:958` `convertToAssets(shares)` | down | vault | paid `< 1` wei below `shares c_p`; `>= 1` while `chi_p >= RAY`; 0 for `s < ceil(RAY / chi_p)` after a loss; fallback credits the same amount | `testFuzz_R8_R9_*`, `testFuzz_R13_afterLoss_*`, `testFuzz_fallback_redeem*` |
+| R9 | `:966` -> `:1001`/`:1011` spUSDC `withdraw`: `ceil(paid RAY / chi_s)` | up | spUSDC, against vault | `< 1` spUSDC share above per fill; **`burn_i <= bal_i` always** (C-1 fixed); batch dust `q c_p < c_p + 1 + m c_s`, stuck iff `floor(bal c_s) < c_p`; after a full redeem the vault keeps `leftover c_s < c_p + 2` shares (<= 2 at harness, X = 836 keeps 2) | `test(Fuzz)_fixed_C1_*` (7), `testFuzz_fullRedeem_leftoverSpUsdc_*` (2), `test_roundTrip_maxLossExample_836wei` |
+| R10 | `:924` -> `:982`/`:992` spUSDC `redeem(s)`: `floor(s chi_s / RAY)`; budget `:907-908` `min(max, spUSDC.maxRedeem)` = `min(floor(L RAY / chi_s), bal_s)`; partial cancel `:428-437` moves `savingsShares` verbatim | down; down; none | spUSDC, against canceller | one-shot refund `<= X`, loss `< 1 + c_s`; k chunks `<= k - 1` wei below one shot (now user-reachable through partial cancels: 1000e6 split 400_000_012 + 554_532_679 refunds 999_999_998 vs 999_999_999); batch of n fills pays `<= L`, never reverts; stranded `< c_s + n` per call, `< c_s` after repeats; fallback credits the same floor | `testFuzz_R10_*` (5), `test_R10_*` (4), `testFuzz_fallback_cancel*` |
+| R11 | `:655`, `:846` `_rpow(vsr, dt) * chi / RAY` | half-up per step | neutral | equals the python mirror on 112 rows (byte-identical regeneration); drift `< 1e-18` relative over 10 y at MAX_VSR; daily vs yearly within 400 RAY units | `test_R11_*` (4) |
+| R12 | `:828`, `:832` `convertToAssets` / `convertToShares` | down / down | vault | `a - A(S(a)) < 1 + c_p`; `s - S(A(s)) <= 1`; overflow thresholds as in (b) | `testFuzz_R12_*` (4), `test(Fuzz)_convertToAssets_overflowThreshold_*` |
+| R13 | `:277` loss, `0 < L < TA` (`:268`, `:274`), `LOSS_MANAGER` (`:265`), paused (`:267`), drips first (`:270`) | down, down | against holders | drop in `{L, L + 1}` for `S < RAY`, exactly `L` iff `S \| (TA - L) RAY`; cast cannot truncate; largest loss `TA - 1` | `testFuzz_R13_*` (4), `test_R13_*` (6), `testFuzz_BUG_C3_*` |
+| R14 | `:277` gain, `chi <= 2^192 - 1` (`:280`) | down, down | against holders | rise in `{G - 1, G}` for `S < RAY`; `G_drip < G_trunc < G_ovf`; `G_trunc` is a clean `ChiTooHigh`, `G_ovf + 1` a 0x11 | `testFuzz_R14_*` (3), `test_R14_*` (2), `test(Fuzz)_fixed_*` (3), `test(Fuzz)_BUG_G1_*` (3) |
+| fallback | `:978-1014` try/catch | none | n/a | `claimableAssets` / `totalClaimable` += exactly the floor amount of the primary path; `claim` pays it to the wei | `testFuzz_fallback_*` (2) |
+| `_rpow`, `uint192` casts, `maxWithdraw` boundary, round trips (`X - out < 2 + c_s + c_p`, `<= 4` at harness), rate mismatch 3x3 | as in round 5 | | | unchanged numbers | `test_rpow_*`, `test_drip_uint192CastNeverTruncates`, `testFuzz_availableLiquidAssets_*`, `testFuzz_roundTrip_*` (4), `test_rateMismatch_3x3_*` |
+
+Who eats each wei: deposit: spUSDC keeps `< c_s` (R1), the vault keeps `< 1 + c_p` (R3+R4);
+redeem: the vault keeps `< c_p` of notional (R8), spUSDC takes `< c_s` extra backing per fill
+(R9), and a drained batch strands `< c_p + 1` USDC of spUSDC in the vault plus the user's dust
+shares (`q c_p < c_p + 1 + m c_s`) until the taker returns backing; cancellation: spUSDC keeps
+`< c_s` per settled chunk, and a user who cancels in k parts gives up `<= k - 1` wei more (R10);
+`adjustTotalAssets`: holders lose `<= 1` wei per call either way (R13/R14); fee: the vault
+over-collects `< 1` share (R6); fallback: nothing extra.
+
+New paths covered: per-entry redeem bound (`:953-955`), partial cancellation (`:422-423`,
+`:428-437`, events), cancellation self-skip through `:445` (budget-0 walk, overflow), try/catch
+fallback (`:982-994`, `:1001-1013`) and `claim` (`:531-543`), `totalClaimable`, `minRedeem` /
+`minDepositCancellation` / `minDeposit` zero rejections, `LOSS_MANAGER_ROLE` on
+`adjustTotalAssets`, `Redeem` / `Deposit` / `DepositCancellationRequest` /
+`ClaimableAssetsIncreased` events with exact arguments.
+
+### (d) Properties that held
+
+- No `(chi_s, chi_p, capacity)` pair over-mints (instant and batch fills, after a loss), 20000
+  runs each.
+- `processPendingRedeems` never reverts on spUSDC rounding for any entries, liquidity, chis,
+  `maxShares_`, `maxRequests_`; every observable equals the mirror (20000 runs).
+- Every ceil burn is within the balance its clamp saw; every payout within spUSDC's liquidity.
+- Cancellation batches never ask spUSDC for more than it holds (floor budget vs floor fills).
+- Partial cancels move `savingsShares` verbatim; counters exact; minimum exact in shares.
+- Fallback crediting is exact; `totalClaimable` tracks the sum.
+- Drip table byte-identical to the python mirror.
+
+### (e) Unsettled
+
+- The stuck-dust bound `q c_p < c_p + 1 + m c_s` is proven for entries summing to the initial
+  clamp (the round-5 shape) and fuzzed at 20000 runs; for arbitrary entries the queued amount is
+  simply the unbacked remainder, not a rounding quantity.
+- The smallest "fix is stricter than the old clamp" balance (21) is minimal at the harness chis
+  for two entries only.
+- `test/ai/TestBase.t.sol` on the branch does not compile (not mine); the suite is run with
+  `--skip test/ai/TestBase.t.sol`.
+- R13/R14 `{L, L + 1}` bounds still assume `S < RAY`; unchanged from round 5.
+
+---
+
 ## Round 5 (`master` @ `0ebb452`)
 
 Branch `campaign-v5/rounding`, source = `master` @ `0ebb452`. File `test/ai/Rounding.t.sol`:
