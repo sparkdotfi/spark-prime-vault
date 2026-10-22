@@ -1206,7 +1206,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.DepositCancellation(5, cam, cam, spUSDC.convertToShares(500_000e6) + 2, 500_000e6 + 1);  // Only 500k of the 600k is processed
 
-        vm.startPrank(processor);
+        vm.startPrank(operator);
         spPrime.processPendingDepositCancellations(spUSDC.convertToShares(2_000_000e6), type(uint256).max);
         vm.stopPrank();
 
@@ -1241,7 +1241,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
 
         for (uint256 i = 0; i < 5; i++) {
             vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
-            _assertDepositCancellationRequest(i, address(0), address(0), 0);
+            spPrime.getPendingDepositCancellationRequest(i);
         }
 
         _assertDepositCancellationRequest(5, cam, cam, 100_000e6 - 2);  // Partial fill
@@ -1281,7 +1281,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.DepositCancellation(9, ali, ali, spUSDC.convertToShares(1_000_000e6), 1_000_000e6 - 1);
 
-        vm.prank(processor);
+        vm.prank(operator);
         spPrime.processPendingDepositCancellations(type(uint256).max, type(uint256).max);
 
         totalClaimable = 700_000e6 + 800_000e6;
@@ -1312,7 +1312,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
 
         for (uint256 i = 0; i < 10; i++) {
             vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
-            _assertDepositCancellationRequest(i, address(0), address(0), 0);
+            spPrime.getPendingDepositCancellationRequest(i);
         }
     }
 
