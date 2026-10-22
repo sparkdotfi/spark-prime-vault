@@ -1,5 +1,147 @@
 # spPRIME invariant campaign report
 
+## Round 6 (`master` @ `c512609`)
+
+Branch `campaign-v6/invariants`. The suite was REWRITTEN into the house layout (reference:
+`test/invariants/` on the fork, which runs on mainnet; this one is its no-RPC complement over
+`test/ai/LocalTestBase.t.sol`: real spUSDC code on a 6-decimal `MockUSDC` with `setBlacklisted`).
+Files: `test/ai/invariants/handlers/{HandlerBase,UserHandler,AdminHandler,ExternalHandler}.sol`,
+`test/ai/invariants/InvariantsBase.t.sol` (invariant helpers `vaultInvariant_<Letter>_<claim>`),
+`test/ai/invariants/Invariants.t.sol` (`invariant_vaultInvariants` + `afterInvariant`). The
+round-5 files `a_init.sol`, `b_flows_user.sol`, `c_flows_admin.sol`, `d_invariants.t.sol` are
+deleted. Rules kept from the reference: handlers only bound, prank, call and bump ghost counters;
+no per-flow post-condition blocks, no bitflag systems, no `vm.load`, no selector lists
+(`targetContract` only); the two modifiers `chiNeverDecreases` (all flows but
+`adjustTotalAssets`) and `headsNeverMoveBack` (all flows); invariants read public getters only.
+`foundry.toml` has `fail_on_revert = true`, so every handler call must succeed. All line numbers
+below are on `c512609`.
+
+Final run: `FOUNDRY_OFFLINE=true FOUNDRY_INVARIANT_RUNS=500 FOUNDRY_INVARIANT_DEPTH=500 forge
+test --skip 'test/ai/TestBase.t.sol' --match-path 'test/ai/invariants/Invariants.t.sol' -vv`
+-> **1 passed, 0 failed: 500 runs x depth 500 = 250,000 handler calls, 0 reverts, 0 discards**,
+184 s wall. (`--skip test/ai/TestBase.t.sol` because the fork harness, not owned by this worker,
+does not compile on this master: duplicate `operator` / `OPERATOR_ROLE` declarations and the old
+4-argument `initialize`; it is not imported by anything under `test/ai/invariants/`.) Earlier
+runs: 20 x 100 and 30 x 150, both green after the one fix below. Handler call counts from the
+final run (uniform selector draw over 32 flows, all 0 reverts):
+
+| flow | calls | flow | calls | flow | calls |
+|---|---|---|---|---|---|
+| requestDeposit | 7787 | requestDepositCancellation (partial) | 7792 | requestRedeem | 7803 |
+| updateDepositRecipient | 7847 | updateDepositCancellationRecipient | 7812 | updateRedeemRecipient | 7693 |
+| claim | 7843 | transfer | 7738 | transferFrom | 7844 |
+| setVSRBounds | 7893 | setVSR | 7829 | setCapacity (below supply allowed) | 7790 |
+| setMaxRedeemFeeRate | 7718 | setRedeemFeeRate | 8043 | setMinDeposit | 7994 |
+| setMinDepositCancellation | 7832 | setMinRedeem | 7652 | pause | 7795 |
+| unpause | 7903 | adjustTotalAssets (lossManager, paused) | 7763 | processPendingDeposits | 7735 |
+| processPendingDepositCancellations | 7873 | processPendingRedeems | 7767 | take | 7731 |
+| warp | 7802 | drip | 7793 | setSavingsVsr | 7801 |
+| drainSavingsLiquidity | 7832 | returnSavingsLiquidity | 7797 | returnTakenSavingsShares | 7777 |
+| giveSavingsShares | 7865 | setBlacklisted (`usdc.setBlacklisted`) | 7856 | | |
+
+Per-flow ghost counters (fills, claimables credited, gaps opened) are not kept any more by design;
+the reference layout records only the flags and counters the invariants read.
+
+### (a) Findings
+
+No invariant broke in 250,000 calls, so no `test_BUG_` test was added. The one failure during
+development was in the suite, not the vault: forge re-checks the invariants after
+`afterInvariant`, and the settlement walked the queues with the harness helpers instead of the
+handlers, so the escrow ledger (L) saw the `requestRedeem`s but not the fills; settlement now
+goes through `adminHandler.process*(0, 0)` (the unbounded branch of `_boundProcessing`).
+
+Behaviour recorded by the ghost flags (not violations):
+
+- **R5-1 / F-2 (open, by design, medium)**: `_processPendingRedeems` (`:942`-`:976`) still bounds
+  each fill by `convertToShares(availableLiquidAssets())` (`:953`) = `spUSDC.maxWithdraw(vault)`
+  (`:823`-`:825`), the vault's whole spUSDC balance, and `take` (`:289`-`:298`) only checks the
+  balance (`:291`): neither subtracts `pendingDepositSavingsShares` or
+  `pendingCancelledDepositSavingsShares`. `AdminHandler.backingGapOpened` is set by exactly those
+  two flows; invariant J (`spUSDC(vault) >= pending deposits + pending cancels`) is asserted in
+  every state before the flag is set and never failed, i.e. no other flow opens the gap.
+  `afterInvariant` tops the vault up (`_giveSavingsShares`) before draining the cancellation
+  queue, which is the operational fix the product relies on.
+- **V2-7 / R5-8 family (info)**: `setCapacity` (`:304`-`:306`) is unbounded; the handler cuts it
+  below `totalSupply` (`capacityLoweredBelowSupply`) and invariant H's `totalSupply <= maxCapacity`
+  is only asserted before that; `availableCapacity()` (`:819`-`:821`) formula asserted always. The
+  handler caps capacity at `uint128.max` because `convertToAssets(availableCapacity())` (`:864`)
+  overflows near `uint256.max` (R5-8, open, unit-suite topic).
+- **`adjustTotalAssets` at `totalSupply == 0`** (`:277`, NOTE at `:276`) still divides by zero;
+  the handler skips that state (open, low, unit-suite topic). Chi after an adjustment is kept
+  inside [1e21, 1e33] by the handler; the contract allows (0, uint192.max] (R5-1/G-1, R5-3/C-3
+  open, unit-suite topics).
+
+### (b) Prior findings touched by this suite, status at `c512609`
+
+- **C-1 / R5-4 (batched redeem fills reverted on spUSDC ceil-rounding): fixed.** `fillable_` is
+  recomputed per entry (`:953`) and the loop breaks at 0 (`:955`); 7,767 `processPendingRedeems`
+  calls, one in four with both axes unbounded, under `fail_on_revert` with spUSDC liquidity
+  drained at random and the vault's spUSDC taken at random: 0 reverts. The round-5 proof
+  `test_BUG_processPendingRedeemsRevertsOnCeilBurnWhenBalanceBinds` was deleted with the old
+  suite (the 100-spUSDC / 110-entry regression is the redeem-queue unit suite's).
+- **R4-A / R4-B (blacklisted recipient blocks a queue): fixed, now by `try/catch`**
+  (`_redeemSavings` `:978`-`:995`, `_withdrawSavings` `:997`-`:1014`). 7,856 blacklist flips over
+  10 users; fills to blacklisted recipients land in `claimableAssets`; invariant F (vault USDC ==
+  `totalClaimable` == sum of `claimableAssets`, exact) held after every call, and `afterInvariant`
+  un-blacklists everyone, claims and ends with `totalClaimable == 0` and vault USDC == 0 in all
+  500 runs. Requests and updaters no longer reject blacklisted recipients (no probe needed).
+- **R5-1 / F-2: open**, see (a); invariant J + `backingGapOpened`.
+- **N-2 (cancellation processing bounded by spUSDC liquidity): still fixed**, `:907`-`:908`
+  (`maxRedeem`); 7,873 calls, 0 reverts, and invariant N (refunds paid <= spUSDC value of the
+  shares redeemed) held.
+- **R5-9 ghosts / frozen head: changed.** Partial cancels (`:434`-`:438`) and the self-skip walk
+  (`:445`, `:875`-`:878`) are exercised by every `requestDepositCancellation`; heads never moved
+  back (modifier) and E (`head + window == requests made`) held. 1-wei deposits (0 spUSDC shares,
+  R5-15) and 1-share redeems at a nonzero fee (zero-share entries, R5-14) stay reachable because
+  the handler minimums go down to 1: both are walked and deleted without reverting, D and E hold
+  with them in the queues.
+- **T (adjustTotalAssets exactness), R/S (recipient updates), AA/AB (claim and revert
+  classification), Y (per-call payout exactness)**: dropped as per-flow post-conditions. Y
+  survives as M/N (cumulative `paid <= owed` counters); S is covered by the vault's own
+  `NotRequestOwner` check being the only path the handler never exercises (owner-only pranks).
+- **Pause no longer gates cancellations (R5-B)**: `requestDepositCancellation` and
+  `processPendingDepositCancellations` are called in paused states by the handlers (not
+  pause-skipped) with 0 reverts.
+
+### (c) Invariants held (500 runs x depth 500, 250,000 calls, 0 reverts; checked after every call and after `afterInvariant`)
+
+| Helper | Claim |
+|---|---|
+| `vaultInvariant_A_sumBalancesPlusEscrowEqTotalSupply` | sum of 10 user balances + vault escrow == totalSupply |
+| `vaultInvariant_B_escrowEqPendingRedeemShares` | balanceOf(vault) == pendingRedeemShares |
+| `vaultInvariant_C_assetConversions` | totalAssets == supply*chi/RAY; assetsOf == balance*chi/RAY <= totalAssets |
+| `vaultInvariant_D_pendingSharesEqSumOfQueues` | the three `pending*` counters == sums over the pending windows |
+| `vaultInvariant_E_queueHeadsAndLengths` | head + window length == requests made (ghost counters) for all three queues |
+| `vaultInvariant_F_claimables` | vault USDC == totalClaimable == sum(claimableAssets), exact |
+| `vaultInvariant_G_configBounds` | vsr/minVSR/maxVSR within [RAY, MAX_VSR]; fee rates <= MAX_REDEEM_FEE; minimums nonzero |
+| `vaultInvariant_H_capacity` | availableCapacity formula; supply <= maxCapacity unless lowered below supply |
+| `vaultInvariant_I_chiRhoDrip` | chi > 0, rho <= now, nowChi >= chi, drip() == nowChi and syncs chi/rho |
+| `vaultInvariant_J_backing` | vault spUSDC >= pending deposits + pending cancels until `take` / a redeem fill opens the gap |
+| `vaultInvariant_K_roles` | every actor keeps its role; exactly one admin |
+| `vaultInvariant_L_escrowOnlyLeavesThroughRedeemFills` | balanceOf(vault) == shares escrowed by requestRedeem - shares burned by redeem fills |
+| `vaultInvariant_M_redeemPayoutsNeverExceedSharesBurned` | cumulative USDC paid (direct + claimable) by redeem fills <= convertToAssets(shares burned) |
+| `vaultInvariant_N_cancellationPayoutsNeverExceedSavingsSharesRedeemed` | cumulative refunds <= spUSDC.convertToAssets(savings shares redeemed) |
+| modifier `chiNeverDecreases` | nowChi never decreases across any flow but `adjustTotalAssets` |
+| modifier `headsNeverMoveBack` | no `firstPending*Id` decreases across any flow |
+| `afterInvariant` | from every end state: unpause, un-blacklist, return taken spUSDC and drained USDC, freeze both rates, make spUSDC fully liquid, open capacity, drain deposits, top up and drain cancellations, everyone redeems, top up and drain redeems, claim for all -> all three queues empty, totalSupply == 0, escrow == 0, totalClaimable == 0, vault USDC == 0, totalAssets == 0; `sum(assetsOf)` and `totalAssets` non-decreasing over 30 idle minutes at each stage |
+
+Harness-specific points vs the reference: `MockUSDC.mint` instead of `deal`; blacklist via
+`usdc.setBlacklisted`; spUSDC actors `spSetter` / `spTaker` from `LocalTestBase`; both rates start
+accruing (`FIVE_PCT_VSR` spUSDC, `FOUR_PCT_VSR` spPRIME) so the rate order is broken from the
+start and flips with every `setVSR` / `setSavingsVsr`; minimums can be set down to 1 (dust and
+zero-share entries reachable); `afterInvariant` additionally mints spUSDC's accrued-interest
+shortfall into it because the vault is spUSDC's only depositor here.
+
+### (d) Unsettled
+
+- `test/ai/TestBase.t.sol` (fork harness, another worker's file) does not compile on this master;
+  the suite is run with `--skip` for it.
+- The campaign does not drive chi outside [1e21, 1e33], capacity above `uint128.max`, or
+  `adjustTotalAssets` at zero supply (R5-1/G-1, R5-3/C-3, R5-8 stay unit-suite topics).
+- R5-1 is reported, not pinned, by this suite (J is flag-gated); the exact-number proof lives in the
+  redeem-queue unit suite.
+
+
 ## Round 5 (`master` @ `0ebb452`)
 
 Branch `campaign-v5/invariants`, files `test/ai/invariants/{a_init,b_flows_user,c_flows_admin}.sol`,
