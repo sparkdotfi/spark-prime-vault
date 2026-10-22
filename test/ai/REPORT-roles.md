@@ -1,5 +1,132 @@
 # ROLES-ADMIN worker report
 
+## Round 6 (`master` @ `c512609`): seven-role matrix, pause scope, admin bounds, `adjustTotalAssets` as a hot-wallet role
+
+Branch `campaign-v6/roles-admin`, upstream `src/SparkPrimeVault.sol` = `master` @ `c512609` ("test: Small fix and improve coverage (#51)"), unpatched. Files: `test/ai/Authorization.t.sol` (85 tests), `test/ai/Admin.t.sol` (110 tests, 11 of them fuzz), both on `test/ai/LocalTestBase.t.sol`.
+
+Run: `FOUNDRY_OFFLINE=true forge test --skip test/ai/TestBase.t.sol --match-path 'test/ai/{Authorization,Admin}.t.sol'`. Result: 85 passed / 110 passed, 0 failed; every `testFuzz_` also green at `FOUNDRY_FUZZ_RUNS=20000`. `--skip test/ai/TestBase.t.sol` is needed because the ported fork harness in the worktree does not compile (duplicate `operator` / `OPERATOR_ROLE` identifiers left by the sed rename, lines 28-38); it is not this worker's file. Every `test_BUG_` test in this scope PASSES: it is a proof of the behaviour, not a deliberately failing test.
+
+Line numbers refer to `src/SparkPrimeVault.sol` @ `c512609`.
+
+Port notes. Both files were rewritten rather than patched: the sed `guardian -> pauser`, `rebalancer -> operator`, `vsrSetter -> operator` renames were wrong for `setCapacity` (admin -> operator), `unpause` (admin -> unpauser), `adjustTotalAssets` (admin -> lossManager) and every actor list (8 actors / 7 roles now). All revert strings became selectors; `recipient-cannot-receive` tests were rewritten to assert that blacklisted recipients and spUSDC ARE accepted by `requestDepositCancellation` and the three updaters (the check no longer exists). `requestDepositCancellation` gained the `savingsShares` argument and its event the `sharesCancelled` field; `initialize` the three minimums. Tests asserting `pause` blocks `requestDepositCancellation` / `processPendingDepositCancellations` became `test_fixed_R5B_*` asserting the opposite. Tests reading a cancelled entry by id after a full cancel at the head were changed to assert the head moved (the single-entry getter now reverts `InvalidRequestId` below the head). Removed outright with no replacement: nothing. The old `CHI_SLOT = 8` constant became a packed write to slot 7 (`rho` offset 0, `chi` offset 8), checked by `forge inspect`.
+
+### (a) New findings
+
+| # | Location | Scenario (exact) | Impact | Severity | Test |
+|---|---|---|---|---|---|
+| R6-1 (new) | `:422-423`, `:434-438` | A partial cancel can strand a remainder below `minDepositCancellation`. Queue a 100 USDC deposit (`S` = 95,45x,xxx spUSDC shares), `minDepositCancellation = S - 5`, cancel `S - 5`: 5 shares remain. Cancelling 5 reverts `BelowMinDepositCancellation`, cancelling `S - 5` reverts `SavingsSharesTooHigh`. The remainder can only leave through an operator fill or an admin lowering the minimum. With a launch minimum of e.g. 50 spUSDC a user who cancels all but 49.99 of a 100 deposit is stuck until the queue moves. Fix: allow `savingsShares_ == request.shares` regardless of the minimum (full cancel always permitted). | User funds stuck in a queue they tried to leave; no loss. | Low | `test_BUG_R6_1_minDepositCancellation_remainderBelowMinimumIsUncancellable` |
+| R6-2 (C-3 re-rated, open) | `:262-283` | `adjustTotalAssets` is now `LOSS_MANAGER_ROLE` (hot wallet) and only needs `paused` (`PAUSER_ROLE`, hot wallet). No admin, timelock or governance is in the path, and there is no floor on the loss and no cap on the gain other than `ChiTooHigh`. Down: `-(totalAssets - 1)` on a 1,000,000 USDC vault leaves `totalAssets() <= 1`, the full backing stays and a third hot wallet (`TAKER_ROLE`) takes it during the pause. Up: `+1,000,000e6` on a 2,000 USDC vault (alice 1,000, bob 1,000), unpause, alice redeems all her shares: the per-entry liquidity bound (`:953`) fills her entry with every USDC the vault holds (`2,000e6 - 154` wei, dust below one share's value of 501 wei) against ~0.2% of her shares; bob's later redeem gets 0 and is unfillable. Three hot keys (or two plus a holder) can therefore move the whole backing to any holder of their choosing. | Hot-key compromise = total loss for other holders, no on-chain brake. | High (was High under the admin; re-rated because the key moved from a governance address to an operational one) | `test_BUG_C3_lossFloorAbsent_hotWalletsOnly`, `test_BUG_C3_gainUnbounded_hotWalletLetsOneHolderDrainBacking` |
+| R6-3 (info) | `:304-306`, `:213` vs `:365-368` | Role-separation observations for the runbook: the admin holds no hot role and cannot pause, unpause, set capacity or VSR, process, take, set the fee or adjust the index itself (every cell of the matrix below). Losing the unpauser mid-incident leaves the vault paused until the admin grants a successor; losing the only admin makes every hot key unrotatable (V2-8 below). `setCapacity` (V2-7 brick) is now a hot-wallet action. | Operational. | Info | `test_pauseUnpause_strictSeparation`, `test_revokeUnpauser_whilePaused_adminMustAppointSuccessor`, `test_BUG_V2_7_*` |
+| R6-4 (info) | `upgradeToAndCall` | An EOA target reverts with EMPTY data (the `proxiableUUID()` return-data decode fails in the caller, outside OZ's `try`), a contract target without `proxiableUUID` reverts `ERC1967InvalidImplementation`; the authorization check runs first in both cases; the implementation itself refuses `upgradeToAndCall` with `UUPSUnauthorizedCallContext` before any role check. | None; documented for the runbook. | Info | `test_upgradeToAndCall_invalidImplementation`, `test_upgradeToAndCall_notThroughProxy` |
+
+### (b) Status of prior findings touched
+
+| Finding | Status at c512609 | Pinning test |
+|---|---|---|
+| R5-B (round 4): pause should not block cancellations | Fixed (#61): `requestDepositCancellation` (full and partial) and `processPendingDepositCancellations` work while paused, owner-only / operator-only respectively; the budget-0 walk advances past cancelled heads during the pause. | `test_fixed_R5B_pause_doesNotBlockRequestDepositCancellation`, `test_fixed_R5B_pause_doesNotBlockProcessPendingDepositCancellations` |
+| C-8 minimums | Partially fixed: zero rejected in `initialize` (`ZeroMinDeposit` / `ZeroMinDepositCancellation` / `ZeroMinRedeem`, checked before the `savings_` call) and in the three setters; still unbounded above: `uint256.max` blocks every deposit / redeem / cancel; `minDeposit > maxCapacity` still partially fills and strands the rest; `minRedeem` still gross of fee. | `test_initialize_zeroMin*`, `testFuzz_initialize_minimums`, `test_setMin*_zero*`, `testFuzz_setMin*`, `test_BUG_C8_*` (4), `test_setMinRedeem_grossOfFee` |
+| V2-13 / R5-7 vault as recipient | Fixed for the vault in `requestDepositCancellation` and the three updaters (`VaultIsRecipient`, checked right after `ZeroRecipient`); spUSDC still accepted (open low). | `test_requestDepositCancellation_checkOrder`, `test_updateRecipient_recipientChecksFirst` |
+| R4-A / R4-B blacklist | Changed: no `isBlacklisted` check anywhere; blacklisted recipients are accepted by the updaters and by `requestDepositCancellation`; `claim` to a still-blacklisted recipient reverts in USDC and preserves the credit; `totalClaimable` tracks every credit and claim. | `test_updateRecipient_recipientChecksFirst`, `test_claim_blacklistedRecipientReverts`, `test_claim_permissionless`, `test_adjustTotalAssets_doesNotTouchClaimableAssets` |
+| R5-1 / G-1 drip overflow | Open, unchanged: bound `type(uint256).max / RAY` (`:655`), second bound `uint256.max / totalSupply` (`:658`), `uint192` check at `:280` is 54,210,108x too loose; the loss manager (hot wallet) can brick every drip-dependent path one second later and cannot undo it; `take` still works; only an admin upgrade (`SparkPrimeVaultChiRescue`) recovers. | `test_BUG_G1_dripOverflowThresholdExact`, `test_BUG_G1_dripOverflowBoundShrinksWithVsr`, `test_BUG_G1_dripDiffOverflowBoundWithLargeSupply`, `test_BUG_G1_adjustTotalAssetsBricksDripAndCannotUndo` |
+| R5-2 gain MEV | Open: a deposit between public payload and `pause` takes 50e6 of a 100e6 gain. | `test_BUG_R5_2_adjustTotalAssets_depositBeforePauseCapturesGain` |
+| R5-3 / C-3 no floor | Open, re-rated High (R6-2). | see (a) |
+| R5-5 / F-2 take ignores queues | Open: `take` of a queued deposit's spUSDC makes the cancellation settle nothing (no revert, waits for the backing); a redeem fill spends a queued depositor's spUSDC. | `test_BUG_F2_take_ignoresPendingDepositSavingsShares`, `test_BUG_F2_redeemFillSpendsQueuedDepositBacking`, `test_pause_doesNotBlockTake` |
+| R5-6 / V2-8 admin can vanish | Open, blast radius changed: after the last admin renounces (or revokes itself) no upgrade, no role change, no minimum / bound / max-fee change for any of the 8 actors; the hot roles keep working (unpauser unpauses, loss manager adjusts, operator processes) but can never be rotated, so the next lost hot key is permanent (shown: unpauser renounces, next pause is for ever, backing still takeable). `initialize(..., address(0), 1, 1, 1)` still accepted. Severity stays Medium. | `test_BUG_V2_8_lastAdminCanRenounce`, `test_BUG_V2_8_lastAdminCanRevokeSelf`, `test_BUG_V2_8_zeroAdminAtInit`, `test_BUG_V2_8_initialize_zeroAdminNotGuarded` |
+| R5-8 / V2-7 capacity overflow | Open, now operator-reachable: exact threshold `totalSupply + type(uint256).max / nowChi()`; one wei more bricks `requestDeposit` with an empty queue, `processPendingDeposits` for any budget, AND (new) `requestDepositCancellation`, since its budget-0 walk computes the same `convertToAssets(availableCapacity())` (`:864`); lower cap repairs. Coupled index bound (R5-4) unchanged. | `test_BUG_V2_7_setCapacityMaxBricksDeposits`, `test_BUG_V2_7_setCapacityOverflowThresholdExact`, `test_setCapacity_coupledWithChi` |
+| R5-11 / C-7 non-clamping | Open: `setMaxRedeemFeeRate` below the live fee leaves a 1% fee charged (exact `RedeemRequest` event with the fee), `setVSRBounds` below the live VSR keeps ~10% accruing; the admin cannot lower either (`AccessControlUnauthorizedAccount(admin, REDEEM_FEE_SETTER_ROLE / OPERATOR_ROLE)`); a revoked operator leaves the rate in force. | `test_BUG_C7_setMaxRedeemFeeRate_belowCurrentFeeLeavesFeeAboveMax`, `test_BUG_C7_setVSRBounds_doesNotClampLiveVsr`, `test_revokeOperator_rateStaysInForce` |
+| R5-13 / C-9 MAX_VSR 100% | Open: doubles the notional in a year, operator key. | `test_BUG_C9_setVSR_maxDoublesNotionalInAYear` |
+| R4-2 uint192 cast | Fixed: `ChiTooHigh` at the first value above `type(uint192).max`, index untouched. | `test_fixed_R4_2_chiTooHighBoundary` |
+| R3-1 realizeGain sandwich | Fixed: `IsNotPaused` before `ZeroDeltaTotalAssets`; requests revert `IsPaused` around the adjustment. | `test_fixed_R3_1_adjustTotalAssetsRequiresPause` |
+| V2-2 / F-1, V2-1 | Fixed, re-pinned with selectors (`NotRequestOwner`, `NoRequest`, `InvalidRequestId` instead of a panic). | `test_fixed_F1_requestDepositCancellation_ownerOnly`, `test_fixed_V2_1_updateRecipient_ownerOnly` |
+| I-3 removed surface | `GUARDIAN_ROLE()`, `REBALANCER_ROLE()`, `VSR_SETTER_ROLE()`, `realizeGain`, `realizeLoss`, `cancelRedeemRequest`, 2-arg `requestDeposit`, 2-arg `requestDepositCancellation`, 4-arg `initialize` all miss the dispatcher; the old role names gate nothing. | `test_fixed_removedSurface_selectorsGone` |
+| R5-9 zero-supply panic | Unchanged (info): positive delta at `totalSupply == 0` panics 0x12, negative reverts `LossTooHigh`, huge delta panics 0x11 before `ChiTooHigh`. | `test_adjustTotalAssets_zeroSupplyPanics` |
+
+### Authorization matrix (c512609)
+
+Columns are the single role each actor holds. OK = succeeds; X = reverts `AccessControlUnauthorizedAccount(caller, <required role>)`. Every cell is asserted by `test_<fn>_notAuthorized` / `test_<fn>_authorized`; `test_roles_eachActorHoldsExactlyOneRole` pins the setup.
+
+| Function | required role | ADMIN | LOSS_MANAGER | OPERATOR | PAUSER | UNPAUSER | REDEEM_FEE_SETTER | TAKER | stranger |
+|---|---|---|---|---|---|---|---|---|---|
+| setMaxRedeemFeeRate, setMinDeposit, setMinDepositCancellation, setMinRedeem, setVSRBounds | DEFAULT_ADMIN | OK | X | X | X | X | X | X | X |
+| upgradeToAndCall | DEFAULT_ADMIN | OK (re-`initialize` via data reverts `InvalidInitialization`) | X | X | X | X | X | X | X |
+| grantRole / revokeRole (all 7 roles) | DEFAULT_ADMIN | OK | X | X | X | X | X | X | X |
+| renounceRole(role, self) | none | OK | OK | OK | OK | OK | OK | OK | OK (no-op); another account: `AccessControlBadConfirmation()` |
+| adjustTotalAssets (paused and unpaused; role checked before `IsNotPaused`) | LOSS_MANAGER | X | OK (paused) | X | X | X | X | X | X |
+| setCapacity, setVSR | OPERATOR | X | X | OK | X | X | X | X | X |
+| processPendingDeposits / Redeems / DepositCancellations | OPERATOR | X | X | OK | X | X | X | X | X |
+| pause | PAUSER | X | X | X | OK | X | X | X | X |
+| unpause | UNPAUSER | X | X | X | X | OK | X | X | X |
+| setRedeemFeeRate | REDEEM_FEE_SETTER | X | X | X | X | X | OK | X | X |
+| take | TAKER | X | X | X | X | X | X | OK | X |
+| requestDepositCancellation (not owner) | owner only | `NotRequestOwner` for all 8, owner as recipient does not help; owner may name any recipient but 0 and the vault (blacklisted and spUSDC accepted) |
+| updateDepositRecipient / updateDepositCancellationRecipient / updateRedeemRecipient (not owner) | owner only | `NotRequestOwner` for all 8; dead entry `NoRequest`; id past the end `InvalidRequestId`; `ZeroRecipient` / `VaultIsRecipient` first |
+| requestDeposit, requestRedeem, claim, drip, approve, transfer, transferFrom, permit (x2) | none | OK for all 8 (`test_permissionless_stranger`, `test_claim_permissionless`, `test_drip_permissionless`) |
+
+`getRoleAdmin(role) == DEFAULT_ADMIN_ROLE` for every role including unknown ones; a second admin has the full admin surface and can revoke the first, and still holds no hot role; enumeration agrees, is in grant order, swap-and-pops on revoke, panics 0x32 out of range.
+
+### Pause scope (c512609)
+
+| Function | While paused | Test |
+|---|---|---|
+| requestDeposit (any referral), requestRedeem | blocked `IsPaused` | `test_pause_blocksRequestDeposit`, `test_pause_blocksRequestRedeem` |
+| processPendingDeposits, processPendingRedeems | blocked for the operator; a stranger gets the role error first | `test_pause_blocksProcessPending*` |
+| requestDepositCancellation (owner, full or partial) | ALLOWED (new); head self-skip runs | `test_fixed_R5B_pause_doesNotBlockRequestDepositCancellation` |
+| processPendingDepositCancellations (operator) | ALLOWED (new); exact `DepositCancellation` event, bob refunded `50e6 - 1` | `test_fixed_R5B_pause_doesNotBlockProcessPendingDepositCancellations` |
+| update*Recipient | allowed for the owner only | `test_pause_doesNotBlockUpdateRecipient` |
+| take | allowed (F-2) | `test_pause_doesNotBlockTake`, `test_take_whilePaused` |
+| drip, claim | allowed | `test_pause_doesNotBlockDrip`, `test_pause_doesNotBlockClaim` |
+| adjustTotalAssets | allowed, and ONLY while paused; exact `TotalAssetsAdjusted(chi, delta)` | `test_pause_enablesAdjustTotalAssets` |
+| approve / transfer / transferFrom / permit | allowed | `test_pause_doesNotBlockERC20`, `test_pause_doesNotBlockPermit` |
+| every setter from its own role, grant / revoke | allowed | `test_pause_doesNotBlockSetters`, `test_setCapacity_whilePaused`, `test_setVSR_whilePaused` |
+| upgradeToAndCall | allowed, `paused` survives | `test_pause_doesNotBlockUpgrade` |
+| pause when paused / unpause when not paused | idempotent, event still emitted | `test_pause_idempotent`, `test_unpause_idempotent`, `test_pauseUnpause_eventsExact` |
+
+### (c) Code paths and the test that covers each
+
+| Path (`c512609`) | Test |
+|---|---|
+| `initialize` `:184-186` zero minimums (order, before the `savings_` call) | `test_initialize_zeroMin*`, `testFuzz_initialize_minimums` |
+| `initialize` `:188-209` full state, admin grant event, allowance | `test_initialize`, `test_initialize_defaultsAreSafe` |
+| `initializer` on proxy / implementation / via upgrade data | `test_initialize`, `test_initialize_implementationDisabled`, `test_upgradeToAndCall_reinitializeReverts` |
+| `_authorizeUpgrade` `:213` | `test_upgradeToAndCall_notAuthorized/authorized/invalidImplementation/notThroughProxy` |
+| `setMaxRedeemFeeRate` `:219-222` bound + event | `test_setMaxRedeemFeeRate_maxFeeTooHighBoundary`, `test_setMaxRedeemFeeRate`, `testFuzz_setMaxRedeemFeeRate` |
+| `setMinDeposit` `:224-228`, `setMinDepositCancellation` `:230-238`, `setMinRedeem` `:240-244` | `test_setMin*`, `test_setMin*_zero*`, `testFuzz_setMin*`, `test_setMinimums_boundaries`, `test_setMinDepositCancellation_inSavingsShares` |
+| `setVSRBounds` `:251-255` three checks in order + event | `test_setVSRBounds_*Boundary`, `test_setVSRBounds`, `testFuzz_setVSRBounds` |
+| `adjustTotalAssets` `:267` IsNotPaused, `:268` zero, `:270` drip, `:274` LossTooHigh, `:277` div by zero, `:279` ChiTooLow, `:280` ChiTooHigh, `:282` event | `test_fixed_R3_1_*`, `test_adjustTotalAssets_zeroDeltaTotalAssets`, `_dripsFirst_*`, `_noDripWhenNoTimePassed`, `test_BUG_C3_*`, `_zeroSupplyPanics`, `_chiTooLowOnlyAboveRaySupply`, `test_fixed_R4_2_chiTooHighBoundary`, `_gain`, `_loss`, `_repeated`, `_lossGainRoundTripNotIdentity`, `_gainRoundingBoundedBySupplyOverRay`, `testFuzz_adjustTotalAssets_exactFormula` |
+| `adjustTotalAssets` interactions: pending redeems vs deposits, capacity in USD, claimable, take during pause, cancellation during pause, deposit before pause | `_lossHitsPendingRedeemsNotPendingDeposits`, `_lossShrinksCapacityInUsd`, `_doesNotTouchClaimableAssets`, `_takeDuringPauseIsIndependent`, `_cancellationDuringPauseUnaffected`, `test_BUG_R5_2_*` |
+| `take` `:290-297` bound, event, zero, paused, pending ignored | `test_take_insufficientSharesBoundary`, `test_take`, `test_take_zero`, `testFuzz_take`, `test_take_whilePaused`, `test_BUG_F2_*` |
+| `setCapacity` `:304-306` | `test_setCapacity`, `testFuzz_setCapacity`, `_zeroFreezesMinting`, `_belowTotalSupply`, `_whilePaused`, `test_BUG_V2_7_*`, `_coupledWithChi` |
+| `setVSR` `:309-314` bounds, drip-first, event | `test_setVSR_vsrTooLowBoundary/HighBoundary`, `test_setVSR`, `_dripsAtOldRate`, `_lockedWhenBoundsEqual`, `_whilePaused`, `testFuzz_setVSR`, `test_BUG_C9_*` |
+| `processPending*` `:317-341` role + pause gating (cancellations NOT gated) | `test_processPending*_notAuthorized/authorized`, `test_pause_blocksProcessPending*`, `test_fixed_R5B_*` |
+| `setRedeemFeeRate` `:347-350` | `test_setRedeemFeeRate_feeTooHighBoundary`, `_zeroMaxLocksFee`, `test_setRedeemFeeRate`, `testFuzz_setRedeemFeeRate` |
+| `pause` `:356-359`, `unpause` `:365-368` | `test_pause_*`, `test_unpause_*`, `test_pauseUnpause_strictSeparation`, `test_pauseUnpause_eventsExact` |
+| `requestDepositCancellation` `:414-445` check order, owner-only, pause, event, self-skip | `test_requestDepositCancellation_checkOrder`, `_owner`, `test_fixed_F1_*`, `test_fixed_R5B_*`, `test_requestDepositCancellation_eventExact`, `test_BUG_R6_1_*` |
+| updaters `:482-525` | `test_fixed_V2_1_updateRecipient_ownerOnly`, `test_updateRecipient_recipientChecksFirst`, `test_pause_doesNotBlockUpdateRecipient` |
+| `claim` `:531-543` incl. `totalClaimable` | `test_claim_permissionless`, `test_claim_blacklistedRecipientReverts`, `test_pause_doesNotBlockClaim` |
+| ERC20 `:549-587`, permit `:593-642` | `test_approve`, `test_transfer*`, `test_transferFrom*`, `test_permit*`, `test_erc20_metadata` |
+| `drip` `:648-663` overflow bounds | `test_BUG_G1_*`, `test_drip_permissionless` |
+| OZ AccessControlEnumerable (grant, revoke, renounce, admin, enumeration) | `test_grantRole_*`, `test_revokeRole_*`, `test_renounceRole_*`, `test_getRoleAdmin_allDefaultAdmin`, `test_getRoleMember_enumeration` |
+| Revocation mid-flight (operator, taker, pauser, unpauser, loss manager) | `test_revokeOperator_*`, `test_revokeTaker_*`, `test_revokePauser_*`, `test_revokeUnpauser_*`, `test_revokeLossManager_*` |
+
+### (d) Properties that held
+
+- Every role-gated function reverts with the exact OZ error for the 7 other actors, paused and unpaused; the admin holds no hot role; `_setRoleAdmin` is unreachable.
+- `adjustTotalAssets`: `chi == floor((totalAssets + delta) * RAY / totalSupply)` after a drip for deposits in `[2, 1e9 USDC]` and deltas in `[-(totalAssets - 1), 1e30]` (20,000 runs); notional moves by delta within 1 wei; a loss never raises and a gain never lowers the index; the backing never moves; no `Drip` log when no time passed.
+- Setters: every accepted value is stored and emitted exactly and every rejected value leaves the previous one in place, for arbitrary `uint256` inputs (`testFuzz_setCapacity`, `testFuzz_setMaxRedeemFeeRate`, `testFuzz_setRedeemFeeRate`, `testFuzz_setMinDeposit`, `testFuzz_setMinDepositCancellation`, `testFuzz_setMinRedeem`, `testFuzz_setVSRBounds`, `testFuzz_setVSR`, `testFuzz_take`, `testFuzz_initialize_minimums`, 20,000 runs each); `setVSRBounds` and `setVSR` check in the documented order.
+- `minDepositCancellation` is in spUSDC share units: a 100 USDC request (95.45e6 shares) cannot be fully cancelled with a 96e6 minimum.
+- `claimableAssets` / `totalClaimable` are excluded from `totalAssets`, untouched by `adjustTotalAssets` and `take`, paid exactly by `claim` from any caller.
+- Bounds exact: `MaxFeeTooHigh` at `0.01e18 + 1`, `FeeTooHigh` at `max + 1`, `maxRedeemFeeRate = 0` locks the fee; `MinVSRTooLow` at `RAY - 1`, `MaxVSRTooHigh` at `MAX_VSR + 1`, `MinVSRGtMaxVSR`; `VSRTooLow` / `VSRTooHigh` at the bound +/- 1; `InsufficientShares` at `balance + 1`; `LossTooHigh` at `-(totalAssets)`; `ChiTooLow` floor `totalSupply / RAY + 1` once `totalSupply > RAY`; `ChiTooHigh` at the first representable value above `uint192.max`.
+- Cancellation self-skip: a full cancel at the head advances `firstPendingDepositId` past it and past any already-cancelled entries behind it, also while paused; a partial cancel leaves the head in place.
+
+### (e) Unsettled
+
+- R6-2 severity depends on the key-management model for `LOSS_MANAGER_ROLE` / `PAUSER_ROLE` / `TAKER_ROLE` (multisig vs EOA, timelock); the on-chain code offers no brake either way. A relative cap per call (e.g. `|delta| <= totalAssets / 10`) plus a cooldown would bound a compromised key.
+- G-1 fix shape as in round 5: the right guard is `updatedChi_ * MAX_VSR_RPOW <= uint256.max` and `updatedChi_ * totalSupply <= uint256.max`, or a relative cap on the write-up.
+- `int256(totalAssets())` at `:272` wraps silently above `int256.max`; unreachable with `chi <= uint192.max` and any supply below ~1e46 shares, not tested.
+- `test/ai/TestBase.t.sol` (fork harness) does not compile in this worktree; not this worker's file, skipped.
+
+---
+
 ## Round 5 (`master` @ `0ebb452`): authorization matrix, pause scope, admin bounds, `adjustTotalAssets`
 
 Branch `campaign-v5/roles-admin`, upstream `src/SparkPrimeVault.sol` = `master` @ `0ebb452` ("refactor: More Cleanup (#26)"), unpatched. Files: `test/ai/Authorization.t.sol` (78 tests), `test/ai/Admin.t.sol` (85 tests), both on the local harness `test/ai/LocalTestBase.t.sol` (real spUSDC code, 6-decimal mock USDC with a Circle-style blacklist, "ugly" indexes, VSR frozen at RAY).
