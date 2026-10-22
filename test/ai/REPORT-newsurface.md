@@ -1,5 +1,193 @@
 # NEWSURFACE worker report
 
+## Round 6 (`master` @ `c512609`)
+
+Target: `src/SparkPrimeVault.sol` on `master` @ c512609. Files: `test/ai/NewSurface.t.sol` (58
+tests), `test/ai/Blacklist.t.sol` (53), `test/ai/AdjustTotalAssets.t.sol` (21). All 153 test
+runs pass (`test_BUG_` tests are passing proofs that pin the behaviour; two fuzz properties at
+20000 runs). Harness constants unchanged (chi_s = 1.047633055711877768967605062e27, chi_p =
+1.009687768242461209408770821e27, 1_000_000e6 USDC = S_1M = 954_532_691_143 spUSDC = SH_1M =
+990_405_184_109 spPRIME; a full redeem of SH_1M pays R_1M = 999_999_999_998 and burns all S_1M; a
+full cancellation refunds A_1M = 999_999_999_999).
+
+Porting notes: every `recipient-cannot-receive` test became an "accepted at request, parked at
+fill" test (there is no blacklist check any more); `requestDepositCancellation` takes
+`(id, recipient, savingsShares)` everywhere; `adjustTotalAssets` moved to `lossManager`; `pause`
+PAUSER / `unpause` UNPAUSER; events carry `requestId` first (asserted through
+`ISparkPrimeVault.X`); ids below the head are read with `vm.load` on slots 0-2 (`_rawRequest`);
+the two deferred-head-walk tests were rewritten for the cancel self-skip; `test_BUG_V2_9_*`
+(zero-share redeem ghosts) became `test_fixed_V2_9_*` + `test_BUG_R5_14_*`; the ghost-deposit
+walk tests became `test_fixed_R5_9_*` + `test_BUG_R5_15_*`; `test_BUG_V2_13_vault*` became
+`test_fixed_V2_13_*` (spUSDC variants stay `test_BUG_`). Deleted: `test_requestRedeem_zeroSharesRevertsWithMinRedeem`
+(subsumed by `test_fixed_V2_9_*`), `test_updateRecipient_outOfRangePanics` (ids past the end are
+`InvalidRequestId` now, covered in `test_updateRecipient_zeroRecipientThenInvalidId`).
+
+### (a) New findings on c512609
+
+#### N6-1 (info): range getters panic on `startId_ > length`, accept `length_ == 0`
+`getPending{Deposit,DepositCancellation,Redeem}Requests(startId_, length_)` (:707, :755, :802)
+compute `_requests.length - startId_` before the `LengthTooLarge` check, so a `startId_` past the
+end panics 0x11 instead of reverting `LengthTooLarge`. The natspec (`ISparkPrimeVault` :855,
+:893, :925) says `length_ == 0` reverts; it returns an empty array (`(0, 0)` on an empty queue,
+`(length, 0)` on a full one). `test_getPendingRequests_range_zeroLengthAndStartPastEnd`.
+
+#### N6-2 (info): natspec still says cancellations are pause-gated
+`requestDepositCancellation` (`ISparkPrimeVault` :723) and `processPendingDepositCancellations`
+(:642) are documented as "while the vault is not paused"; neither has `whenNotPaused` (:405,
+:326). Both work while paused, including the blacklist fallback inside the settlement.
+`test_fixed_R5B_requestDepositCancellation_worksWhilePaused`,
+`test_processPendingDepositCancellations_fallbackWhilePaused`.
+
+#### N6-3 (info, consequence of G-1): a bricked index now also blocks cancellations
+`requestDepositCancellation` ends in `_processPendingDeposits(0, max)` (:445) which drips (:859),
+so once chi is above the drip bound (G-1) the cancel path reverts too; on 0ebb452 it survived.
+Updaters, `transfer` and `claim` still work. Pinned inside
+`test_BUG_G1_adjustTotalAssets_aboveDripBoundBricksVault_onlyUpgradeRecovers`.
+
+#### N6-4 (low): double blacklist (vault + recipient) parks the queue, owner can self-rescue
+If USDC blacklists the vault itself: approvals to the vault and deposits die in USDC, clean
+redeems and cancellations still pay (spUSDC pushes USDC straight to the recipient), `claim` is
+dead, and a blacklisted recipient at the head makes the fallback withdraw-to-vault revert inside
+USDC (`Blacklistable: account is blacklisted`), so the walk reverts with any `maxRequests`
+(dave behind bob gets nothing). The entry is not settled, so its owner can `updateRedeemRecipient`
+to a clean address and the queue moves again. Needs both blacklists.
+`test_blacklistedVault_cleanPayoutsWork_fallbackRevertsAndEntrySticks`,
+`test_blacklistedVault_claimDeadUntilUnblacklisted`.
+
+#### R5-14 (open, info): `requestRedeem(minRedeem)` at a nonzero fee queues a zero-share entry
+With `minRedeem == 1` and any fee > 0 (even 0.01%), `_divUp(1 * fee, WAD) == 1` (:463) burns the
+whole share and queues `shares == 0`: `RedeemRequest(0, mallory, mallory, 1, 1)`, entry
+`(mallory, mallory, 0)`, `NoRequest` on the updater. Changed vs round 5: the walk clears such
+ghosts (a zero-share fill is a `withdraw(0)` no-op and the entry is deleted), so they are not
+permanent, but each still costs one unit of `maxRequests` (three ghosts, `maxRequests == 3`:
+alice unpaid, head 3). `minRedeem >= 2` makes it impossible at the 1% cap.
+`test_BUG_R5_14_requestRedeem_minRedeemAtNonzeroFeeQueuesZeroShareEntry`,
+`test_requestRedeem_minRedeemTwoCannotGhost`. 1-share cancellations at `minDepositCancellation
+== 1` bloat the cancellation queue (50 entries, 1 wei USDC each):
+`test_BUG_R5_14_oneShareCancellationsBloatTheCancellationQueue`.
+
+#### R5-15 (open, low at launch minimums): 1-wei deposits mint 0 spUSDC shares, leave dead slots
+`requestDeposit(1)` at `minDeposit == 1`: `spUSDC.deposit(1)` mints `1 * RAY / chi_s == 0`
+shares, the wei stays in spUSDC (donation), the entry `(mallory, mallory, 0)` is pushed behind
+the live head and cannot be cancelled or re-pointed (`NoRequest`); it is walked as a cancelled
+slot and costs one unit of `maxRequests`. Cheapest dead slot a griefer can make; gone with a
+`minDeposit` of 1 USDC or more. `test_BUG_R5_15_requestDeposit_dustMintsZeroSharesAndLeavesDeadSlot`.
+
+#### R5-9 residue (measured): dead slots behind a live head
+Self-skip only clears entries AT the head: with alice live at the head, 500 `minDeposit`-sized
+(100 USDC) request-then-cancel loops leave 500 dead slots behind her (each loop refunds
+99_999_999, 1 wei of spUSDC floor lost). After alice fills, the first walk past them pays:
+`requestDeposit` walking 500 dead slots costs 1_468_029 gas vs 273_029 with no walk
+(~2.4k per slot, i.e. cold-SLOAD cost; ~1.2M for 500), once. The operator can drain them in
+chunks with `processPendingDeposits(0, n)` first, so the instant-fill depositor only pays if the
+operator does not. `test_requestDepositCancellation_deadSlotsBehindLiveHeadCostTheFirstWalkOnce`,
+`test_processPendingDeposits_operatorDrainsDeadSlotsInChunks`,
+`test_processPendingDeposits_maxRequestsCountsCancelledEntries`.
+
+#### C-3 / R5-3 re-rated (open, HIGH): no loss floor, now a hot-wallet role
+Unchanged numbers (alice 1M + bob 100k: `-(TA - 1)` writes chi = 917_897_971_131_388, every
+`assetsOf` and `totalAssets()` read 0 with S_1M + S_100K spUSDC still backing; MAX_VSR for a year
+lifts `totalAssets()` to 1 wei; `+ (TA - 1)` recovers to 1_099_999_999_996). What changed: the
+caller is `LOSS_MANAGER_ROLE`, an operational key, not a governance spell, so one compromised key
+(plus `PAUSER`) zeroes the index in one call, and the same key can deliberately run the sandwich
+below. `test_BUG_C3_adjustTotalAssets_noFloor_totalAssetsMinusOneWipesHolders`.
+
+#### R5-2 (open, medium): sandwich around the pause, re-quantified
+Alice 1M, attacker deposits 1M (instant fill) before the pause, loss manager adjusts +50k,
+unpause, attacker queues a full redeem: chi 1_034_929_962_448_270_700_987_302_681, payout
+1_024_999_999_998 (profit 24_999_999_998 at 0% fee; 1_014_749_999_997 / 14_749_999_997 at the 1%
+cap); alice's claim exceeds the backing by 49_999_999_999 (39_749_999_998 at 1%). New on
+c512609: cancellations are not pause-gated, so a queued depositor who sees a loss coming walks out
+during the pause at A_1M while alice takes the whole 50k (949_999_999_997).
+`test_BUG_R5_2_governanceSandwich_zeroFee`, `_onePctFee`,
+`test_BUG_R5_2_queuedDepositorExitsDuringPauseBeforeLoss`.
+
+#### G-1 / R5-1 (open, high): unchanged numbers, now one LOSS_MANAGER call
+`GAIN_BRICK = 114_681_085_459_449_903_921_528_244_645_760_029` at supply SH_1M writes chi
+`115_792_089_237_316_195_423_570_985_008_687_908_517_705_232_418_866` (664_435_247_753_226 above
+`maxUint256 / RAY`); one wei less survives. Every path that drips or converts then panics 0x11,
+including `adjustTotalAssets` and (new) `requestDepositCancellation`; only `upgradeToAndCall`
+(admin) recovers. `test_BUG_G1_*` (two tests).
+
+### (b) Status of prior findings touched
+
+| Finding | Status on c512609 | Pinning test |
+|---|---|---|
+| R4-A blacklisted redeem recipient blocks the queue | fixed (try/catch) | `test_fixed_R4A_processPendingRedeems_queueContinuesPastBlacklistedRecipient` |
+| R4-B blacklisted cancellation recipient blocks the queue | fixed | `test_fixed_R4B_processPendingDepositCancellations_queueContinues` |
+| R4-A/B residue: reverting contract / blacklisted / spUSDC recipients | contract recipient paid directly (USDC never calls it); blacklisted parked; spUSDC donates | `test_processPending*_revertingContractRecipient_paidDirectly`, `_catchBranch`, `test_BUG_V2_13_savingsAs*` |
+| Non-recipient revert must propagate | holds: stale liquidity bound reverts both calls with `SparkVault/insufficient-liquidity`, nothing parked; selector-wide revert propagates | `test_drainedLiquidity_staleBound_bothCallsRevertAndPropagate`, `test_spUsdcRevertsForEveryReceiver_walkReverts` |
+| V2-13 / R5-7 vault as recipient | fixed for the vault in all 6 paths (`VaultIsRecipient`, before id/owner checks) | `test_fixed_V2_13_{requestDeposit,requestRedeem,requestDepositCancellation,updaters}_vaultRecipientReverts` |
+| V2-13 spUSDC as recipient | open (low): 1_000_000_000_001 surplus donated to spUSDC, redeem and cancellation | `test_BUG_V2_13_savingsAs{Redeem,Cancellation}Recipient_donatesToSpUsdc` |
+| R5-9 ghosts / frozen head | partially fixed: zero-asset deposits impossible, head cancel self-skips, budget-0 walk advances; dead slots behind a live head remain (measured above); 1-wei deposits still make 0-share slots at `minDeposit == 1` | `test_fixed_R5_9_*` (2), `test_requestDepositCancellation_cancelledEntryBehindLiveHeadWaits`, `test_processPendingDeposits_zeroBudgetAdvancesHeadPastCancelledEntries`, `test_BUG_R5_15_*` |
+| R5-B pause traps queued depositors | fixed (cancellations and settlement not gated) | `test_fixed_R5B_requestDepositCancellation_worksWhilePaused` |
+| C-8 minimums | zero rejected at init and in the setters; unbounded above (`type(uint256).max` blocks every cancel / deposit / redeem) | `test_fixed_C8_minimums_zeroRejectedAtInit_unboundedAbove` |
+| V2-1 recipient updaters | fixed (owner-only, incl. partial fills and partial cancels) | `test_fixed_V2_1_*` (3) |
+| V2-2 / F-1 pauser cancel | fixed (6 roles rejected) | `test_fixed_V2_2_rolesCannotCancelDeposits` |
+| V2-9 `requestRedeem(0)` | fixed by `minRedeem != 0`; R5-14 remains at `minRedeem == 1` | `test_fixed_V2_9_requestRedeem_zeroSharesRevertsBelowMinRedeem`, `test_BUG_R5_14_*` |
+| V2-7 / R5-8 unbounded `setCapacity` | open; also bricks the cancel self-skip walk | `test_BUG_V2_7_setCapacity_maxUint256BricksDeposits` |
+| G-2 `uint192` wrap | fixed (`ChiTooHigh`) | `test_fixed_G2_adjustTotalAssets_chiTooHighBoundary` |
+| G-1 / R5-1 | open, high | `test_BUG_G1_*` |
+| C-3 / R5-3 | open, re-rated high | `test_BUG_C3_*` |
+| R3-1 / R5-2 | changed (pause required; cancellations not gated) / open | `test_fixed_R3_1_adjustTotalAssets_requiresPause_requestsAndFillsBlockedWhilePaused`, `test_BUG_R5_2_*` (3) |
+
+### (c) Code paths and the test that covers each
+
+Blacklist / claim (`Blacklist.t.sol`):
+- `requestRedeem` accepts blacklisted recipient (:454-456): `test_requestRedeem_blacklistedRecipient_acceptedAndParkedAtFill`; blacklisted owner: `_blacklistedOwner_success`; un-blacklisted between request and fill: `_unblacklistedBetweenRequestAndFill_paysDirectly`; spUSDC accepted: `_savingsRecipient_accepted`.
+- `requestDepositCancellation` (:414-446): accepted/parked, partial parked, blacklisted owner, bad id is `InvalidRequestId`: `RequestDepositCancellationBlacklistTests` (3).
+- Updaters (:482-525) to/away from blacklisted, blacklisted owner, parked entry `NoRequest`: `UpdateRecipientBlacklistTests` (7).
+- `requestDeposit` (:386) blacklisted sender dies in `transferFrom`, blacklisted recipient minted and transfers, `updateDepositRecipient` to blacklisted: `RequestDepositBlacklistTests` (3).
+- `_withdrawSavings` try branch (:1001-1004) / catch branch (:1011-1013): `test_processPendingRedeems_cleanRecipient_directBranch`, `_blacklistedRecipient_catchBranch` (events `ClaimableAssetsIncreased(alice, 999_999_999_998)` then `Redeem(0, alice, alice, SH_1M, 954_532_691_143, 999_999_999_998)`, `claimableAssets`, `totalClaimable`, vault USDC all exact); partial fills 299_999_999_999 + 699_999_999_998 (1 spUSDC share of dust left); flips; same recipient x2 = 199_999_999_996; three recipients (bob 2x, carol, dave clean) total 3 * R_100K: `ProcessPendingRedeemsBlacklistTests` (9).
+- `_redeemSavings` try / catch (:982-994): the same shapes for the cancellation queue (299_999_999_999 + 699_999_999_999): `ProcessPendingDepositCancellationsBlacklistTests` (8).
+- Non-recipient reverts: `NonRecipientRevertTests` (3).
+- `claim` (:531-543): `NothingToClaim` (0, address(0), vault, after a clean payout), reverts in USDC while blacklisted with state retained, permissionless exact payout + `Claim` event, `totalClaimable` decremented per recipient, works while paused, sums both queues (199_999_999_997): `ClaimTests` (6).
+- Claimable isolation: invisible to `totalAssets`, `availableLiquidAssets`, `availableCapacity`; untouched by every other external function (deposit instant/queued, updaters, partial cancels, redeem, `take`, `_returnToVault`, `adjustTotalAssets` both signs, both VSRs + drip, fee / minimum / bound setters): `ClaimableIsolationTests` (2 + fuzz).
+- Fuzz (20000 runs): two redeem entries + two cancellation entries to four recipients, any blacklist mask, any liquidity fraction over two rounds, claims in order: vault USDC == `totalClaimable` == sum of `claimableAssets` at every step, parked == payout (±2 wei of floor), zero at the end: `testFuzz_fallbackAccounting_vaultUsdcEqualsTotalClaimableEqualsSum`.
+- Vault / spUSDC as recipient: `VaultAsRecipientTests` (6). Blacklisted vault: `BlacklistedVaultTests` (2).
+
+`adjustTotalAssets` (`AdjustTotalAssets.t.sol`):
+- Access from the seven non-holders (admin included) + enumerable role: `test_adjustTotalAssets_notLossManager`; `IsNotPaused` (both signs, before `ZeroDeltaTotalAssets`), `ZeroDeltaTotalAssets`, `LossTooHigh` boundary (`-TA`, `-TA-1`, `-1M`, `int256.min` revert; `-(TA-1)` writes 1_009_687_768_243_692), zero-supply panics (0x12 on +1, 0x11 on `int256.max`, `LossTooHigh` on -1), `ChiTooLow` at 1e28 supply via stdstore (`-> 9` reverts, `-> 10` writes chi 1), `ChiTooHigh` (`GAIN_TRUNCATE`, one less writes 6_277_101_735_386_680_763_835_789_423_207_666_416_102_354_893_009_973_700_482), overflow panics above `GAIN_OVERFLOW`.
+- Loss -100k (chi 908_718_991_417_304_243_366_635_929, TA 899_999_999_997), gain +100k (chi 1_110_656_545_066_042_825_345_107_777), exact `TotalAssetsAdjusted` both signs, drip-first (`Drip(1_110_656_545_066_707_330_303_098_475, 99_999_999_999)` precedes), round trip -2 wei, compose, per party under -200k (holder and escrow -100_000_000_000 each, queued deposit / pending cancellation / parked claimable R_100K untouched, carol fills 110_045_020_455 shares), capacity in shares (89_999_999_998 after the loss).
+- Sandwich (3), C-3, G-1 (2).
+
+NewSurface (`NewSurface.t.sol`):
+- Updaters (:482-525): `UpdateRecipientTests` (13) incl. `ZeroRecipient` -> `VaultIsRecipient` -> `InvalidRequestId` -> `NoRequest` -> `NotRequestOwner` order, partial-fill and partial-cancel remainders.
+- Pause (:356-368, `whenNotPaused` on :377/:451/:321/:338): `PauseTests` (6): roles, events, idempotent pause, gates vs non-gates, cancellations + settlement + fallback while paused.
+- `setCapacity` (:304): `CapacityTests` (2).
+- `minRedeem` (:456, :463): `RedeemMinimumTests` (3).
+- Head walk (:445, :858-900): `HeadWalkTests` (9): self-skip at head, cancelled behind live head waits, budget-0 and capacity-0 walks advance, `maxRequests` counts dead slots, griefing measured, chunked drain.
+- `requestDepositCancellation` (:405-446) + `setMinDepositCancellation` (:230): `DepositCancellationTests` (12): admin-only, zero rejected (all three setters and `initialize`), event, revert order (7 errors), partial keeps position / counters / three cancel entries / 799_999_999_999 + 2 x A_100K, remainder fills for 891_364_665_698 shares, cancel after a partial fill (900_000_000_001 refund), minimum in spUSDC share units, 1-share bloat, fuzz split sums to A_1M - 1 at most.
+- Getters (:669-809): `GetterTests` (11): single window, range window for the three queues, zero length / start past end, storage layout (slots 0-2, 18), `asset`/`savings`/`decimals`/`version`, `DOMAIN_SEPARATOR`, `take` + `InsufficientShares` + `Take` event, `delete` after fill in all three queues.
+- Events (requestId first): `EventShapeTests` (6): `Referral(7, 0, ..)` -> `DepositRequest(0, ..)` -> `Deposit(0, .., S_1M, A_1M, SH_1M)` order, queued deposit emits no `Deposit`, `RedeemRequest(0, alice, bob, SH_1M, 9_904_051_842)` at 1% then `Redeem(0, .., 980_501_132_267, 944_987_364_230, 989_999_999_997)`, partial redeem `(SH_100K, 95_453_269_113, 99_999_999_998)`, `DepositCancellationRequest(id, 0, bob, S_100K)` / `DepositCancellation(0, alice, bob, S_100K, A_100K)`, `Drip` first on every walk.
+
+### (d) Properties that held
+- No blacklist check exists at request time: all four recipient-taking entry points accept a
+  blacklisted address and the fallback parks the exact clean-path payout; `Redeem` /
+  `DepositCancellation` carry identical amounts on both branches.
+- The catch is recipient-only in effect: liquidity reverts and selector-wide reverts propagate
+  with no state change and nothing parked.
+- vault USDC == `totalClaimable` == sum of `claimableAssets` across both queues, partial
+  liquidity, blacklist flips and claims (20000 fuzz runs); nothing but `claim` moves vault USDC.
+- The self-skip clears every dead slot at the head in the cancel call itself (three dead slots in
+  one cancel), and `_processPendingDeposits(0, max)` with capacity 0 does the same.
+- Cancellation splits sum to the whole: `convertToAssets(first) + convertToAssets(S_1M - first)`
+  is within 1 wei of A_1M for every split (20000 runs).
+- `claim` is reentrancy-safe by construction (state zeroed before the transfer, :536-542) and
+  the USDC revert leaves `claimableAssets` / `totalClaimable` untouched.
+- Storage: arrays at slots 0-2, `totalClaimable` at 18, as pinned in CAMPAIGN.md.
+
+### (e) Unsettled
+- The "drained liquidity" non-recipient revert cannot be reached naturally in one tx (both
+  walks bound themselves by `maxWithdraw` / `maxRedeem` first); it is proven with mocked bound
+  views over really-drained liquidity, which exercises the real `SparkVault/insufficient-liquidity`
+  revert in both the try and the fallback.
+- The dead-slot gas figure (~2.4k per slot) is as measured by forge 1.8.6 inside one test tx;
+  mainnet cold-SLOAD cost is 2_100 + loop overhead, so the order of magnitude stands.
+- C-1 / R5-4 (per-entry liquidity bound) is pinned by the redeem-queue worker, not here; this
+  suite only relies on it for the partial-fill numbers, which did not change for single entries.
+
+
 ## Round 5 (`master` @ `0ebb452`)
 
 Target: `src/SparkPrimeVault.sol` on `master` @ 0ebb452. Files: `test/ai/NewSurface.t.sol` (32
