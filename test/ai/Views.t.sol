@@ -1,36 +1,72 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
-import { LocalTestBase } from "./LocalTestBase.t.sol";
-import { ISparkPrimeVault } from "src/ISparkPrimeVault.sol";
-import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
+import { IAccessControl } from "../../lib/oz/contracts/access/IAccessControl.sol";
+import { IERC165 }        from "../../lib/oz/contracts/utils/introspection/IERC165.sol";
 
-/// @dev Every view on `master` @ 0ebb452: the three single-entry request getters (new), the
-///      head-to-end and range array getters, `availableCapacity`, `availableLiquidAssets`,
-///      `assetsOf`, `convertToAssets` / `convertToShares`, `nowChi` vs `drip`, `totalAssets`,
-///      `DOMAIN_SEPARATOR`, `implementation`, plus the overflow bounds of the index maths.
+import { LocalTestBase }    from "./LocalTestBase.t.sol";
+import { ISparkPrimeVault } from "../../src/ISparkPrimeVault.sol";
+import { SparkPrimeVault }  from "../../src/SparkPrimeVault.sol";
+
+/// @dev Every view on `master` @ c512609: the three single-entry request getters, the head-to-end
+///      and `(startId, length)` range getters (fuzzed against the full view), `availableCapacity`,
+///      `availableLiquidAssets`, `assetsOf`, `totalAssets`, `totalClaimable`, `convertToAssets` /
+///      `convertToShares`, `nowChi` vs `drip`, `DOMAIN_SEPARATOR`, `implementation`, the ERC20
+///      metadata, the whole `ISparkPrimeVault` surface (IERC20Metadata, IERC20Permit,
+///      IAccessControlEnumerable) called through the interface, plus the overflow bounds of the
+///      index maths (still open).
 contract ViewsTest is LocalTestBase {
 
     // keccak256("eip1967.proxy.implementation") - 1
     bytes32 constant IMPLEMENTATION_SLOT =
         0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
+    // c512609 layout: slot 7 = rho (uint64, offset 0) | chi (uint192, offset 8).
+    uint256 constant SLOT_RHO_CHI = 7;
+
     // Largest `chi` for which `_rpow(RAY, dt) * chi` (== RAY * chi) fits in uint256.
     uint256 constant CHI_RPOW_BOUND = type(uint256).max / 1e27;
+
+    bytes constant PANIC_OVERFLOW = abi.encodeWithSignature("Panic(uint256)", 0x11);
 
     address alice = makeAddr("alice");
     address bob   = makeAddr("bob");
     address carol = makeAddr("carol");
 
+    /// @dev Overwrites `chi` in place (slot 7, offset 8), keeping `rho`.
+    function _storeChi(uint256 chi_) internal {
+        uint256 word_ = uint256(vm.load(address(vault), bytes32(SLOT_RHO_CHI)));
+        word_ = (chi_ << 64) | uint64(word_);
+        vm.store(address(vault), bytes32(SLOT_RHO_CHI), bytes32(word_));
+    }
+
+    /// @dev Raw array read: element `i` of the array at `slot_` lives at keccak256(slot_) + 3i.
+    function _rawRequest(uint256 slot_, uint256 id_)
+        internal view returns (address owner_, address recipient_, uint256 shares_)
+    {
+        uint256 base_ = uint256(keccak256(abi.encode(slot_))) + 3 * id_;
+        owner_     = address(uint160(uint256(vm.load(address(vault), bytes32(base_)))));
+        recipient_ = address(uint160(uint256(vm.load(address(vault), bytes32(base_ + 1)))));
+        shares_    = uint256(vm.load(address(vault), bytes32(base_ + 2)));
+    }
+
+    function _cancel(address who_, uint256 id_, address recipient_) internal returns (uint256) {
+        ( , , uint256 shares_ ) = vault.getPendingDepositRequest(id_);
+        vm.prank(who_);
+        return vault.requestDepositCancellation(id_, recipient_, shares_);
+    }
+
     /**********************************************************************************************/
-    /*** Array getters                                                                          ***/
+    /*** Head-to-end array getters                                                              ***/
     /**********************************************************************************************/
 
     function test_getPendingRequests_emptyQueues() public view {
-        assertEq(vault.getPendingDepositRequests().length,             0);
-        assertEq(vault.getPendingDepositCancellationRequests().length, 0);
-        assertEq(vault.getPendingRedeemRequests().length,              0);
-        assertEq(vault.getPendingDepositRequests(0, 0).length,         0);
+        assertEq(vault.getPendingDepositRequests().length,                 0);
+        assertEq(vault.getPendingDepositCancellationRequests().length,     0);
+        assertEq(vault.getPendingRedeemRequests().length,                  0);
+        assertEq(vault.getPendingDepositRequests(0, 0).length,             0);
+        assertEq(vault.getPendingDepositCancellationRequests(0, 0).length, 0);
+        assertEq(vault.getPendingRedeemRequests(0, 0).length,              0);
     }
 
     function test_getPendingDepositRequests_excludesFilledAndStartsAtHead() public {
@@ -47,44 +83,29 @@ contract ViewsTest is LocalTestBase {
         assertEq(pending[0].recipient, bob);
         assertEq(pending[0].shares,    47_726_634);
         assertEq(pending[1].owner,     carol);
+        assertEq(pending[1].recipient, carol);
         assertEq(pending[1].shares,    23_863_317);
 
-        // Range getter covers any id, including the deleted one.
-        SparkPrimeVault.Request[] memory all = vault.getPendingDepositRequests(0, 3);
-        assertEq(all.length,     3);
-        assertEq(all[0].owner,   address(0));
-        assertEq(all[0].shares,  0);
-        assertEq(all[2].owner,   carol);
+        // The range getter covers exactly the same window and nothing below the head.
+        SparkPrimeVault.Request[] memory window = vault.getPendingDepositRequests(1, 2);
+        assertEq(keccak256(abi.encode(window)), keccak256(abi.encode(pending)));
+        vm.expectRevert(ISparkPrimeVault.StartIdTooSmall.selector);
+        vault.getPendingDepositRequests(0, 3);
         assertEq(_depositQueueLength(), 3);
+
+        // The filled entry is zeroed in storage.
+        (address o_, address r_, uint256 s_) = _rawRequest(0, 0);
+        assertEq(o_, address(0));
+        assertEq(r_, address(0));
+        assertEq(s_, 0);
     }
 
-    function test_getPendingDepositRequests_rangeValidation() public {
-        _setCapacity(0);
-        _deposit(alice, 100e6);
-
-        vm.expectRevert("SparkPrimeVault/invalid-range");
-        vault.getPendingDepositRequests(1, 0);
-        vm.expectRevert("SparkPrimeVault/invalid-range");
-        vault.getPendingDepositRequests(0, 2);
-        vm.expectRevert("SparkPrimeVault/invalid-range");
-        vault.getPendingDepositCancellationRequests(0, 1);
-        vm.expectRevert("SparkPrimeVault/invalid-range");
-        vault.getPendingRedeemRequests(0, 1);
-        vm.expectRevert("SparkPrimeVault/invalid-range");
-        vault.getPendingDepositRequests(type(uint256).max, type(uint256).max);
-
-        assertEq(vault.getPendingDepositRequests(1, 1).length, 0);   // empty range at the end is fine
-        assertEq(vault.getPendingDepositRequests(0, 1).length, 1);
-    }
-
-    // 0ebb452: cancelling no longer advances the deposit head (the head-advance loop was removed
-    // from `requestDepositCancellation`), so the cancelled entry stays visible as a zeroed
-    // element of `getPendingDepositRequests()` until a processing walk passes it.
+    // Cancelling the head entry self-skips it: `requestDepositCancellation` ends with a budget-0
+    // walk that advances the head past zero entries, so the deposit view no longer shows it.
     function test_getPendingDepositCancellationRequests_tracksCancelAndSettle() public {
         _setCapacity(0);
         uint256 id = _deposit(alice, 100e6);
-        vm.prank(alice);
-        uint256 cid = vault.requestDepositCancellation(id, bob);
+        uint256 cid = _cancel(alice, id, bob);
         assertEq(cid, 0);
 
         SparkPrimeVault.Request[] memory pending = vault.getPendingDepositCancellationRequests();
@@ -93,18 +114,50 @@ contract ViewsTest is LocalTestBase {
         assertEq(pending[0].recipient, bob);
         assertEq(pending[0].shares,    95_453_269);
 
-        SparkPrimeVault.Request[] memory deposits = vault.getPendingDepositRequests();
-        assertEq(deposits.length,    1);          // cancelled entry still inside the window
-        assertEq(deposits[0].owner,  address(0));
-        assertEq(deposits[0].shares, 0);
-        assertEq(vault.firstPendingDepositId(), 0);
-        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(vault.getPendingDepositRequests().length, 0);   // self-skipped at the head
+        assertEq(vault.firstPendingDepositId(),            1);
+        assertEq(vault.pendingDepositSavingsShares(),      0);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 95_453_269);
 
         _processCancelledDeposits(type(uint256).max, 1);
         assertEq(vault.getPendingDepositCancellationRequests().length, 0);
         assertEq(vault.firstPendingDepositCancellationId(),            1);
-        assertEq(vault.getPendingDepositCancellationRequests(0, 1)[0].shares, 0);
+        assertEq(vault.pendingCancelledDepositSavingsShares(),         0);
+        vm.expectRevert(ISparkPrimeVault.StartIdTooSmall.selector);
+        vault.getPendingDepositCancellationRequests(0, 1);
         assertEq(usdc.balanceOf(bob), 99_999_999);
+    }
+
+    // A cancelled entry BEHIND a live head is not self-skipped: it stays in the view as a zero
+    // struct until a walk with budget passes it (the budget-0 walk breaks at the live head).
+    function test_getPendingDepositRequests_cancelledBehindLiveHeadStaysVisible() public {
+        _setCapacity(0);
+        uint256 aId = _deposit(alice, 100e6);   // id 0, live head
+        uint256 bId = _deposit(bob,   50e6);    // id 1
+        _cancel(bob, bId, bob);
+
+        SparkPrimeVault.Request[] memory pending = vault.getPendingDepositRequests();
+        assertEq(pending.length,       2);
+        assertEq(pending[0].owner,     alice);
+        assertEq(pending[0].shares,    95_453_269);
+        assertEq(pending[1].owner,     address(0));
+        assertEq(pending[1].recipient, address(0));
+        assertEq(pending[1].shares,    0);
+        assertEq(vault.firstPendingDepositId(), 0);
+
+        // Operator walk at capacity 0: breaks at the live head, nothing moves.
+        _processDeposits(type(uint256).max, type(uint256).max);
+        assertEq(vault.firstPendingDepositId(), 0);
+        assertEq(vault.getPendingDepositRequests().length, 2);
+
+        // Capacity returns: alice fills, bob's zero entry is walked, the view empties.
+        _setCapacity(type(uint128).max);
+        _processDeposits(type(uint256).max, type(uint256).max);
+        assertEq(vault.firstPendingDepositId(), 2);
+        assertEq(vault.getPendingDepositRequests().length, 0);
+        assertEq(vault.balanceOf(alice), 99_040_517);
+        assertEq(vault.assetsOf(alice),  99_999_998);
+        aId;
     }
 
     function test_getPendingRedeemRequests_partialFillKeepsHeadEntry() public {
@@ -135,20 +188,24 @@ contract ViewsTest is LocalTestBase {
         assertEq(_redeemQueueLength(),                    2);
     }
 
-    function testFuzz_getPendingRequests_matchHeadAndCounters(uint8 n, uint8 cancelMask) public {
+    // The head-to-end view, the single-entry getter and the counters agree for any cancel
+    // pattern; the head ends exactly past the leading run of cancelled entries (self-skip).
+    function testFuzz_getPendingRequests_matchHeadAndCounters(uint8 n, uint16 cancelMask) public {
         n = uint8(bound(n, 1, 12));
         _setCapacity(0);
         for (uint256 i; i < n; ++i) _deposit(makeAddr(string(abi.encodePacked("u", i))), 10e6 * (i + 1));
+        uint256 expectedHead_ = n;
         for (uint256 i; i < n; ++i) {
-            if (cancelMask & (1 << (i % 8)) != 0) {
-                address who = makeAddr(string(abi.encodePacked("u", i)));
-                vm.prank(who);
-                vault.requestDepositCancellation(i, who);
+            if (cancelMask & (1 << i) != 0) {
+                _cancel(makeAddr(string(abi.encodePacked("u", i))), i, bob);
+            } else if (expectedHead_ == n) {
+                expectedHead_ = i;   // first live entry
             }
         }
-        SparkPrimeVault.Request[] memory pending = vault.getPendingDepositRequests();
         uint256 head = vault.firstPendingDepositId();
-        assertEq(head,           0);   // no walk with remaining == 0 ever moves the head
+        assertEq(head, expectedHead_);
+
+        SparkPrimeVault.Request[] memory pending = vault.getPendingDepositRequests();
         assertEq(pending.length, n - head);
         uint256 sum;
         for (uint256 i; i < pending.length; ++i) {
@@ -157,73 +214,361 @@ contract ViewsTest is LocalTestBase {
             assertEq(o_, pending[i].owner);
             assertEq(r_, pending[i].recipient);
             assertEq(s_, pending[i].shares);
+            bool cancelled_ = cancelMask & (1 << (head + i)) != 0;
+            assertEq(s_ == 0, cancelled_);
         }
         assertEq(sum, vault.pendingDepositSavingsShares());
 
         SparkPrimeVault.Request[] memory cancelled = vault.getPendingDepositCancellationRequests();
         uint256 csum;
-        for (uint256 i; i < cancelled.length; ++i) csum += cancelled[i].shares;
+        for (uint256 i; i < cancelled.length; ++i) {
+            csum += cancelled[i].shares;
+            assertEq(cancelled[i].recipient, bob);
+        }
         assertEq(csum, vault.pendingCancelledDepositSavingsShares());
     }
 
-    // Round 4: a range read of a deleted head entry in each of the three queues returns the
-    // zeroed struct, the head-to-end view excludes it, and the range `(head - 1, head)` is a
-    // legal, one-element, all-zero read. Reading the deleted slot never reverts and never
-    // confuses it with an open entry.
-    function test_getPendingRequests_rangeReadOfDeletedHeadEntry() public {
-        // Deposit queue: id 0 filled instantly and deleted; id 1 queued.
+    /**********************************************************************************************/
+    /*** Range getters (startId, length)                                                        ***/
+    /**********************************************************************************************/
+
+    function test_getPendingDepositRequests_range_failure() public {
+        _setCapacity(0);
         _deposit(alice, 100e6);
-        _setCapacity(vault.totalSupply());
-        _deposit(bob, 50e6);
-        assertEq(vault.firstPendingDepositId(), 1);
-
-        SparkPrimeVault.Request[] memory d = vault.getPendingDepositRequests(0, 1);
-        assertEq(d.length,       1);
-        assertEq(d[0].owner,     address(0));
-        assertEq(d[0].recipient, address(0));
-        assertEq(d[0].shares,    0);
-        assertEq(vault.getPendingDepositRequests().length, 1);
-        assertEq(vault.getPendingDepositRequests()[0].owner, bob);
-
-        // Cancellation queue: bob cancels, planner settles, slot 0 is deleted and the head is 1.
-        vm.prank(bob);
-        vault.requestDepositCancellation(1, bob);
-        _processCancelledDeposits(type(uint256).max, 1);
-        assertEq(vault.firstPendingDepositCancellationId(), 1);
-        SparkPrimeVault.Request[] memory c = vault.getPendingDepositCancellationRequests(0, 1);
-        assertEq(c[0].owner,     address(0));
-        assertEq(c[0].recipient, address(0));
-        assertEq(c[0].shares,    0);
-        assertEq(vault.getPendingDepositCancellationRequests().length, 0);
-        assertEq(vault.getPendingDepositCancellationRequests(1, 1).length, 0);
-
-        // Redeem queue: alice's redeem is paid in full and deleted; carol's stays open behind it.
+        _deposit(bob,   50e6);
+        _deposit(carol, 25e6);
         _setCapacity(type(uint128).max);
-        _deposit(carol, 10e6);   // walks past bob's cancelled id 1, fills id 2, head -> 3
-        assertEq(vault.firstPendingDepositId(), 3);
-        _requestRedeem(alice, vault.balanceOf(alice));
-        _requestRedeem(carol, vault.balanceOf(carol));
-        _processRedeems(type(uint256).max, 1);
-        assertEq(vault.firstPendingRedeemId(), 1);
+        _processDeposits(type(uint256).max, 1);   // head 1, length 3
+
+        vm.expectRevert(ISparkPrimeVault.StartIdTooSmall.selector);
+        vault.getPendingDepositRequests(0, 1);
+        vm.expectRevert(ISparkPrimeVault.StartIdTooSmall.selector);
+        vault.getPendingDepositRequests(0, 0);
+        vm.expectRevert(ISparkPrimeVault.LengthTooLarge.selector);
+        vault.getPendingDepositRequests(1, 3);
+        vm.expectRevert(ISparkPrimeVault.LengthTooLarge.selector);
+        vault.getPendingDepositRequests(2, 2);
+        vm.expectRevert(ISparkPrimeVault.LengthTooLarge.selector);
+        vault.getPendingDepositRequests(3, 1);
+        vm.expectRevert(ISparkPrimeVault.LengthTooLarge.selector);
+        vault.getPendingDepositRequests(1, type(uint256).max);
+
+        // startId past the end underflows `length - startId` before the LengthTooLarge check.
+        vm.expectRevert(PANIC_OVERFLOW);
+        vault.getPendingDepositRequests(4, 0);
+        vm.expectRevert(PANIC_OVERFLOW);
+        vault.getPendingDepositRequests(type(uint256).max, 0);
+        vm.expectRevert(PANIC_OVERFLOW);
+        vault.getPendingDepositRequests(type(uint256).max, type(uint256).max);
+
+        // Boundaries that pass.
+        vault.getPendingDepositRequests(1, 2);
+        assertEq(vault.getPendingDepositRequests(3, 0).length, 0);   // startId == length
+    }
+
+    function test_getPendingDepositRequests_range_success() public {
+        _setCapacity(0);
+        _deposit(alice, 100e6);
+        _deposit(bob,   50e6);
+        _deposit(carol, 25e6);
+
+        SparkPrimeVault.Request[] memory r = vault.getPendingDepositRequests(0, 3);
+        assertEq(r.length,       3);
+        assertEq(r[0].owner,     alice);
+        assertEq(r[0].shares,    95_453_269);
+        assertEq(r[1].owner,     bob);
+        assertEq(r[1].shares,    47_726_634);
+        assertEq(r[2].owner,     carol);
+        assertEq(r[2].recipient, carol);
+        assertEq(r[2].shares,    23_863_317);
+
+        r = vault.getPendingDepositRequests(1, 1);
+        assertEq(r.length,    1);
+        assertEq(r[0].owner,  bob);
+        assertEq(r[0].shares, 47_726_634);
+
+        r = vault.getPendingDepositRequests(2, 1);
+        assertEq(r.length,   1);
+        assertEq(r[0].owner, carol);
+
+        assertEq(vault.getPendingDepositRequests(0, 0).length, 0);
+        assertEq(vault.getPendingDepositRequests(2, 0).length, 0);
+        assertEq(vault.getPendingDepositRequests(3, 0).length, 0);
+    }
+
+    function test_getPendingDepositCancellationRequests_range() public {
+        _setCapacity(0);
+        uint256 aId = _deposit(alice, 100e6);
+        uint256 bId = _deposit(bob,   40e6);
+        _cancel(alice, aId, carol);
+        _cancel(bob,   bId, bob);
+
+        SparkPrimeVault.Request[] memory r = vault.getPendingDepositCancellationRequests(0, 2);
+        assertEq(r.length,       2);
+        assertEq(r[0].owner,     alice);
+        assertEq(r[0].recipient, carol);
+        assertEq(r[0].shares,    95_453_269);
+        assertEq(r[1].owner,     bob);
+        assertEq(r[1].recipient, bob);
+        assertEq(r[1].shares,    38_181_307);
+        assertEq(vault.getPendingDepositCancellationRequests(1, 1)[0].owner, bob);
+        assertEq(vault.getPendingDepositCancellationRequests(2, 0).length, 0);
+
+        vm.expectRevert(ISparkPrimeVault.LengthTooLarge.selector);
+        vault.getPendingDepositCancellationRequests(0, 3);
+        vm.expectRevert(ISparkPrimeVault.LengthTooLarge.selector);
+        vault.getPendingDepositCancellationRequests(1, 2);
+        vm.expectRevert(PANIC_OVERFLOW);
+        vault.getPendingDepositCancellationRequests(3, 0);
+
+        _processCancelledDeposits(type(uint256).max, 1);   // head 1
+        vm.expectRevert(ISparkPrimeVault.StartIdTooSmall.selector);
+        vault.getPendingDepositCancellationRequests(0, 1);
+        vm.expectRevert(ISparkPrimeVault.StartIdTooSmall.selector);
+        vault.getPendingDepositCancellationRequests(0, 0);
+        r = vault.getPendingDepositCancellationRequests(1, 1);
+        assertEq(r[0].owner, bob);
+        assertEq(usdc.balanceOf(carol), 99_999_999);
+    }
+
+    function test_getPendingRedeemRequests_range() public {
+        _deposit(alice, 100e6);
+        _deposit(bob,   50e6);
+        uint256 aShares_ = vault.balanceOf(alice);
+        uint256 bShares_ = vault.balanceOf(bob);
+        _requestRedeem(alice, aShares_);
+        _requestRedeem(bob,   bShares_);
 
         SparkPrimeVault.Request[] memory r = vault.getPendingRedeemRequests(0, 2);
         assertEq(r.length,       2);
-        assertEq(r[0].owner,     address(0));
-        assertEq(r[0].recipient, address(0));
-        assertEq(r[0].shares,    0);
-        assertEq(r[1].owner,     carol);
-        assertEq(r[1].shares,    vault.pendingRedeemShares());
-        assertEq(vault.getPendingRedeemRequests().length, 1);
-        assertEq(vault.getPendingRedeemRequests()[0].owner, carol);
+        assertEq(r[0].owner,     alice);
+        assertEq(r[0].recipient, alice);
+        assertEq(r[0].shares,    aShares_);
+        assertEq(r[0].shares,    99_040_517);
+        assertEq(r[1].owner,     bob);
+        assertEq(r[1].shares,    bShares_);
+        assertEq(r[1].shares,    49_520_258);
+        assertEq(vault.getPendingRedeemRequests(1, 1)[0].owner, bob);
+        assertEq(vault.getPendingRedeemRequests(2, 0).length, 0);
 
-        // Past the end is still rejected, exactly at the end is an empty read.
-        vm.expectRevert("SparkPrimeVault/invalid-range");
+        vm.expectRevert(ISparkPrimeVault.LengthTooLarge.selector);
         vault.getPendingRedeemRequests(0, 3);
-        assertEq(vault.getPendingRedeemRequests(2, 2).length, 0);
+        vm.expectRevert(ISparkPrimeVault.LengthTooLarge.selector);
+        vault.getPendingRedeemRequests(2, 1);
+        vm.expectRevert(PANIC_OVERFLOW);
+        vault.getPendingRedeemRequests(3, 0);
+
+        _processRedeems(type(uint256).max, 1);   // head 1
+        vm.expectRevert(ISparkPrimeVault.StartIdTooSmall.selector);
+        vault.getPendingRedeemRequests(0, 2);
+        vm.expectRevert(ISparkPrimeVault.StartIdTooSmall.selector);
+        vault.getPendingRedeemRequests(0, 0);
+        r = vault.getPendingRedeemRequests(1, 1);
+        assertEq(r[0].owner,  bob);
+        assertEq(r[0].shares, bShares_);
+        assertEq(usdc.balanceOf(alice), 99_999_998);
+    }
+
+    /// @dev Builds a deposit queue of `n` entries (owner u_i, 10e6 * (i + 1)), fills `k` of them
+    ///      and returns the head.
+    function _depositQueue(uint256 n, uint256 k) internal returns (uint256 head_) {
+        _setCapacity(0);
+        for (uint256 i; i < n; ++i) _deposit(makeAddr(string(abi.encodePacked("u", i))), 10e6 * (i + 1));
+        _setCapacity(type(uint128).max);
+        if (k != 0) _processDeposits(type(uint256).max, k);
+        head_ = vault.firstPendingDepositId();
+        assertEq(head_, k);
+    }
+
+    // Any `(startId, length)` inside `[head, length]` equals the matching slice of the full
+    // view; anything else reverts with the exact selector (or the underflow panic past the end).
+    function testFuzz_getPendingDepositRequests_range(
+        uint8 n, uint8 k, uint256 startId, uint256 length
+    ) public {
+        n = uint8(bound(n, 1, 10));
+        k = uint8(bound(k, 0, n));
+        uint256 head_ = _depositQueue(n, k);
+        startId = bound(startId, 0, uint256(n) + 1);
+        length  = bound(length, 0, uint256(n) + 1);
+
+        SparkPrimeVault.Request[] memory full = vault.getPendingDepositRequests();
+        assertEq(full.length, n - head_);
+
+        if (startId < head_) {
+            vm.expectRevert(ISparkPrimeVault.StartIdTooSmall.selector);
+            vault.getPendingDepositRequests(startId, length);
+            return;
+        }
+        if (startId > n) {
+            vm.expectRevert(PANIC_OVERFLOW);
+            vault.getPendingDepositRequests(startId, length);
+            return;
+        }
+        if (length > n - startId) {
+            vm.expectRevert(ISparkPrimeVault.LengthTooLarge.selector);
+            vault.getPendingDepositRequests(startId, length);
+            return;
+        }
+
+        SparkPrimeVault.Request[] memory r = vault.getPendingDepositRequests(startId, length);
+        assertEq(r.length, length);
+        for (uint256 i; i < length; ++i) {
+            SparkPrimeVault.Request memory e = full[startId - head_ + i];
+            assertEq(r[i].owner,     e.owner);
+            assertEq(r[i].recipient, e.recipient);
+            assertEq(r[i].shares,    e.shares);
+            assertEq(r[i].owner,     makeAddr(string(abi.encodePacked("u", startId + i))));
+            (address o_, address r2_, uint256 s_) = vault.getPendingDepositRequest(startId + i);
+            assertEq(o_,  e.owner);
+            assertEq(r2_, e.recipient);
+            assertEq(s_,  e.shares);
+        }
+    }
+
+    function testFuzz_getPendingRedeemRequests_range(
+        uint8 n, uint8 k, uint256 startId, uint256 length
+    ) public {
+        n = uint8(bound(n, 1, 10));
+        k = uint8(bound(k, 0, n));
+        for (uint256 i; i < n; ++i) {
+            address who_ = makeAddr(string(abi.encodePacked("u", i)));
+            _deposit(who_, 10e6 * (i + 1));
+            _requestRedeem(who_, vault.balanceOf(who_));
+        }
+        if (k != 0) _processRedeems(type(uint256).max, k);
+        uint256 head_ = vault.firstPendingRedeemId();
+        assertEq(head_, k);
+        startId = bound(startId, 0, uint256(n) + 1);
+        length  = bound(length, 0, uint256(n) + 1);
+
+        SparkPrimeVault.Request[] memory full = vault.getPendingRedeemRequests();
+        assertEq(full.length, n - head_);
+
+        if (startId < head_) {
+            vm.expectRevert(ISparkPrimeVault.StartIdTooSmall.selector);
+            vault.getPendingRedeemRequests(startId, length);
+            return;
+        }
+        if (startId > n) {
+            vm.expectRevert(PANIC_OVERFLOW);
+            vault.getPendingRedeemRequests(startId, length);
+            return;
+        }
+        if (length > n - startId) {
+            vm.expectRevert(ISparkPrimeVault.LengthTooLarge.selector);
+            vault.getPendingRedeemRequests(startId, length);
+            return;
+        }
+
+        SparkPrimeVault.Request[] memory r = vault.getPendingRedeemRequests(startId, length);
+        assertEq(r.length, length);
+        for (uint256 i; i < length; ++i) {
+            SparkPrimeVault.Request memory e = full[startId - head_ + i];
+            assertEq(r[i].owner,     e.owner);
+            assertEq(r[i].recipient, e.recipient);
+            assertEq(r[i].shares,    e.shares);
+            assertEq(r[i].owner,     makeAddr(string(abi.encodePacked("u", startId + i))));
+            assertGt(r[i].shares,    0);
+        }
+    }
+
+    function testFuzz_getPendingDepositCancellationRequests_range(
+        uint8 n, uint8 k, uint256 startId, uint256 length
+    ) public {
+        n = uint8(bound(n, 1, 10));
+        k = uint8(bound(k, 0, n));
+        _setCapacity(0);
+        for (uint256 i; i < n; ++i) {
+            address who_ = makeAddr(string(abi.encodePacked("u", i)));
+            _deposit(who_, 10e6 * (i + 1));
+            _cancel(who_, i, who_);
+        }
+        if (k != 0) _processCancelledDeposits(type(uint256).max, k);
+        uint256 head_ = vault.firstPendingDepositCancellationId();
+        assertEq(head_, k);
+        startId = bound(startId, 0, uint256(n) + 1);
+        length  = bound(length, 0, uint256(n) + 1);
+
+        SparkPrimeVault.Request[] memory full = vault.getPendingDepositCancellationRequests();
+        assertEq(full.length, n - head_);
+
+        if (startId < head_) {
+            vm.expectRevert(ISparkPrimeVault.StartIdTooSmall.selector);
+            vault.getPendingDepositCancellationRequests(startId, length);
+            return;
+        }
+        if (startId > n) {
+            vm.expectRevert(PANIC_OVERFLOW);
+            vault.getPendingDepositCancellationRequests(startId, length);
+            return;
+        }
+        if (length > n - startId) {
+            vm.expectRevert(ISparkPrimeVault.LengthTooLarge.selector);
+            vault.getPendingDepositCancellationRequests(startId, length);
+            return;
+        }
+
+        SparkPrimeVault.Request[] memory r =
+            vault.getPendingDepositCancellationRequests(startId, length);
+        assertEq(r.length, length);
+        for (uint256 i; i < length; ++i) {
+            SparkPrimeVault.Request memory e = full[startId - head_ + i];
+            assertEq(r[i].owner,     e.owner);
+            assertEq(r[i].recipient, e.recipient);
+            assertEq(r[i].shares,    e.shares);
+            assertEq(r[i].owner,     makeAddr(string(abi.encodePacked("u", startId + i))));
+            assertGt(r[i].shares,    0);
+        }
+    }
+
+    // Deleted head entries are zero in raw storage and unreachable through every getter.
+    function test_getPendingRequests_deletedHeadEntriesUnreachable() public {
+        _deposit(alice, 100e6);                   // deposit id 0 filled, deleted
+        _setCapacity(vault.totalSupply());
+        _deposit(bob, 50e6);                      // deposit id 1 queued
+        _cancel(bob, 1, bob);                     // cancel id 0, deposit id 1 self-skipped
+        _processCancelledDeposits(type(uint256).max, 1);   // cancel id 0 settled, deleted
+        _requestRedeem(alice, vault.balanceOf(alice));     // redeem id 0
+        _processRedeems(type(uint256).max, 1);             // paid, deleted
+
+        assertEq(vault.firstPendingDepositId(),             2);
+        assertEq(vault.firstPendingDepositCancellationId(), 1);
+        assertEq(vault.firstPendingRedeemId(),              1);
+
+        for (uint256 slot_; slot_ < 3; ++slot_) {
+            (address o_, address r_, uint256 s_) = _rawRequest(slot_, 0);
+            assertEq(o_, address(0));
+            assertEq(r_, address(0));
+            assertEq(s_, 0);
+        }
+        (address o1_, , uint256 s1_) = _rawRequest(0, 1);
+        assertEq(o1_, address(0));
+        assertEq(s1_, 0);
+
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
+        vault.getPendingDepositRequest(0);
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
+        vault.getPendingDepositRequest(1);
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
+        vault.getPendingDepositCancellationRequest(0);
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
+        vault.getPendingRedeemRequest(0);
+        vm.expectRevert(ISparkPrimeVault.StartIdTooSmall.selector);
+        vault.getPendingDepositRequests(1, 1);
+        vm.expectRevert(ISparkPrimeVault.StartIdTooSmall.selector);
+        vault.getPendingDepositCancellationRequests(0, 1);
+        vm.expectRevert(ISparkPrimeVault.StartIdTooSmall.selector);
+        vault.getPendingRedeemRequests(0, 1);
+
+        assertEq(vault.getPendingDepositRequests().length,             0);
+        assertEq(vault.getPendingDepositCancellationRequests().length, 0);
+        assertEq(vault.getPendingRedeemRequests().length,              0);
+        assertEq(vault.getPendingDepositRequests(2, 0).length,         0);
+        assertEq(vault.getPendingRedeemRequests(1, 0).length,          0);
     }
 
     /**********************************************************************************************/
-    /*** Single-entry getters (new at 0ebb452)                                                  ***/
+    /*** Single-entry getters                                                                   ***/
     /**********************************************************************************************/
 
     function test_getPendingDepositRequest_bounds() public {
@@ -248,6 +593,7 @@ contract ViewsTest is LocalTestBase {
         assertEq(s_, 47_726_634);
         (o_, r_, s_) = vault.getPendingDepositRequest(carolId);
         assertEq(o_, carol);
+        assertEq(r_, carol);
         assertEq(s_, 23_863_317);
 
         vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
@@ -255,34 +601,42 @@ contract ViewsTest is LocalTestBase {
         vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingDepositRequest(type(uint256).max);
 
-        // Cancelled id inside the window returns all zeros, no revert.
-        vm.prank(bob);
-        vault.requestDepositCancellation(bobId, bob);
-        (o_, r_, s_) = vault.getPendingDepositRequest(bobId);
+        // Cancelled id behind the live head returns all zeros, no revert, head unchanged.
+        _cancel(carol, carolId, carol);
+        (o_, r_, s_) = vault.getPendingDepositRequest(carolId);
         assertEq(o_, address(0));
         assertEq(r_, address(0));
         assertEq(s_, 0);
-        assertEq(vault.firstPendingDepositId(), 1);              // head unchanged by the cancel
+        assertEq(vault.firstPendingDepositId(), 1);
 
-        // Partial fill of carol: capacity for roughly half of her request. The getter reports
-        // the remaining spUSDC shares and the head stays on her id.
-        uint256 halfSavings_ = uint256(23_863_317) / 2;
+        // Partial fill of bob: capacity for roughly half of his request (the capacity -> assets
+        // -> spUSDC shares conversion floors twice, so 2 shares less than half). The getter
+        // reports the remaining spUSDC shares and the head stays on his id.
+        uint256 halfSavings_ = uint256(47_726_634) / 2;
         uint256 halfShares_  = vault.convertToShares(spUsdc.convertToAssets(halfSavings_));
         _setCapacity(vault.totalSupply() + halfShares_);
         _processDeposits(type(uint256).max, 10);
-        assertEq(vault.firstPendingDepositId(), carolId);
-        (o_, r_, s_) = vault.getPendingDepositRequest(carolId);
-        assertEq(o_, carol);
-        assertGt(s_, 0);
-        assertLt(s_, 23_863_317);
+        assertEq(vault.firstPendingDepositId(), bobId);
+        (o_, r_, s_) = vault.getPendingDepositRequest(bobId);
+        assertEq(o_, bob);
+        assertEq(s_, 47_726_634 - (halfSavings_ - 2));
+        assertEq(s_, 23_863_319);
         assertEq(s_, vault.pendingDepositSavingsShares());
-        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
-        vault.getPendingDepositRequest(bobId);                   // now below the head
+
+        // Partial cancel of the rest: the entry keeps its position with the remainder.
+        vm.prank(bob);
+        vault.requestDepositCancellation(bobId, bob, 1_000_000);
+        (o_, r_, s_) = vault.getPendingDepositRequest(bobId);
+        assertEq(o_, bob);
+        assertEq(s_, 22_863_319);
+        assertEq(vault.firstPendingDepositId(), bobId);
 
         // Full fill: head == length, every id rejected.
         _setCapacity(type(uint128).max);
         _processDeposits(type(uint256).max, 10);
         assertEq(vault.firstPendingDepositId(), 3);
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
+        vault.getPendingDepositRequest(bobId);
         vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingDepositRequest(carolId);
         vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
@@ -301,10 +655,8 @@ contract ViewsTest is LocalTestBase {
         vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingDepositCancellationRequest(0);           // nothing cancelled yet
 
-        vm.prank(alice);
-        uint256 ca_ = vault.requestDepositCancellation(aId, carol);
-        vm.prank(bob);
-        uint256 cb_ = vault.requestDepositCancellation(bId, bob);
+        uint256 ca_ = _cancel(alice, aId, carol);
+        uint256 cb_ = _cancel(bob,   bId, bob);
         assertEq(ca_, 0);
         assertEq(cb_, 1);
 
@@ -370,7 +722,7 @@ contract ViewsTest is LocalTestBase {
         vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingRedeemRequest(2);
 
-        // Partial fill of the real entry: the ghost at the head is skipped, head moves to 1.
+        // Partial fill of the real entry: the ghost at the head is walked (0 shares), head -> 1.
         _processRedeems(20e6, 10);
         assertEq(vault.firstPendingRedeemId(), real_);
         (o_, r_, s_) = vault.getPendingRedeemRequest(real_);
@@ -386,56 +738,7 @@ contract ViewsTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** Views that mislead                                                                     ***/
-    /**********************************************************************************************/
-
-    // With `availableCapacity() == 0` the deposit walk never runs (`remaining_ == 0`), so
-    // cancelled entries stay inside `getPendingDepositRequests()` as zero structs indefinitely,
-    // and `processPendingDeposits(max, max)` by the operator cannot clear them either. The
-    // view's `length` therefore overstates the number of open requests; integrators must filter
-    // `shares == 0`. Once capacity returns, the next depositor pays the walk over every ghost.
-    function test_getPendingDepositRequests_includesCancelledWhileCapacityIsZero() public {
-        _setCapacity(0);
-        uint256 n_ = 50;
-        for (uint256 i; i < n_; ++i) {
-            address who_ = makeAddr(string(abi.encodePacked("g", i)));
-            uint256 id_  = _deposit(who_, 1e6);
-            vm.prank(who_);
-            vault.requestDepositCancellation(id_, who_);
-        }
-        assertEq(vault.pendingDepositSavingsShares(), 0);
-        assertEq(vault.getPendingDepositRequests().length, n_);   // all ghosts
-        assertEq(vault.firstPendingDepositId(), 0);
-
-        _processDeposits(type(uint256).max, type(uint256).max);
-        assertEq(vault.firstPendingDepositId(), 0);              // cannot advance at capacity 0
-        assertEq(vault.getPendingDepositRequests().length, n_);
-
-        // Capacity returns: the next deposit walks all 50 ghosts, fills itself, view is empty.
-        _setCapacity(type(uint128).max);
-        _fund(alice, 100e6);
-        vm.prank(alice);
-        uint256 gasBefore_ = gasleft();
-        vault.requestDeposit(100e6, alice, 0);
-        uint256 gasWithGhosts_ = gasBefore_ - gasleft();
-        assertEq(vault.firstPendingDepositId(), n_ + 1);
-        assertEq(vault.getPendingDepositRequests().length, 0);
-
-        _fund(bob, 100e6);
-        vm.prank(bob);
-        gasBefore_ = gasleft();
-        vault.requestDeposit(100e6, bob, 0);
-        uint256 gasClean_ = gasBefore_ - gasleft();
-
-        emit log_named_uint("gas with 50 ghosts", gasWithGhosts_);
-        emit log_named_uint("gas clean",          gasClean_);
-        // Measured: 231_756 vs 168_206, i.e. ~1.27k gas per ghost entry.
-        assertGt(gasWithGhosts_, gasClean_ + n_ * 1_000);
-        assertLt(gasWithGhosts_, gasClean_ + n_ * 2_000);
-    }
-
-    /**********************************************************************************************/
-    /*** availableCapacity / availableLiquidAssets / assetsOf / totalAssets                     ***/
+    /*** availableCapacity / availableLiquidAssets / assetsOf / totalAssets / totalClaimable    ***/
     /**********************************************************************************************/
 
     function test_availableCapacity() public {
@@ -459,6 +762,12 @@ contract ViewsTest is LocalTestBase {
         _adjustTotalAssetsWhilePaused(-50e6);
         assertEq(vault.availableCapacity(), 1_000e6);
         assertEq(vault.totalSupply(),       supply_);
+
+        // Escrowed redeem shares still count toward totalSupply; burning them frees capacity.
+        _requestRedeem(alice, 10e6);
+        assertEq(vault.availableCapacity(), 1_000e6);
+        _processRedeems(type(uint256).max, 1);
+        assertEq(vault.availableCapacity(), 1_010e6);
     }
 
     function test_availableLiquidAssets_isSpUsdcMaxWithdraw() public {
@@ -486,6 +795,10 @@ contract ViewsTest is LocalTestBase {
         _take(_vaultSpUsdc() / 2);
         assertEq(vault.availableLiquidAssets(), spUsdc.convertToAssets(_vaultSpUsdc()));
         _takeAll();
+        assertEq(vault.availableLiquidAssets(), 0);
+
+        // USDC parked in the vault for claims is not liquid for redeems.
+        usdc.mint(address(vault), 1e6);
         assertEq(vault.availableLiquidAssets(), 0);
     }
 
@@ -525,8 +838,227 @@ contract ViewsTest is LocalTestBase {
         _processRedeems(type(uint256).max, 10);
         assertGt(usdc.balanceOf(address(vault)), 0);
         assertEq(vault.claimableAssets(alice), usdc.balanceOf(address(vault)));
+        assertEq(vault.totalClaimable(),       usdc.balanceOf(address(vault)));
         assertEq(vault.totalAssets(), vault.totalSupply() * vault.nowChi() / RAY);
         assertApproxEqAbs(vault.totalAssets(), ta_ - vault.convertToAssets(10e6), 1);
+    }
+
+    // `totalClaimable` is the sum of every `claimableAssets` entry, credited by redeem and
+    // cancellation fallbacks and decremented by `claim`; it always equals the USDC the vault
+    // holds for claimants.
+    function test_totalClaimable_tracksClaimableAssets() public {
+        assertEq(vault.totalClaimable(), 0);
+
+        _deposit(alice, 100e6);
+        _deposit(bob,   100e6);
+        _setCapacity(vault.totalSupply());
+        uint256 cId = _deposit(carol, 50e6);                    // queued
+
+        // Redeem fallback for alice (blacklisted at payout).
+        _requestRedeem(alice, 40e6);
+        _blacklist(alice);
+        _processRedeems(type(uint256).max, 1);
+        uint256 aliceClaim_ = vault.claimableAssets(alice);
+        assertEq(aliceClaim_, 40_387_510);                       // 40e6 shares at the ugly index
+        assertEq(vault.totalClaimable(), aliceClaim_);
+
+        // Cancellation fallback for carol -> bob (blacklisted at payout).
+        _cancel(carol, cId, bob);
+        _blacklist(bob);
+        _processCancelledDeposits(type(uint256).max, 1);
+        uint256 bobClaim_ = vault.claimableAssets(bob);
+        assertEq(bobClaim_, 49_999_999);
+        assertEq(vault.totalClaimable(), aliceClaim_ + bobClaim_);
+        assertEq(usdc.balanceOf(address(vault)), aliceClaim_ + bobClaim_);
+
+        // A second credit to the same recipient accumulates.
+        _requestRedeem(alice, 10e6);
+        _processRedeems(type(uint256).max, 1);
+        assertEq(vault.claimableAssets(alice), aliceClaim_ + 10_096_877);
+        assertEq(vault.totalClaimable(), aliceClaim_ + 10_096_877 + bobClaim_);
+
+        // Claims decrement; a claim with nothing to claim reverts.
+        _unblacklist(alice);
+        assertEq(vault.claim(alice), aliceClaim_ + 10_096_877);
+        assertEq(vault.totalClaimable(), bobClaim_);
+        assertEq(vault.claimableAssets(alice), 0);
+        vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
+        vault.claim(alice);
+        vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
+        vault.claim(carol);
+
+        // Still-blacklisted bob: the claim's USDC transfer reverts, nothing is decremented.
+        vm.expectRevert(BLACKLISTED);
+        vault.claim(bob);
+        assertEq(vault.totalClaimable(), bobClaim_);
+
+        _unblacklist(bob);
+        vault.claim(bob);
+        assertEq(vault.totalClaimable(), 0);
+        assertEq(usdc.balanceOf(address(vault)), 0);
+    }
+
+    /**********************************************************************************************/
+    /*** ERC20 metadata and the full ISparkPrimeVault surface                                   ***/
+    /**********************************************************************************************/
+
+    function test_erc20Metadata() public {
+        assertEq(vault.name(),     "Spark Prime USDC");
+        assertEq(vault.symbol(),   "spPRIME");
+        assertEq(vault.decimals(), 6);
+        assertEq(vault.decimals(), usdc.decimals());
+        assertEq(vault.version(),  "1");
+        assertEq(vault.asset(),    address(usdc));
+        assertEq(vault.savings(),  address(spUsdc));
+        assertEq(vault.totalSupply(), 0);
+
+        _deposit(alice, 100e6);
+        assertEq(vault.totalSupply(),    99_040_517);   // 99_999_999 USDC-worth at the ugly index
+        assertEq(vault.balanceOf(alice), 99_040_517);
+        assertEq(vault.assetsOf(alice),  99_999_998);
+
+        // Constants through the ABI.
+        assertEq(vault.RAY(),            1e27);
+        assertEq(vault.WAD(),            1e18);
+        assertEq(vault.MAX_VSR(),        MAX_VSR);
+        assertEq(vault.MAX_REDEEM_FEE(), 0.01e18);
+        assertEq(
+            vault.PERMIT_TYPEHASH(),
+            keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
+        );
+    }
+
+    // Every IERC20 / IERC20Metadata / IERC20Permit function is callable through the interface
+    // the vault declares, with the vault's own semantics.
+    function test_interface_erc20Surface() public {
+        ISparkPrimeVault i = ISparkPrimeVault(address(vault));
+        _deposit(alice, 100e6);
+
+        assertEq(i.name(),     "Spark Prime USDC");
+        assertEq(i.symbol(),   "spPRIME");
+        assertEq(i.decimals(), 6);
+        assertEq(i.totalSupply(),      99_040_517);
+        assertEq(i.balanceOf(alice),   99_040_517);
+        assertEq(i.allowance(alice, bob), 0);
+        assertEq(i.nonces(alice),      0);
+        assertEq(i.DOMAIN_SEPARATOR(), vault.DOMAIN_SEPARATOR());
+
+        vm.prank(alice);
+        assertTrue(i.approve(bob, 30e6));
+        assertEq(i.allowance(alice, bob), 30e6);
+
+        vm.prank(alice);
+        assertTrue(i.transfer(carol, 10e6));
+        assertEq(i.balanceOf(carol), 10e6);
+        assertEq(i.balanceOf(alice), 89_040_517);
+
+        vm.prank(bob);
+        assertTrue(i.transferFrom(alice, bob, 20e6));
+        assertEq(i.balanceOf(bob),        20e6);
+        assertEq(i.allowance(alice, bob), 10e6);
+
+        vm.prank(bob);
+        vm.expectRevert("SparkPrimeVault/insufficient-allowance");
+        i.transferFrom(alice, bob, 10e6 + 1);
+
+        // Both permit overloads: the IERC20Permit (v, r, s) one and the vault's bytes one.
+        (address signer_, uint256 pk_) = makeAddrAndKey("signer");
+        _deposit(signer_, 5e6);
+        uint256 deadline_ = block.timestamp + 1 hours;
+        bytes32 digest_ = keccak256(abi.encodePacked(
+            "\x19\x01",
+            i.DOMAIN_SEPARATOR(),
+            keccak256(abi.encode(vault.PERMIT_TYPEHASH(), signer_, bob, 1e6, 0, deadline_))
+        ));
+        (uint8 v_, bytes32 r_, bytes32 s_) = vm.sign(pk_, digest_);
+        i.permit(signer_, bob, 1e6, deadline_, v_, r_, s_);
+        assertEq(i.allowance(signer_, bob), 1e6);
+        assertEq(i.nonces(signer_), 1);
+
+        digest_ = keccak256(abi.encodePacked(
+            "\x19\x01",
+            i.DOMAIN_SEPARATOR(),
+            keccak256(abi.encode(vault.PERMIT_TYPEHASH(), signer_, carol, 2e6, 1, deadline_))
+        ));
+        (v_, r_, s_) = vm.sign(pk_, digest_);
+        i.permit(signer_, carol, 2e6, deadline_, abi.encodePacked(r_, s_, v_));
+        assertEq(i.allowance(signer_, carol), 2e6);
+        assertEq(i.nonces(signer_), 2);
+
+        // Replay of the first permit: nonce moved on.
+        digest_ = keccak256(abi.encodePacked(
+            "\x19\x01",
+            i.DOMAIN_SEPARATOR(),
+            keccak256(abi.encode(vault.PERMIT_TYPEHASH(), signer_, bob, 1e6, 0, deadline_))
+        ));
+        (v_, r_, s_) = vm.sign(pk_, digest_);
+        vm.expectRevert("SparkPrimeVault/invalid-permit");
+        i.permit(signer_, bob, 1e6, deadline_, v_, r_, s_);
+        vm.expectRevert("SparkPrimeVault/permit-expired");
+        i.permit(signer_, bob, 1e6, block.timestamp - 1, v_, r_, s_);
+        vm.expectRevert("SparkPrimeVault/invalid-owner");
+        i.permit(address(0), bob, 1e6, deadline_, v_, r_, s_);
+    }
+
+    // Every IAccessControl / IAccessControlEnumerable function through the interface, plus the
+    // ERC165 answers of the enumerable extension.
+    function test_interface_accessControlSurface() public {
+        ISparkPrimeVault i = ISparkPrimeVault(address(vault));
+
+        assertEq(vault.DEFAULT_ADMIN_ROLE(), bytes32(0));   // OZ parent, not in the interface
+        assertEq(i.LOSS_MANAGER_ROLE(),      LOSS_MANAGER_ROLE);
+        assertEq(i.OPERATOR_ROLE(),          OPERATOR_ROLE);
+        assertEq(i.PAUSER_ROLE(),            PAUSER_ROLE);
+        assertEq(i.UNPAUSER_ROLE(),          UNPAUSER_ROLE);
+        assertEq(i.REDEEM_FEE_SETTER_ROLE(), REDEEM_FEE_SETTER_ROLE);
+        assertEq(i.TAKER_ROLE(),             TAKER_ROLE);
+
+        assertTrue(i.hasRole(DEFAULT_ADMIN_ROLE, admin));
+        assertTrue(i.hasRole(LOSS_MANAGER_ROLE,  lossManager));
+        assertTrue(i.hasRole(OPERATOR_ROLE,      operator));
+        assertTrue(i.hasRole(PAUSER_ROLE,        pauser));
+        assertTrue(i.hasRole(UNPAUSER_ROLE,      unpauser));
+        assertTrue(i.hasRole(REDEEM_FEE_SETTER_ROLE, redeemFeeSetter));
+        assertTrue(i.hasRole(TAKER_ROLE,         taker));
+        assertFalse(i.hasRole(OPERATOR_ROLE,     alice));
+
+        assertEq(i.getRoleAdmin(OPERATOR_ROLE),      bytes32(0));
+        assertEq(i.getRoleAdmin(DEFAULT_ADMIN_ROLE), bytes32(0));
+        assertEq(i.getRoleMemberCount(OPERATOR_ROLE), 1);
+        assertEq(i.getRoleMember(OPERATOR_ROLE, 0),   operator);
+        assertEq(vault.getRoleMembers(OPERATOR_ROLE).length, 1);
+
+        vm.prank(admin);
+        i.grantRole(OPERATOR_ROLE, alice);
+        assertTrue(i.hasRole(OPERATOR_ROLE, alice));
+        assertEq(i.getRoleMemberCount(OPERATOR_ROLE), 2);
+        assertEq(i.getRoleMember(OPERATOR_ROLE, 1),   alice);
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(
+            IAccessControl.AccessControlUnauthorizedAccount.selector, alice, DEFAULT_ADMIN_ROLE
+        ));
+        i.grantRole(OPERATOR_ROLE, bob);
+
+        vm.prank(admin);
+        i.revokeRole(OPERATOR_ROLE, alice);
+        assertFalse(i.hasRole(OPERATOR_ROLE, alice));
+        assertEq(i.getRoleMemberCount(OPERATOR_ROLE), 1);
+
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlBadConfirmation.selector));
+        i.renounceRole(OPERATOR_ROLE, alice);
+        vm.prank(operator);
+        i.renounceRole(OPERATOR_ROLE, operator);
+        assertEq(i.getRoleMemberCount(OPERATOR_ROLE), 0);
+        vm.expectRevert();
+        i.getRoleMember(OPERATOR_ROLE, 0);
+
+        // ERC165 from the OZ parent (not part of ISparkPrimeVault, but on the ABI).
+        assertTrue(vault.supportsInterface(type(IERC165).interfaceId));
+        assertTrue(vault.supportsInterface(type(IAccessControl).interfaceId));
+        assertTrue(vault.supportsInterface(0x5a05180f));   // IAccessControlEnumerable
+        assertFalse(vault.supportsInterface(0xffffffff));
     }
 
     /**********************************************************************************************/
@@ -562,9 +1094,11 @@ contract ViewsTest is LocalTestBase {
     }
 
     function test_convert_exactAtKnownChi() public {
-        // Freeze time at rho so nowChi == chi, then pin chi = 1.5e27 with vm.store (slot 8).
+        // Freeze time at rho so nowChi == chi, then pin chi = 1.5e27 in slot 7 (offset 8).
         vault.drip();
-        vm.store(address(vault), bytes32(uint256(8)), bytes32(uint256(1.5e27)));
+        _storeChi(1.5e27);
+        assertEq(vault.chi(),                1.5e27);
+        assertEq(vault.rho(),                block.timestamp);
         assertEq(vault.nowChi(),             1.5e27);
         assertEq(vault.convertToAssets(2),   3);
         assertEq(vault.convertToAssets(1),   1);      // floor(1.5)
@@ -610,6 +1144,19 @@ contract ViewsTest is LocalTestBase {
         assertGt(vault.nowChi(), preview_);
         assertEq(vault.drip(), vault.nowChi());
         assertGt(vault.chi(),  preview_);
+    }
+
+    // The Drip event carries the new chi and the asset diff of the whole supply.
+    function test_drip_event() public {
+        _deposit(alice, 100e6);
+        _setPrimeVsr(FIVE_PCT_VSR);
+        _warp(365 days);
+        uint192 next_ = vault.nowChi();
+        uint192 chi0_ = vault.chi();
+        uint256 supply_ = vault.totalSupply();
+        vm.expectEmit(address(vault));
+        emit ISparkPrimeVault.Drip(next_, supply_ * next_ / RAY - supply_ * chi0_ / RAY);
+        vault.drip();
     }
 
     // rho is only ever set to block.timestamp, so it is never ahead of it on a chain; if it
@@ -668,12 +1215,12 @@ contract ViewsTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** Overflow bounds of the index maths (G-1 / G-2 / V2-7, still open at 0ebb452)           ***/
+    /*** Overflow bounds of the index maths (R5-1 / G-1, R5-8 / V2-7: still open at c512609)    ***/
     /**********************************************************************************************/
 
-    // `adjustTotalAssets` only checks `chi <= type(uint192).max` (~6.28e57), but `drip` and
-    // `nowChi` compute `_rpow(vsr, dt) * chi` in uint256 (`:637`, `:811`). With vsr == RAY the
-    // product is exactly `RAY * chi`, so any `chi > type(uint256).max / RAY`
+    // `adjustTotalAssets` only checks `chi <= type(uint192).max` (~6.28e57, `:280`), but `drip`
+    // and `nowChi` compute `_rpow(vsr, dt) * chi` in uint256 (`:655`, `:846`). With vsr == RAY
+    // the product is exactly `RAY * chi`, so any `chi > type(uint256).max / RAY`
     // (= 115792089237316195423570985008687907853269984665640564039457, ~1.158e50) makes every
     // index read revert with panic 0x11 from the next second on. `adjustTotalAssets` calls
     // `drip()` first, so it cannot undo itself once a block has passed; only an upgrade can.
@@ -691,50 +1238,47 @@ contract ViewsTest is LocalTestBase {
         emit log_named_uint("supply", supply_);
         emit log_named_int("delta (USDC wei)", delta_);
 
-        vm.prank(admin);
-        vault.adjustTotalAssets(delta_);
+        _adjustTotalAssets(delta_);
         uint256 chi_ = vault.chi();
         assertGt(chi_, CHI_RPOW_BOUND);
         assertLe(chi_, type(uint192).max);
 
-        // Same block: everything still reads (timestamp == rho short-circuits), and the admin
-        // could still lower it back.
+        // Same block: everything still reads (timestamp == rho short-circuits).
         assertEq(vault.nowChi(), chi_);
         assertEq(vault.totalAssets(), supply_ * chi_ / RAY);
 
         // One second later: every index read and every state-changing path that drips panics.
         _warp(1);
-        bytes memory panic_ = abi.encodeWithSignature("Panic(uint256)", 0x11);
-        vm.expectRevert(panic_); vault.nowChi();
-        vm.expectRevert(panic_); vault.drip();
-        vm.expectRevert(panic_); vault.totalAssets();
-        vm.expectRevert(panic_); vault.convertToAssets(1);
-        vm.expectRevert(panic_); vault.convertToShares(1);
-        vm.expectRevert(panic_); vault.assetsOf(alice);
+        vm.expectRevert(PANIC_OVERFLOW); vault.nowChi();
+        vm.expectRevert(PANIC_OVERFLOW); vault.drip();
+        vm.expectRevert(PANIC_OVERFLOW); vault.totalAssets();
+        vm.expectRevert(PANIC_OVERFLOW); vault.convertToAssets(1);
+        vm.expectRevert(PANIC_OVERFLOW); vault.convertToShares(1);
+        vm.expectRevert(PANIC_OVERFLOW); vault.assetsOf(alice);
 
-        vm.prank(admin);
-        vm.expectRevert(panic_);
+        vm.prank(lossManager);
+        vm.expectRevert(PANIC_OVERFLOW);
         vault.adjustTotalAssets(-delta_);                        // cannot undo: drip() first
         vm.prank(operator);
-        vm.expectRevert(panic_);
+        vm.expectRevert(PANIC_OVERFLOW);
         vault.setVSR(RAY);
 
         _unpause();
         _fund(bob, 1e6);
         vm.prank(bob);
-        vm.expectRevert(panic_);
+        vm.expectRevert(PANIC_OVERFLOW);
         vault.requestDeposit(1e6, bob, 0);
         vm.prank(alice);
-        vm.expectRevert(panic_);
+        vm.expectRevert(PANIC_OVERFLOW);
         vault.requestRedeem(1e6, alice);
         vm.prank(operator);
-        vm.expectRevert(panic_);
+        vm.expectRevert(PANIC_OVERFLOW);
         vault.processPendingRedeems(type(uint256).max, 1);
         vm.prank(operator);
-        vm.expectRevert(panic_);
+        vm.expectRevert(PANIC_OVERFLOW);
         vault.processPendingDeposits(type(uint256).max, 1);
         vm.prank(operator);
-        vm.expectRevert(panic_);
+        vm.expectRevert(PANIC_OVERFLOW);
         vault.processPendingDepositCancellations(type(uint256).max, 1);
 
         // What still works: plain ERC20 moves, take, pause, role admin, upgrade.
@@ -746,7 +1290,7 @@ contract ViewsTest is LocalTestBase {
 
         // Only an upgrade to code that rewrites chi recovers; vm.store stands in for that
         // implementation to show the rest of the state is intact.
-        vm.store(address(vault), bytes32(uint256(8)), bytes32(uint256(2e27)));
+        _storeChi(2e27);
         assertEq(vault.nowChi(), 2e27);
         assertEq(vault.balanceOf(alice), supply_ - 1);
     }
@@ -763,30 +1307,28 @@ contract ViewsTest is LocalTestBase {
         uint256 needTa_ = ((CHI_RPOW_BOUND + 1) * supply_ + RAY - 1) / RAY;
         int256  delta_  = int256(needTa_ - ta_);
 
-        vm.prank(admin);
-        vault.adjustTotalAssets(delta_);
+        _adjustTotalAssets(delta_);
         assertGt(vault.chi(), CHI_RPOW_BOUND);
 
         uint256 snap_ = vm.snapshotState();
 
         // Same block: undo works and lands within 1 wei of chi of the original index.
-        vm.prank(admin);
-        vault.adjustTotalAssets(-delta_);
+        _adjustTotalAssets(-delta_);
         assertLe(vault.chi(), CHI_RPOW_BOUND);
         assertEq(vault.totalAssets(), ta_ - 2);   // 2 wei lost to the two floors of the round trip
 
         // Next block: the same undo panics inside drip().
         vm.revertToState(snap_);
         _warp(1);
-        vm.prank(admin);
-        vm.expectRevert(abi.encodeWithSignature("Panic(uint256)", 0x11));
+        vm.prank(lossManager);
+        vm.expectRevert(PANIC_OVERFLOW);
         vault.adjustTotalAssets(-delta_);
     }
 
-    // The `uint192(...)` casts in `drip` (`:637`) and `nowChi` (`:811`) can never truncate:
+    // The `uint192(...)` casts in `drip` (`:655`) and `nowChi` (`:846`) can never truncate:
     // the uint256 product is bounded by type(uint256).max, so the quotient by RAY is at most
-    // ~1.158e50 < type(uint192).max (~6.277e57). The comment at `:636` is accurate; the real
-    // ceiling on chi is the uint256 product, not the uint192 storage type.
+    // ~1.158e50 < type(uint192).max (~6.277e57). The real ceiling on chi is the uint256
+    // product, not the uint192 storage type.
     function test_nowChi_uint192CastCannotTruncate() public pure {
         assertLt(CHI_RPOW_BOUND, type(uint192).max);
         assertEq(type(uint192).max / CHI_RPOW_BOUND, 54_210_108);   // ~5.4e7x headroom unused
@@ -798,28 +1340,28 @@ contract ViewsTest is LocalTestBase {
         vault.drip();
         _warp(1);
 
-        vm.store(address(vault), bytes32(uint256(8)), bytes32(CHI_RPOW_BOUND));
+        _storeChi(CHI_RPOW_BOUND);
         assertEq(vault.nowChi(), CHI_RPOW_BOUND);
         assertEq(vault.drip(),   CHI_RPOW_BOUND);
 
         _warp(1);
-        vm.store(address(vault), bytes32(uint256(8)), bytes32(CHI_RPOW_BOUND + 1));
-        vm.expectRevert(abi.encodeWithSignature("Panic(uint256)", 0x11));
+        _storeChi(CHI_RPOW_BOUND + 1);
+        vm.expectRevert(PANIC_OVERFLOW);
         vault.nowChi();
-        vm.expectRevert(abi.encodeWithSignature("Panic(uint256)", 0x11));
+        vm.expectRevert(PANIC_OVERFLOW);
         vault.drip();
 
         // With vsr > RAY the bound is lower: `_rpow(MAX_VSR, 400 days)` ~= 2.14e27, so chi above
         // ~bound / 2 already panics after 400 days at the max rate.
-        vm.store(address(vault), bytes32(uint256(8)), bytes32(CHI_RPOW_BOUND / 2 + 1));
+        _storeChi(CHI_RPOW_BOUND / 2 + 1);
         _setPrimeVsr(MAX_VSR);                                   // drips at the current chi: fine
         _warp(400 days);
-        vm.expectRevert(abi.encodeWithSignature("Panic(uint256)", 0x11));
+        vm.expectRevert(PANIC_OVERFLOW);
         vault.nowChi();
     }
 
-    // V2-7: `setCapacity` is unbounded and `_processPendingDeposits` computes
-    // `convertToAssets(availableCapacity())` (`:829`), so a capacity more than
+    // R5-8 / V2-7: `setCapacity` is unbounded and `_processPendingDeposits` computes
+    // `convertToAssets(availableCapacity())` (`:864`), so a capacity more than
     // `type(uint256).max / nowChi` shares above `totalSupply` makes every deposit path panic.
     function test_BUG_availableCapacity_overflowInConvertToAssets() public {
         _deposit(alice, 100e6);
@@ -835,19 +1377,19 @@ contract ViewsTest is LocalTestBase {
         _setCapacity(vault.totalSupply() + bound_ + 1);
         _fund(carol, 1e6);
         vm.prank(carol);
-        vm.expectRevert(abi.encodeWithSignature("Panic(uint256)", 0x11));
+        vm.expectRevert(PANIC_OVERFLOW);
         vault.requestDeposit(1e6, carol, 0);
         vm.prank(operator);
-        vm.expectRevert(abi.encodeWithSignature("Panic(uint256)", 0x11));
+        vm.expectRevert(PANIC_OVERFLOW);
         vault.processPendingDeposits(type(uint256).max, 1);
 
         // The view itself reverts too, so a front end reading `convertToAssets(availableCapacity())`
         // breaks before the user does.
         uint256 avail_ = vault.availableCapacity();
-        vm.expectRevert(abi.encodeWithSignature("Panic(uint256)", 0x11));
+        vm.expectRevert(PANIC_OVERFLOW);
         vault.convertToAssets(avail_);
 
-        // Recoverable by the admin (setCapacity does not drip or convert).
+        // Recoverable by the operator (setCapacity does not drip or convert).
         _setCapacity(type(uint128).max);
         _deposit(carol, 1e6);
         assertGt(vault.balanceOf(carol), 0);
