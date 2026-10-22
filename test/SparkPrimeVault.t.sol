@@ -537,7 +537,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
 
     // Failure tests
 
-    function test_processPendingDeposits_paused() external {
+    function test_processPendingDeposits_isPaused() external {
         _pause();
 
         vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
