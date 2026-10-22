@@ -4,7 +4,8 @@ pragma solidity ^0.8.34;
 import { stdError }               from "../../lib/forge-std/src/StdError.sol";
 import { stdStorage, StdStorage } from "../../lib/forge-std/src/StdStorage.sol";
 
-import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
+import { ISparkPrimeVault } from "../../src/ISparkPrimeVault.sol";
+import { SparkPrimeVault }  from "../../src/SparkPrimeVault.sol";
 
 import { NewSurfaceBase } from "./NewSurface.t.sol";
 
@@ -18,9 +19,11 @@ contract ChiResetImpl is SparkPrimeVault {
 
 }
 
-/// @dev `adjustTotalAssets(int256)` (:278-295) on `master` @ 0ebb452: DEFAULT_ADMIN only, requires
-///      `paused`, drips first, writes `chi = (totalAssets + delta) * RAY / totalSupply` with
-///      `result > 0`, `chi != 0`, `chi <= type(uint192).max`. Replaces `realizeGain`/`realizeLoss`.
+/// @dev `adjustTotalAssets(int256)` (:262-283) on `master` @ c512609: LOSS_MANAGER_ROLE only (a
+///      hot-wallet role now, no longer the governance admin), requires `paused` (`IsNotPaused`),
+///      `delta != 0` (`ZeroDeltaTotalAssets`), drips first, writes
+///      `chi = (totalAssets + delta) * RAY / totalSupply` with `result > 0` (`LossTooHigh`),
+///      `chi != 0` (`ChiTooLow`), `chi <= type(uint192).max` (`ChiTooHigh`).
 abstract contract AdjustTotalAssetsBase is NewSurfaceBase {
 
     event TotalAssetsAdjusted(uint192 chi, int256 deltaTotalAssets);
@@ -50,7 +53,7 @@ abstract contract AdjustTotalAssetsBase is NewSurfaceBase {
     }
 
     function _adjust(int256 delta) internal {
-        vm.prank(admin);
+        vm.prank(lossManager);
         vault.adjustTotalAssets(delta);
     }
 
@@ -60,65 +63,82 @@ contract AdjustTotalAssetsFailureTests is AdjustTotalAssetsBase {
 
     using stdStorage for StdStorage;
 
-    function test_adjustTotalAssets_notAdmin() public {
+    // LOSS_MANAGER_ROLE only (:265): the admin included.
+    function test_adjustTotalAssets_notLossManager() public {
         _depositAndPause(alice, ONE_M);
         address[7] memory who =
-            [pauser, operator, redeemFeeSetter, taker, operator, alice, address(this)];
+            [admin, operator, pauser, unpauser, redeemFeeSetter, taker, alice];
         for (uint256 i; i < 7; ++i) {
             vm.prank(who[i]);
-            vm.expectRevert(_unauthorized(who[i], DEFAULT_ADMIN_ROLE));
+            vm.expectRevert(_unauthorized(who[i], LOSS_MANAGER_ROLE));
             vault.adjustTotalAssets(-1e6);
         }
         assertEq(vault.chi(), CHI_P);
+
+        // The admin can grant itself the role; the role is enumerable.
+        assertEq(vault.getRoleMemberCount(LOSS_MANAGER_ROLE), 1);
+        assertEq(vault.getRoleMember(LOSS_MANAGER_ROLE, 0), lossManager);
+        vm.prank(admin);
+        vault.grantRole(LOSS_MANAGER_ROLE, admin);
+        vm.prank(admin);
+        vault.adjustTotalAssets(-1e6);
+        assertLt(vault.chi(), CHI_P);
     }
 
     // R3-1 pin: the adjustment is only possible while paused, and while paused every request
-    // and every queue walk is blocked, so nothing can be sandwiched inside the pause window.
-    function test_fixed_R3_1_adjustTotalAssets_notPaused_andRequestsBlockedWhilePaused() public {
+    // and every fill walk is blocked. Changed on c512609: cancellations and their settlement are
+    // NOT blocked any more (R5-B), so a queued depositor can leave during the pause window.
+    function test_fixed_R3_1_adjustTotalAssets_requiresPause_requestsAndFillsBlockedWhilePaused() public {
         _deposit(alice, ONE_M);
+        _setCapacity(0);
+        uint256 id = _deposit(bob, HUNDRED_K);  // queued
 
-        vm.prank(admin);
+        vm.prank(lossManager);
         vm.expectRevert(ISparkPrimeVault.IsNotPaused.selector);
         vault.adjustTotalAssets(-1e6);
-        vm.prank(admin);
+        vm.prank(lossManager);
         vm.expectRevert(ISparkPrimeVault.IsNotPaused.selector);
         vault.adjustTotalAssets(1e6);
 
         _pause();
-        _fund(bob, ONE_M);
-        vm.prank(bob);
+        _fund(carol, ONE_M);
+        vm.prank(carol);
         vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
-        vault.requestDeposit(ONE_M, bob, 0);
+        vault.requestDeposit(ONE_M, carol, 0);
         vm.prank(alice);
         vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.requestRedeem(1, alice);
-        vm.prank(alice);
-        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
-        vault.requestDepositCancellation(0, alice);
         vm.prank(operator);
         vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.processPendingDeposits(type(uint256).max, type(uint256).max);
         vm.prank(operator);
         vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.processPendingRedeems(type(uint256).max, type(uint256).max);
-        vm.prank(operator);
-        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
-        vault.processPendingDepositCancellations(type(uint256).max, type(uint256).max);
 
-        // What still works while paused: drip, transfer, take, setVSR, the adjustment itself.
+        // What still works while paused: drip, transfer, take, setVSR, cancellations and their
+        // settlement, the adjustment itself.
         vault.drip();
         vm.prank(alice);
         assertTrue(vault.transfer(bob, 1));
         _take(1);
         _setPrimeVsr(ONE_PCT_VSR);
+        _cancel(bob, id, bob, S_100K);
+        _processCancelledDeposits(type(uint256).max, type(uint256).max);
+        assertEq(usdc.balanceOf(bob), A_100K);
         _adjust(1e6);
         assertGt(vault.chi(), CHI_P);
     }
 
     function test_adjustTotalAssets_zeroDelta() public {
         _depositAndPause(alice, ONE_M);
-        vm.prank(admin);
+        vm.prank(lossManager);
         vm.expectRevert(ISparkPrimeVault.ZeroDeltaTotalAssets.selector);
+        vault.adjustTotalAssets(0);
+
+        // The paused check comes first.
+        _unpause();
+        vm.prank(lossManager);
+        vm.expectRevert(ISparkPrimeVault.IsNotPaused.selector);
         vault.adjustTotalAssets(0);
     }
 
@@ -131,7 +151,7 @@ contract AdjustTotalAssetsFailureTests is AdjustTotalAssetsBase {
 
         int256[4] memory deltas = [-ta, -ta - 1, -int256(ONE_M), type(int256).min];
         for (uint256 i; i < 4; ++i) {
-            vm.prank(admin);
+            vm.prank(lossManager);
             vm.expectRevert(ISparkPrimeVault.LossTooHigh.selector);
             vault.adjustTotalAssets(deltas[i]);
         }
@@ -148,14 +168,14 @@ contract AdjustTotalAssetsFailureTests is AdjustTotalAssetsBase {
         _pause();
         assertEq(vault.totalSupply(), 0);
 
-        vm.prank(admin);
+        vm.prank(lossManager);
         vm.expectRevert(stdError.divisionError);
         vault.adjustTotalAssets(1);
-        vm.prank(admin);
+        vm.prank(lossManager);
         vm.expectRevert(stdError.arithmeticError);  // `* RAY` overflows before the division
         vault.adjustTotalAssets(type(int256).max);
 
-        vm.prank(admin);
+        vm.prank(lossManager);
         vm.expectRevert(ISparkPrimeVault.LossTooHigh.selector);
         vault.adjustTotalAssets(-1);
     }
@@ -171,7 +191,7 @@ contract AdjustTotalAssetsFailureTests is AdjustTotalAssetsBase {
         assertEq(ta, 10_096_877_682_424_612_094_087_708_210);  // 1e28 * CHI_P / RAY
 
         // totalAssets -> 9: chi = 9e27 / 1e28 = 0
-        vm.prank(admin);
+        vm.prank(lossManager);
         vm.expectRevert(ISparkPrimeVault.ChiTooLow.selector);
         vault.adjustTotalAssets(-(ta - 9));
         assertEq(vault.chi(), CHI_P);
@@ -189,10 +209,10 @@ contract AdjustTotalAssetsFailureTests is AdjustTotalAssetsBase {
     function test_fixed_G2_adjustTotalAssets_chiTooHighBoundary() public {
         _depositAndPause(alice, ONE_M);
 
-        vm.prank(admin);
+        vm.prank(lossManager);
         vm.expectRevert(ISparkPrimeVault.ChiTooHigh.selector);
         vault.adjustTotalAssets(int256(GAIN_TRUNCATE));
-        vm.prank(admin);
+        vm.prank(lossManager);
         vm.expectRevert(ISparkPrimeVault.ChiTooHigh.selector);
         vault.adjustTotalAssets(int256(GAIN_OVERFLOW - 1));
         assertEq(vault.chi(), CHI_P);
@@ -214,10 +234,10 @@ contract AdjustTotalAssetsFailureTests is AdjustTotalAssetsBase {
         _depositAndPause(alice, ONE_M);
         assertEq(GAIN_OVERFLOW, type(uint256).max / RAY - R_1M + 1);
 
-        vm.prank(admin);
+        vm.prank(lossManager);
         vm.expectRevert(stdError.arithmeticError);
         vault.adjustTotalAssets(int256(GAIN_OVERFLOW));
-        vm.prank(admin);
+        vm.prank(lossManager);
         vm.expectRevert(stdError.arithmeticError);
         vault.adjustTotalAssets(type(int256).max);
         assertEq(vault.chi(), CHI_P);
@@ -346,18 +366,22 @@ contract AdjustTotalAssetsSuccessTests is AdjustTotalAssetsBase {
     }
 
     // Who takes the hit: holders and escrowed redeem shares (spPRIME-denominated) do, queued
-    // deposits and pending cancellations (spUSDC-denominated) do not.
-    function test_adjustTotalAssets_lossHitsHoldersAndEscrowNotQueuedSpUsdc() public {
-        _deposit(alice, ONE_M);
-        _deposit(bob,   ONE_M);
-        uint256 redeemId = _requestRedeem(bob, SH_1M);
+    // deposits, pending cancellations (spUSDC-denominated) and parked claimables (USDC) do not.
+    function test_adjustTotalAssets_lossHitsHoldersAndEscrowNotQueuedSpUsdcNorClaimable() public {
+        _deposit(alice,   ONE_M);
+        _deposit(bob,     ONE_M);
+        _deposit(mallory, HUNDRED_K);
+        _requestRedeem(mallory, SH_100K);              // id 0, parked below
+        uint256 redeemId = _requestRedeem(bob, SH_1M); // id 1, stays escrowed
+        _blacklist(mallory);
+        _processRedeems(type(uint256).max, 1);
+        assertEq(vault.claimableAssets(mallory), R_100K);
         assertEq(vault.balanceOf(address(vault)), SH_1M);
 
         _setCapacity(vault.totalSupply());             // close capacity
         uint256 carolId = _deposit(carol, HUNDRED_K);  // queued in spUSDC
         uint256 daveId  = _deposit(dave,  HUNDRED_K);  // queued, then cancelled
-        vm.prank(dave);
-        uint256 daveCid = vault.requestDepositCancellation(daveId, dave);
+        uint256 daveCid = _cancel(dave, daveId, dave, S_100K);
 
         assertEq(vault.totalSupply(), 2 * SH_1M);
         assertEq(vault.totalAssets(), 1_999_999_999_997);
@@ -382,6 +406,9 @@ contract AdjustTotalAssetsSuccessTests is AdjustTotalAssetsBase {
         assertEq(carolQueued, S_100K);                             // untouched
         assertEq(daveQueued,  S_100K);
         assertEq(spUsdc.convertToAssets(S_100K), A_100K);
+        assertEq(vault.claimableAssets(mallory), R_100K);          // untouched, in USDC
+        assertEq(vault.totalClaimable(),         R_100K);
+        assertEq(usdc.balanceOf(address(vault)), R_100K);
 
         // Carol fills at the post-loss price: more shares, same USD value.
         _setCapacity(type(uint128).max);
@@ -395,9 +422,13 @@ contract AdjustTotalAssetsSuccessTests is AdjustTotalAssetsBase {
 
         // Bob's escrow pays the post-loss value.
         _processRedeems(type(uint256).max, type(uint256).max);
-        ( ,, uint256 left ) = _redeemRequest(redeemId);
+        ( ,, uint256 left ) = _rawRedeem(redeemId);
         assertEq(left, 0);
         assertEq(usdc.balanceOf(bob), 899_999_999_998);
+
+        // Mallory's parked USDC pays in full.
+        _unblacklist(mallory);
+        assertEq(vault.claim(mallory), R_100K);
     }
 
     // Capacity is in shares (:784), so after a loss the same free capacity is worth fewer USDC
@@ -424,10 +455,12 @@ contract AdjustTotalAssetsSuccessTests is AdjustTotalAssetsBase {
     /*** Open findings                                                                          ***/
     /**********************************************************************************************/
 
-    // C-3 open: there is no loss floor below `totalAssets_ > 0`. `-(totalAssets - 1)` leaves
-    // chi = floor(RAY / S) = 1_009_687_768_243_692 (~1e-12 USDC per share); every holder reads 0
-    // and even totalAssets() reads 0 because S * floor(RAY / S) < RAY. One admin call while
-    // paused. Recovery exists (a positive delta), but the index is ~1e12 times below par.
+    // C-3 / R5-3 open, re-rated HIGH: there is no loss floor below `totalAssets_ > 0` (:274).
+    // `-(totalAssets - 1)` leaves chi = floor(RAY / S) (~1e-12 USDC per share); every holder reads
+    // 0 and even totalAssets() reads 0 because S * floor(RAY / S) < RAY. On c512609 this is one
+    // call from LOSS_MANAGER_ROLE, a hot-wallet operational role (plus PAUSER for the pause), no
+    // longer a governance spell. Recovery exists (a positive delta from the same role), but a
+    // compromised key can also sandwich itself (see `AdjustTotalAssetsSandwichTests`).
     function test_BUG_C3_adjustTotalAssets_noFloor_totalAssetsMinusOneWipesHolders() public {
         _deposit(alice, ONE_M);
         _deposit(bob,   HUNDRED_K);
@@ -453,7 +486,7 @@ contract AdjustTotalAssetsSuccessTests is AdjustTotalAssetsBase {
         assertEq(_vaultSpUsdc(),         S_1M + S_100K);  // ~1.1M USDC of backing still here
 
         // Nothing further can be taken (totalAssets is 0) and any gain divides the whole supply.
-        vm.prank(admin);
+        vm.prank(lossManager);
         vm.expectRevert(ISparkPrimeVault.LossTooHigh.selector);
         vault.adjustTotalAssets(-1);
 
@@ -470,13 +503,14 @@ contract AdjustTotalAssetsSuccessTests is AdjustTotalAssetsBase {
         assertEq(vault.assetsOf(alice), 999_999_999_998);
     }
 
-    // G-1 open: the only upper bound is `chi <= type(uint192).max` (:292), but `drip()` (:637)
-    // and `nowChi()` (:811) compute `_rpow(vsr, dt) * chi` in uint256, so any chi above
+    // G-1 / R5-1 open: the only upper bound is `chi <= type(uint192).max` (:280), but `drip()`
+    // (:655) and `nowChi()` (:846) compute `_rpow(vsr, dt) * chi` in uint256, so any chi above
     // CHI_DRIP_MAX = maxUint256 / RAY reverts one second later even at vsr == RAY. The smallest
     // delta reaching it at the harness supply is binary-searched here with snapshots: GAIN_BRICK,
     // writing CHI_BRICK (one wei less writes CHI_BELOW, which survives). Every entry point that
-    // drips or converts then reverts, `adjustTotalAssets` included (it drips first, :282), so the
-    // admin cannot undo it; only `upgradeToAndCall` recovers.
+    // drips or converts then reverts, `adjustTotalAssets` included (it drips first, :270), so the
+    // loss manager cannot undo it; only `upgradeToAndCall` (admin) recovers. A LOSS_MANAGER key
+    // can therefore brick the vault in one call.
     function test_BUG_G1_adjustTotalAssets_aboveDripBoundBricksVault_onlyUpgradeRecovers() public {
         _deposit(alice, ONE_M);
         _setCapacity(0);
@@ -529,10 +563,10 @@ contract AdjustTotalAssetsSuccessTests is AdjustTotalAssetsBase {
         vm.expectRevert(stdError.arithmeticError);
         vault.convertToShares(1);
 
-        vm.prank(admin);
+        vm.prank(lossManager);
         vm.expectRevert(stdError.arithmeticError);
         vault.adjustTotalAssets(-1);
-        vm.prank(admin);
+        vm.prank(lossManager);
         vm.expectRevert(stdError.arithmeticError);
         vault.adjustTotalAssets(type(int256).min);
 
@@ -559,14 +593,19 @@ contract AdjustTotalAssetsSuccessTests is AdjustTotalAssetsBase {
         vm.expectRevert(stdError.arithmeticError);
         vault.processPendingDepositCancellations(type(uint256).max, type(uint256).max);
 
-        // Shares still move; the cancel request (no drip) still works for bob's queued entry.
+        // Shares still move and the updaters work (no drip), but the cancel request drips now
+        // through its self-skip walk (:445 -> :859), so bob's queued entry is stuck too; `claim`
+        // still works.
         vm.prank(alice);
         assertTrue(vault.transfer(carol, 1));
         vm.prank(bob);
-        vault.requestDepositCancellation(bobId, bob);
-        assertEq(vault.pendingCancelledDepositSavingsShares(), S_100K);
+        vault.updateDepositRecipient(bobId, carol);
+        vm.prank(bob);
+        vm.expectRevert(stdError.arithmeticError);
+        vault.requestDepositCancellation(bobId, bob, S_100K);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
 
-        // Only an upgrade recovers: `_authorizeUpgrade` (:272) does not drip.
+        // Only an upgrade recovers: `_authorizeUpgrade` (:213) does not drip.
         address impl = address(new ChiResetImpl());
         vm.prank(admin);
         vault.upgradeToAndCall(impl, abi.encodeCall(ChiResetImpl.resetChi, (uint192(CHI_P))));
@@ -577,6 +616,8 @@ contract AdjustTotalAssetsSuccessTests is AdjustTotalAssetsBase {
         vault.drip();
         assertEq(vault.totalAssets(), R_1M);
         assertEq(vault.assetsOf(alice), vault.convertToAssets(SH_1M - 1));
+        vm.prank(bob);
+        vault.requestDepositCancellation(bobId, bob, S_100K);
         _processCancelledDeposits(type(uint256).max, type(uint256).max);
         assertEq(usdc.balanceOf(bob), A_100K);
     }
@@ -598,9 +639,10 @@ contract AdjustTotalAssetsSuccessTests is AdjustTotalAssetsBase {
 
 }
 
-/// @dev R3-1 residue: the adjustment needs `paused`, but the admin is a governance spell whose
-///      payload is public before the GUARDIAN pauses. A deposit that instant-fills before the
-///      pause shares the gain; a redeem queued right after the unpause takes it out.
+/// @dev R5-2 / R3-1 residue: the adjustment needs `paused`, but a gain that is known (or decided)
+///      before the PAUSER's tx lands can be front-run by a deposit that instant-fills, and taken
+///      out by a redeem queued right after the unpause. With LOSS_MANAGER a hot-wallet role the
+///      same key can do all of it deliberately if it also holds PAUSER / UNPAUSER.
 contract AdjustTotalAssetsSandwichTests is AdjustTotalAssetsBase {
 
     uint256 constant GAIN = 50_000e6;
@@ -612,14 +654,14 @@ contract AdjustTotalAssetsSandwichTests is AdjustTotalAssetsBase {
         assertEq(vault.balanceOf(mallory), SH_1M);
         assertEq(vault.totalAssets(), 1_999_999_999_997);
 
-        _pause();                               // GUARDIAN tx lands after the payload is public
+        _pause();                               // PAUSER tx lands after the gain is known
         _adjust(int256(GAIN));
         _unpause();
         assertEq(vault.chi(), 1_034_929_962_448_270_700_987_302_681);
 
         uint256 id = _requestRedeem(mallory, SH_1M);
         _processRedeems(type(uint256).max, type(uint256).max);
-        ( ,, uint256 left ) = _redeemRequest(id);
+        ( ,, uint256 left ) = _rawRedeem(id);
         assertEq(left, 0);
 
         profit = usdc.balanceOf(mallory) - ONE_M;
@@ -629,7 +671,7 @@ contract AdjustTotalAssetsSandwichTests is AdjustTotalAssetsBase {
         aliceShortfall  = vault.assetsOf(alice) - backing;
     }
 
-    function test_BUG_R3_1_governanceSandwich_zeroFee() public {
+    function test_BUG_R5_2_governanceSandwich_zeroFee() public {
         ( uint256 profit, uint256 shortfall ) = _sandwich(0);
         assertEq(usdc.balanceOf(mallory), 1_024_999_999_998);
         assertEq(profit,    24_999_999_998);    // half of the 50k gain
@@ -637,11 +679,28 @@ contract AdjustTotalAssetsSandwichTests is AdjustTotalAssetsBase {
         assertEq(shortfall, 49_999_999_999);
     }
 
-    function test_BUG_R3_1_governanceSandwich_onePctFee() public {
+    function test_BUG_R5_2_governanceSandwich_onePctFee() public {
         ( uint256 profit, uint256 shortfall ) = _sandwich(0.01e18);
         assertEq(usdc.balanceOf(mallory), 1_014_749_999_997);
         assertEq(profit,    14_749_999_997);    // 25k gain share minus 1% of 1.025M
         assertEq(shortfall, 39_749_999_998);
+    }
+
+    // Cancellations are not pause-gated on c512609: a queued depositor that sees a LOSS coming
+    // leaves during the pause window and never takes the hit. Alice (holder) loses the full 50k;
+    // mallory's queued 1M walks out at A_1M.
+    function test_BUG_R5_2_queuedDepositorExitsDuringPauseBeforeLoss() public {
+        _deposit(alice, ONE_M);
+        _setCapacity(vault.totalSupply());
+        uint256 id = _deposit(mallory, ONE_M);  // queued in spUSDC
+        _pause();
+        _cancel(mallory, id, mallory, S_1M);
+        _processCancelledDeposits(type(uint256).max, type(uint256).max);
+        assertEq(usdc.balanceOf(mallory), A_1M);
+        _adjust(-int256(GAIN));
+        _unpause();
+        assertEq(vault.assetsOf(alice), 949_999_999_997);
+        assertEq(vault.totalAssets(),   949_999_999_997);
     }
 
 }
