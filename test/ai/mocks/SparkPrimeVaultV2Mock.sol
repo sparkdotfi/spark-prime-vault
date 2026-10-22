@@ -4,15 +4,15 @@ pragma solidity ^0.8.34;
 import { SparkPrimeVault } from "../../../src/SparkPrimeVault.sol";
 
 /// @dev Upgrade target for the upgrade tests: identical layout (inherits the V1 contract on
-///      `master` @ 0ebb452, linear slots 0..27 ending in `allowance` at 27), one appended
-///      storage variable (slot 28) and a `reinitializer(2)` entry point.
+///      `master` @ c512609, linear slots 0..28 ending in `allowance` at 28), one appended
+///      storage variable (slot 29) and a `reinitializer(2)` entry point.
 ///
 ///      It also exposes raw reads of the three internal `Request[]` arrays so a test can prove
 ///      the new code sees exactly what the old code wrote (owner / recipient / shares of any id,
 ///      including filled and cancelled ids below the head, and the raw array lengths).
 contract SparkPrimeVaultV2Mock is SparkPrimeVault {
 
-    uint256 public newVar;  // Appended after `allowance` (slot 27) -> slot 28
+    uint256 public newVar;  // Appended after `allowance` (slot 28) -> slot 29
 
     function initializeV2(uint256 newVar_) external reinitializer(2) {
         newVar = newVar_;

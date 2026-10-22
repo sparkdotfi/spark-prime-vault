@@ -1,5 +1,156 @@
 # UPGRADE-VIEWS worker report
 
+## Round 6 (`master` @ `c512609`)
+
+Branch `campaign-v6/upgrade-views`. Files: `test/ai/Upgrade.t.sol` (19 tests), `test/ai/Views.t.sol`
+(38), `test/ai/Headline.t.sol` (16), `test/ai/LocalSmoke.t.sol` (2), `test/ai/mocks/SparkPrimeVaultV2Mock.sol`,
+plus the fork-only `test/ai/TestBase.t.sol` and `test/ai/Review.t.sol` (10 PoCs, compile only: no RPC here).
+
+Run: `FOUNDRY_OFFLINE=true forge test --match-path 'test/ai/{Upgrade,Views,Headline,LocalSmoke}.t.sol'`.
+Result: 75 passed, 0 failed (also at `FOUNDRY_FUZZ_RUNS=2000`). `forge build` with the fork files: 0
+errors. Line numbers refer to `src/SparkPrimeVault.sol` @ `c512609`. No test fails deliberately; every
+`test_BUG_` asserts the open behaviour exactly, every `test_fixed_` asserts the fix exactly.
+
+### (a) New findings
+
+| # | Location | Scenario (exact) | Impact | Severity | Test |
+|---|---|---|---|---|---|
+| UV6-1 | `:707`, `:755`, `:802` | Range getters check `length_ <= array.length - startId_` after `startId_ >= head`; with `startId_ > array.length` the subtraction underflows, so `getPendingDepositRequests(length + 1, 0)` and `(type(uint256).max, *)` revert with panic 0x11 instead of `LengthTooLarge`. `startId_ == length` with `length_ == 0` is a legal empty read. | Integrators get a panic instead of the documented custom error for an out-of-range start. | Info | `test_getPendingDepositRequests_range_failure`, `test_getPendingDepositCancellationRequests_range`, `test_getPendingRedeemRequests_range`, the three `testFuzz_getPending*Requests_range` |
+| UV6-2 | `:942-976` (`:953`) | H4 follow-up: the (11, 11, rest) batch from one 1M holder now pays in ONE call (no revert), alice receives 999_999_999_996 (same as the old three single calls), but entry 2 keeps 2 shares at the head backed by 1 spUSDC share: `availableLiquidAssets() == 1`, `convertToShares(1) == 0`, so every later call breaks at `fillable_ == 0` until spUSDC arrives from outside; 10 spUSDC shares from outside clear it (2 wei paid). A single whole-balance entry has no dust (999_999_999_998 paid, 0 spUSDC left). | R5-10 unchanged: the per-entry bound removes the revert, not the dust; one unpayable entry at the head blocks the queue behind it. | Low | `test_fixed_H4_batchedRedeems_payInOneCall`, `test_BUG_H4_dustAtHeadUnpayableUntilTopUp`, `testFuzz_fixed_H4_anySplitPaysInOneCall` (any split into <= 8 entries: no revert, at most the last entry keeps <= 2n shares) |
+| UV6-3 | `:445`, `:872-879` | H6 follow-up: `requestDepositCancellation` self-skips only the run of zero entries AT the head. With a live entry at the head (alice 1M queued at capacity 0), 300 `minDeposit`-sized (1e6) request-then-cancel loops by `mal` leave `getPendingDepositRequests().length == 301`, the operator's `processPendingDeposits(max, max)` at capacity 0 breaks at alice (`:878`), and after the operator fills only the live head (`maxRequests == 1`) the 300 ghosts are at the head: bob's next `requestDeposit` instant-fill walks all of them: 990_016 gas vs 287_560 clean (~2.3k per ghost). `mal` gets 300e6 - 300 back from the cancellation queue (1 wei of spUSDC floor per loop), so the capital cost is zero. Without a live head the self-skip works: 50 loops leave an empty window, head 50. | Bounded griefing of the first walk with capacity; operator can bound it with `maxRequests`; the next depositor cannot. | Low | `test_BUG_H6_ghostsBehindLiveHead_taxFirstWalkWithCapacity`, `test_fixed_H6_cancelAtHeadSelfSkips_zeroDepositRejected`, `test_getPendingDepositRequests_cancelledBehindLiveHeadStaysVisible` |
+| UV6-4 | `:1001`, `:1011` | H5 follow-up: `requestRedeem(shares, address(spUsdc))` is accepted; the fill is `spUSDC.withdraw(assets, spUSDC, vault)`, a USDC transfer from spUSDC to itself that succeeds, so the try branch returns and nothing is credited: 999_999_999_998 USDC stay in spUSDC with 954_532_691_143 spUSDC shares burned (`usdc.balanceOf(spUSDC) > spUSDC.totalAssets()` afterwards), `claimableAssets[spUSDC] == 0`, `totalClaimable == 0`, `claim(spUSDC)` reverts `NothingToClaim`. | User-triggered donation to spUSDC holders; same shape as V2-13 for the vault, now only reachable with `savings` as recipient. | Low | `test_BUG_H5_spUsdcRecipient_donatesPayout` |
+| UV6-5 | `:196` | `initialize(..., admin = address(0), ...)` is accepted: `getRoleMemberCount(DEFAULT_ADMIN_ROLE) == 1` with member `address(0)`, nobody can grant a role. Last-admin `renounceRole` leaves a vault where no actor can grant/revoke, upgrade, or touch `setMinDeposit`/`setVSRBounds`; the existing roles keep working and losing any one of them is permanent. The old "stuck paused" consequence is gone (separate `UNPAUSER_ROLE`). | Operational; R5-6 / V2-8 unchanged. | Low | `test_BUG_H7_zeroAdminAcceptedAtInitialize`, `test_BUG_H7_lastAdminRenounces_noRoleOrUpgradeEverAgain` |
+| UV6-6 (info) | `ISparkPrimeVault.sol` | The interface extends `IERC20Metadata`, `IERC20Permit`, `IAccessControlEnumerable`; every function of those is callable through it with the vault's semantics. Not on the interface but on the ABI: `DEFAULT_ADMIN_ROLE()`, `getRoleMembers()`, `supportsInterface()` (OZ parents). `supportsInterface` answers true for ERC165, IAccessControl and IAccessControlEnumerable (`0x5a05180f`). | None. | Info | `test_interface_erc20Surface`, `test_interface_accessControlSurface` |
+
+### (b) Status of prior findings touched
+
+| Finding | Status at c512609 | Pinning test |
+|---|---|---|
+| R5-1 / G-1 chi brick (`:280` uint192 check vs `:655`/`:846` `_rpow * chi` in uint256) | **Open**, unchanged. Exact bound `type(uint256).max / RAY`; chi at bound+1 panics from the next second in every dripping path; undo only in the same block (costs 2 wei); `lossManager` is now the trigger. | `test_BUG_adjustTotalAssets_chiAboveRpowBoundBricksVault`, `test_BUG_adjustTotalAssets_chiBrickRecoverableOnlyInSameBlock`, `test_BUG_nowChi_exactRpowOverflowThreshold`, `test_BUG_H1_*` |
+| R5-2 pause sandwich | **Open**: +24_999.999998 at 0 fee, +14_749.999997 at 1% fee for one block of risk | `test_BUG_H2_*`, `test_H2_pauseBeforeDeposit_killsSandwich` |
+| R5-3 / C-3 no loss floor | **Open, re-rated**: `LOSS_MANAGER_ROLE` is a separate non-admin role, needs only the pauser; admin cannot adjust; `-(totalAssets - 1)` accepted, chi -> 1_009_687_768_243_692, alice -> 0 | `test_BUG_H3_lossOfTotalAssetsMinusOne_wipesHolders`, `test_BUG_H3_lossManagerIsNotAdmin` |
+| C-1 / R5-4 / H4 batched redeem revert | **Fixed** (per-entry bound) | `test_fixed_H4_batchedRedeems_payInOneCall`, `testFuzz_fixed_H4_anySplitPaysInOneCall` |
+| R5-10 dust at the redeem head | **Open**, exact dust measured (UV6-2) | `test_BUG_H4_dustAtHeadUnpayableUntilTopUp` |
+| V2-13 / R5-7 / H5 vault as recipient | **Fixed** for the vault: `VaultIsRecipient` in `requestDeposit`, `requestRedeem`, `requestDepositCancellation`, all three updaters. spUSDC as recipient **open** (UV6-4) | `test_fixed_H5_vaultRejectedAsRecipientEverywhere`, `test_BUG_H5_spUsdcRecipient_donatesPayout` |
+| R5-9 / F-5 / H6 ghosts | **Partly fixed**: zero-asset deposits impossible (`BelowMinDeposit`, `ZeroMinDeposit` in the setter), self-skip at the head works; ghosts behind a live head **open** (UV6-3). Redeem ghosts (R5-14) still reachable when the admin sets `minRedeem < WAD / fee` (fork PoC) | `test_fixed_H6_*`, `test_BUG_H6_*`, `test_fixed_F5_zeroDepositRequestRejected`, `test_BUG_F5_tinyRedeemRequestsBecomeGhostEntries` (fork), `test_getPendingRedeemRequest_bounds` (local, `minRedeem` 1) |
+| R5-6 / V2-8 admin renounce / zero admin | **Open** (UV6-5) | `test_BUG_H7_*` |
+| R5-8 / V2-7 `setCapacity` unbounded | **Open**, unchanged (`totalSupply + uint256.max / nowChi` fine, +1 panics; operator recovers) | `test_BUG_availableCapacity_overflowInConvertToAssets` |
+| R4-A / R4-B blacklist fallback | **Fixed by try/catch** as seen from these suites: redeem and cancellation payouts to blacklisted recipients credit `claimableAssets` + `totalClaimable` (40_387_510 and 49_999_999 exact), survive V1 -> V2 -> V1, `claim` pays after un-blacklisting and reverts "Blacklistable" while blacklisted without decrementing | `test_totalClaimable_tracksClaimableAssets`, `test_upgradeToAndCall`, `test_totalAssets_isNotionalOnly` |
+| F-1, F-3 (fork) | **Fixed** (owner-only cancel with chosen recipient, `maxRequests` honoured) | `test_fixed_F1_privilegedRolesCannotCancelDeposit`, `test_fixed_F1_cancelRedeemRequestRemoved`, `test_fixed_F3_processPendingDepositsFillsAllRequestsInOneCall` |
+| F-2, F-4 (fork) | **Open** (compile only) | `test_BUG_F2_*`, `test_BUG_F4_dustFillMintsZeroShares` |
+| Round-5 layout (`decimals|rho` at 7, `chi` at 8, `allowance` at 27) | **Changed**: not compatible (nothing deployed) | `test_storageLayout_notCompatibleWithRoundFive` |
+| `GUARDIAN_ROLE`, `REBALANCER_ROLE`, `VSR_SETTER_ROLE` | **Gone** from the ABI; seven live roles | `test_roleAdmins_unchangedByUpgrade` |
+
+### (c) Code paths and the test covering each
+
+Storage layout (every assertion against `forge inspect SparkPrimeVault storage-layout` at c512609, both
+directions: `vm.load` vs getters and `vm.store` then getters):
+
+| Slot | Variable | Pinned by |
+|---|---|---|
+| 0 / 1 / 2 | the three `Request[]` lengths; element `i` at `keccak256(slot) + 3i + {0 owner, 1 recipient, 2 shares}` | `test_storageLayout_readEverySlot`, `test_storageLayout_storeEverySlot`, `test_upgradeToAndCall_v2ReadsEveryQueueSlot` |
+| 3 | `savings` | same |
+| 4 | `asset` (0) + `paused` (20) + `decimals` (21) | same (`vm.store` of `18 << 168 | 1 << 160 | asset` reads back as `decimals 18`, `paused`) |
+| 5 / 6 | `name` / `symbol` inline short strings (`len*2` low byte: 32, 14) | same |
+| 7 | `rho` (0, uint64) + `chi` (8, uint192) packed | same (`vm.store` of `2e27 << 64 | 1234` reads back `rho 1234`, `chi 2e27`) |
+| 8..10 | `vsr`, `minVSR`, `maxVSR` | same |
+| 11..16 | `maxCapacity`, `minDeposit`, `minDepositCancellation`, `minRedeem`, `redeemFeeRate`, `maxRedeemFeeRate` | same |
+| 17 / 18 | `totalSupply` / `totalClaimable` | same |
+| 19..21 | the three pending counters | same |
+| 22..24 | the three heads | same |
+| 25..28 | `balanceOf`, `nonces`, `claimableAssets`, `allowance` | same |
+| 29 | first free slot (V2 mock `newVar`) | `test_upgradeToAndCall_withReinitializer`, `test_upgradeToAndCall` (empty after a plain upgrade) |
+| ERC-7201 | `openzeppelin.storage.{Initializable, AccessControl, AccessControlEnumerable}` roots equal the derived constants, hold `_initialized == 1`, `hasRole`, `adminRole == 0`, enumerable `_values`/`_positions` for all seven roles; clobbering slots 0..29 leaves every role intact | `test_storageLayout_erc7201Namespaces` |
+
+Upgrade: authorization (`DEFAULT_ADMIN_ROLE` only, seven other actors rejected with
+`AccessControlUnauthorizedAccount`), works while paused, rejected on the implementation, wrong UUID,
+non-UUPS target, ETH without data, ETH with non-payable initializer (rolled back), re-running
+`initialize` through upgrade calldata (rolled back), implementation `_initialized == uint64.max` with
+empty storage and no roles, proxy re-init rejected before and after upgrade, `reinitializer(2)` once,
+60-field snapshot (every getter incl. `totalClaimable`, `minDepositCancellation`, the three head-to-end
+views and raw hashes of every array element incl. ids below the head) + all 29 raw slots + all seven
+role member lists byte-identical across V1 -> V2 -> V1, all three queues process and `claim` pays
+afterwards (`totalClaimable` -> 0). Tests: `test_upgradeToAndCall*` (10), `test_initialize_*` (2),
+`test_roleAdmins_unchangedByUpgrade`, `test_storageLayout_*` (4).
+
+Views (`Views.t.sol`):
+- `getPending{Deposit,DepositCancellation,Redeem}Request` (`:669`, `:716`, `:764`): below head, at
+  length, max id, in window, cancelled-in-window zeros, partial fill, partial cancel: `test_getPending*Request_bounds` (3).
+- `getPending*Requests()` (`:685`, `:733`, `:780`): empty, filled-excluded, cancelled-behind-head,
+  partial fill, head agreement with counters for any cancel mask: `test_getPendingRequests_emptyQueues`,
+  `test_getPendingDepositRequests_excludesFilledAndStartsAtHead`, `test_getPendingDepositRequests_cancelledBehindLiveHeadStaysVisible`,
+  `test_getPendingDepositCancellationRequests_tracksCancelAndSettle`, `test_getPendingRedeemRequests_partialFillKeepsHeadEntry`,
+  `testFuzz_getPendingRequests_matchHeadAndCounters`.
+- `getPending*Requests(startId, length)` (`:700`, `:748`, `:795`): `StartIdTooSmall`, `LengthTooLarge`,
+  length 0 at any legal start incl. `start == length`, exact window, slices equal the full view and the
+  single getter, underflow panic past the end (UV6-1): `test_getPendingDepositRequests_range_{failure,success}`,
+  `test_getPendingDepositCancellationRequests_range`, `test_getPendingRedeemRequests_range`,
+  `testFuzz_getPending{Deposit,Redeem,DepositCancellation}Requests_range` (n <= 10, k filled, any start/length).
+- Deleted head entries zero in raw storage, unreachable by every getter: `test_getPendingRequests_deletedHeadEntriesUnreachable`.
+- `assetsOf` (`:815`), `availableCapacity` both branches (`:820`), `availableLiquidAssets` (`:824`: spUSDC
+  liquidity bound, vault spUSDC bound, parked USDC excluded), `totalAssets` (`:850`), `totalClaimable`
+  (credit by redeem and cancellation fallback, accumulation, `claim` decrement, `NothingToClaim`,
+  blacklisted claim reverts without decrement): `test_assetsOf`, `test_availableCapacity`,
+  `test_availableLiquidAssets_isSpUsdcMaxWithdraw`, `test_totalAssets_isNotionalOnly`, `test_totalClaimable_tracksClaimableAssets`.
+- `convertToAssets` / `convertToShares` (`:827`, `:831`): monotone, round-trip bounds over 10 years at
+  40%, exact at chi 1.5e27: `testFuzz_convertToAssets_monotonic`, `testFuzz_convert_roundTripBounds`, `test_convert_exactAtKnownChi`.
+- `nowChi` both branches (`:843`), `drip` early return and update + `Drip` event (`:648`): `test_nowChi_matchesDrip`,
+  `test_nowChi_rhoInFuture`, `test_drip_event`, `test_nowChi_uint192CastCannotTruncate`.
+- `DOMAIN_SEPARATOR` (`:835`, live chain id), `implementation` (`:839`): `test_DOMAIN_SEPARATOR`, `test_implementation`.
+- ERC20 metadata, constants, `version`: `test_erc20Metadata`.
+- `ISparkPrimeVault` surface: IERC20 (6), IERC20Metadata (3), IERC20Permit (both `permit` overloads,
+  `nonces`, `DOMAIN_SEPARATOR`, expired / invalid-owner / replay), IAccessControl (5) +
+  IAccessControlEnumerable (2) + `getRoleMembers` + `supportsInterface`: `test_interface_erc20Surface`,
+  `test_interface_accessControlSurface`.
+
+Headline (`Headline.t.sol`): H1 (2), H2 (3), H3 (2), H4 (3), H5 (2), H6 (2), H7 (2), listed in (a)/(b).
+
+### (d) Properties that held
+
+- Every getter reads the slot `forge inspect` names, at the named offset, and every slot written with
+  `vm.store` is read back by exactly one getter; the first free slot is 29.
+- Upgrade preserves all 29 linear slots, every array element (including filled / cancelled ids below
+  the heads), all seven role sets and all 60 snapshot fields; a V1 -> V2 -> V1 round trip is byte-identical.
+- Range getters are pure slices: for every legal `(startId, length)` the result equals the matching
+  slice of the head-to-end view and the single-entry getter, for all three queues (fuzzed).
+- `totalClaimable == sum(claimableAssets) == USDC held for claimants` across redeem and cancellation
+  fallbacks, accumulation and claims.
+- The `(11, 11, rest)` and any <= 8-way split of a 1M redeem pay in one call without reverting.
+- `availableCapacity` is share-denominated (a loss leaves it unchanged; burning escrowed redeem
+  shares frees it); `availableLiquidAssets` ignores USDC parked for claims.
+- `DOMAIN_SEPARATOR` follows the live chain id; `name` has no setter.
+
+### (e) Not settled
+
+- `Review.t.sol` / `TestBase.t.sol` are mainnet-fork tests, compiled only; F-2 / F-4 / F-5(redeem)
+  PoCs should be run with `MAINNET_RPC_URL` set before the audit.
+- UV6-3: whether the operator will always fill a live head with `maxRequests` large enough to walk the
+  ghosts behind it (so the tax lands on the operator, not the next depositor) is operational.
+- UV6-4: spUSDC as recipient is "accepted and donates"; whether the product wants `savings` rejected
+  like the vault is a design call.
+
+### Porting notes (round 5 -> round 6)
+
+- `Upgrade.t.sol`: slot constants rewritten (`decimals` into 4, `rho|chi` into 7, `minDepositCancellation`
+  13, `totalClaimable` 18, mappings 25..28, `V1_SLOTS = 29`); seven roles; `initialize` 7 args; snapshot
+  gains `totalClaimable` and `minDepositCancellation`; the "all ids" range hashes (now illegal below the
+  head) became raw-storage hashes of every array element; round-four incompatibility test rewritten
+  against the round-five layout.
+- `Views.t.sol`: `invalid-range` tests rewritten for `(startId, length)` with `StartIdTooSmall` /
+  `LengthTooLarge`; the "ghosts at capacity 0 stay in view" test is now split into the self-skip
+  (head) case and the behind-live-head case; range reads of deleted entries below the head (now
+  illegal) replaced by `vm.load`; `chi` writes go through `_storeChi` (slot 7, offset 8); three range
+  fuzzers, `totalClaimable`, ERC20 metadata and the interface-surface tests are new.
+- `Headline.t.sol`: H4, H5 -> `test_fixed_` (+ `test_BUG_H4_dust`, `test_BUG_H5_spUsdc`); H6 rewritten
+  around `minDeposit`-sized cancels; H7 "stuck paused" no longer applies (UNPAUSER_ROLE), rewritten as
+  "no role or upgrade ever again" + zero-admin init; `adjustTotalAssets` by `lossManager`.
+- `Review.t.sol`: `test_BUG_F5_zeroDepositRequestsBloatQueue` -> `test_fixed_F5_zeroDepositRequestRejected`;
+  tiny-redeem ghosts need `setMinRedeem(1)` now; `setCapacity` by the operator; 3-arg cancels.
+- `TestBase.t.sol`: duplicate `operator` removed, `lossManager` / `unpauser` added, 7-arg `initialize`,
+  helpers use `(id, 1)`.
+- `SparkPrimeVaultV2Mock`: `newVar` at slot 29.
+
+
 ## Round 5 (`master` @ `0ebb452`)
 
 Branch `campaign-v5/upgrade-views`. Files: `test/ai/Upgrade.t.sol` (19 tests), `test/ai/Views.t.sol`
