@@ -750,7 +750,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.Deposit(6, ali, ali, spUSDC.convertToShares(300_000e6) + 1, 300_000e6, spPrime.convertToShares(300_000e6));
 
-        vm.startPrank(processor);
+        vm.startPrank(operator);
         spPrime.processPendingDeposits(spUSDC.convertToShares(1_200_000e6), type(uint256).max);
         vm.stopPrank();
 
@@ -774,7 +774,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
 
         for (uint256 i = 0; i < 6; i++) {
             vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
-            _assertDepositRequest(i, address(0), address(0), 0);
+            spPrime.getPendingDepositRequest(i);
         }
 
         _assertDepositRequest(6, ali,        ali,        400_000e6 - 2);  // Partial fill
@@ -806,7 +806,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.Deposit(9, ali, ali, spUSDC.convertToShares(200_000e6) + 3, 200_000e6 + 3, spPrime.convertToShares(200_000e6) + 3);
 
-        vm.prank(processor);
+        vm.prank(operator);
         spPrime.processPendingDeposits(type(uint256).max, type(uint256).max);
 
         assetsDeposited = 400_000e6 + 800_000e6 + 200_000e6;  // Remaining ~400k of request 6, then only ~200k of the last 1MM deposit
@@ -829,7 +829,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
 
         for (uint256 i = 0; i < 9; i++) {
             vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
-            _assertDepositRequest(i, address(0), address(0), 0);
+            spPrime.getPendingDepositRequest(i);
         }
 
         _assertDepositRequest(9, ali, ali, 800_000e6 - 4);
