@@ -82,7 +82,7 @@ contract RequestRedeemBlacklistTests is BlacklistBase {
         // Checked after `zero-recipient` (:451) and before `below-minimum` (:453).
         _setMinRedeem(SH_1M + 1);
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/zero-recipient");
+        vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
         vault.requestRedeem(SH_1M, address(0));
         vm.prank(alice);
         vm.expectRevert("SparkPrimeVault/recipient-cannot-receive");
@@ -577,15 +577,15 @@ contract ProcessPendingDepositCancellationsBlacklistTests is BlacklistBase {
 contract ClaimTests is BlacklistBase {
 
     function test_claim_nothingToClaim_failure() public {
-        vm.expectRevert("SparkPrimeVault/nothing-to-claim");
+        vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
         vault.claim(alice);
-        vm.expectRevert("SparkPrimeVault/nothing-to-claim");
+        vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
         vault.claim(address(0));
 
         // A clean payout never leaves anything to claim.
         _queuedRedeem(alice);
         _processRedeems(type(uint256).max, type(uint256).max);
-        vm.expectRevert("SparkPrimeVault/nothing-to-claim");
+        vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
         vault.claim(alice);
     }
 
@@ -626,7 +626,7 @@ contract ClaimTests is BlacklistBase {
         assertEq(usdc.balanceOf(mallory),      0);
         assertEq(_vaultUsdc(),                 0);
 
-        vm.expectRevert("SparkPrimeVault/nothing-to-claim");
+        vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
         vault.claim(alice);
     }
 
@@ -731,7 +731,7 @@ contract ClaimableIsolationTests is BlacklistBase {
         assertEq(_vaultUsdc(), R_1M);
         assertEq(vault.claimableAssets(alice), R_1M);
 
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         vault.setVSR(ONE_PCT_VSR);
         _warpAndDrip(30 days);
         assertEq(_vaultUsdc(), R_1M);
@@ -783,9 +783,9 @@ contract VaultAsRecipientTests is BlacklistBase {
         ( ,, uint256 left ) = _redeemRequest(id);
         assertEq(left, 0);
 
-        vm.expectRevert("SparkPrimeVault/nothing-to-claim");
+        vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
         vault.claim(address(vault));
-        vm.expectRevert("SparkPrimeVault/nothing-to-claim");
+        vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
         vault.claim(alice);
 
         // A later deposit and take cannot pull it out either.
@@ -805,7 +805,7 @@ contract VaultAsRecipientTests is BlacklistBase {
         assertEq(vault.claimableAssets(address(vault)), 0);
         assertEq(vault.claimableAssets(alice),          0);
         assertEq(_vaultSpUsdc(),                        0);
-        vm.expectRevert("SparkPrimeVault/nothing-to-claim");
+        vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
         vault.claim(address(vault));
     }
 
@@ -861,7 +861,7 @@ contract BlacklistedVaultTests is BlacklistBase {
         assertEq(usdc.balanceOf(alice), R_1M);
         assertEq(vault.firstPendingRedeemId(), 1);
 
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert(BLACKLISTED);
         vault.processPendingRedeems(type(uint256).max, type(uint256).max);
         assertEq(vault.firstPendingRedeemId(), 1);

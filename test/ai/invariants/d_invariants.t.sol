@@ -451,7 +451,7 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
 
     function _drainRedeems() internal returns (uint256 fills) {
         uint256 length = handler.redeemQueueLength();
-        vm.prank(rebalancer);
+        vm.prank(operator);
         try vault.processPendingRedeems(type(uint256).max, type(uint256).max) {
             fills = 1;
         } catch Error(string memory r) {
@@ -496,7 +496,7 @@ contract SparkPrimeVaultInvariantTest is LocalTestBase {
         assertEq(spUsdc.maxWithdraw(address(vault)), 104);
         assertEq(vault.convertToShares(spUsdc.maxWithdraw(address(vault))), 103);
 
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert("SparkVault/insufficient-balance");
         vault.processPendingRedeems(type(uint256).max, 110);
 

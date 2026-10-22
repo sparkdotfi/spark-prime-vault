@@ -10,6 +10,7 @@ import { SparkPrimeVault }       from "../../src/SparkPrimeVault.sol";
 import { SparkPrimeVaultV2Mock } from "./mocks/SparkPrimeVaultV2Mock.sol";
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
+import { ISparkPrimeVault } from "src/ISparkPrimeVault.sol";
 
 /// @dev Minimal ERC1271 wallet: accepts exactly one digest.
 contract ERC1271Wallet {
@@ -94,7 +95,7 @@ contract FreshEyesTest is LocalTestBase {
         vm.expectRevert(abi.encodeWithSelector(0x4e487b71, 0x11));  // Panic: arithmetic overflow
         vault.requestDeposit(ONE_M, bob, 0);
 
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert(abi.encodeWithSelector(0x4e487b71, 0x11));
         vault.processPendingDeposits(type(uint256).max, type(uint256).max);
 
@@ -362,7 +363,7 @@ contract FreshEyesTest is LocalTestBase {
             _requestRedeem(alice, k);
             _requestRedeem(alice, k);
             _requestRedeem(alice, total - 2 * k);
-            vm.prank(rebalancer);
+            vm.prank(operator);
             try vault.processPendingRedeems(type(uint256).max, type(uint256).max) {
                 // ok
             } catch (bytes memory err) {
@@ -524,7 +525,7 @@ contract FreshEyesTest is LocalTestBase {
         assertEq(sh, 0);
         assertEq(vault.pendingRedeemShares(), 0);
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.updateRedeemRecipient(id, bob);
         uint256 id2 = _requestRedeem(alice, 1_000);
         _processRedeems(type(uint256).max, type(uint256).max);
@@ -610,7 +611,7 @@ contract FreshEyesTest is LocalTestBase {
         assertEq(paid, owed);
         assertEq(usdc.balanceOf(alice), owed);
         assertEq(usdc.balanceOf(address(vault)), 0);
-        vm.expectRevert("SparkPrimeVault/nothing-to-claim");
+        vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
         vault.claim(alice);
     }
 
@@ -1028,7 +1029,7 @@ contract FreshEyesTest is LocalTestBase {
         uint256 stuck = _pAssets(1_000_000);
         assertEq(usdc.balanceOf(address(vault)), stuck);
         assertEq(vault.claimableAssets(address(vault)), 0);   // not claimable: vault is "clean"
-        vm.expectRevert("SparkPrimeVault/nothing-to-claim");
+        vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
         vault.claim(address(vault));
     }
 

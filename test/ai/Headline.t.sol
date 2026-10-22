@@ -4,6 +4,7 @@ pragma solidity ^0.8.34;
 import { stdError } from "../../lib/forge-std/src/StdError.sol";
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
+import { ISparkPrimeVault } from "src/ISparkPrimeVault.sol";
 
 /// @dev Round-5 headline proofs on `master` @ 0ebb452, written independently of the worker suites
 ///      as a one-file entry point for the auditors. Each test is self-contained and asserts the
@@ -70,7 +71,7 @@ contract HeadlineTests is LocalTestBase {
         vault.requestRedeem(1, alice);
 
         vm.expectRevert(stdError.arithmeticError);
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vault.processPendingRedeems(type(uint256).max, type(uint256).max);
 
         // Non-dripping paths still work: take() can still move the backing out.
@@ -100,7 +101,7 @@ contract HeadlineTests is LocalTestBase {
     function test_headline_H2_depositBeforePause_capturesGain_zeroFee() public {
         _deposit(alice, ONE_M);
 
-        // Payload is public: mal instant-fills 1M one block before the guardian pauses.
+        // Payload is public: mal instant-fills 1M one block before the pauser pauses.
         _deposit(mal, ONE_M);
 
         _pause();
@@ -139,7 +140,7 @@ contract HeadlineTests is LocalTestBase {
         _pause();
 
         _fund(mal, ONE_M);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vm.prank(mal);
         vault.requestDeposit(ONE_M, mal, 0);
 
@@ -161,7 +162,7 @@ contract HeadlineTests is LocalTestBase {
 
         _pause();
 
-        vm.expectRevert("SparkPrimeVault/loss-too-high");
+        vm.expectRevert(ISparkPrimeVault.LossTooHigh.selector);
         vm.prank(admin);
         vault.adjustTotalAssets(-int256(assets));
 
@@ -189,7 +190,7 @@ contract HeadlineTests is LocalTestBase {
         vm.stopPrank();
 
         vm.expectRevert("SparkVault/insufficient-balance");
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vault.processPendingRedeems(type(uint256).max, type(uint256).max);
 
         // One entry per call: each call re-derives the bound and succeeds.
@@ -220,7 +221,7 @@ contract HeadlineTests is LocalTestBase {
         assertEq(vault.claimableAssets(address(vault)), 0);
         assertEq(vault.claimableAssets(alice), 0);
 
-        vm.expectRevert("SparkPrimeVault/nothing-to-claim");
+        vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
         vault.claim(address(vault));
     }
 

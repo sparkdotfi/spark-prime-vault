@@ -2,6 +2,7 @@
 pragma solidity ^0.8.34;
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
+import { ISparkPrimeVault } from "src/ISparkPrimeVault.sol";
 import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
 
 /// @dev Every view on `master` @ 0ebb452: the three single-entry request getters (new), the
@@ -226,15 +227,15 @@ contract ViewsTest is LocalTestBase {
     /**********************************************************************************************/
 
     function test_getPendingDepositRequest_bounds() public {
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingDepositRequest(0);                       // empty queue: 0 == length
 
         _deposit(alice, 100e6);                                  // id 0, instant, head -> 1
         assertEq(vault.firstPendingDepositId(), 1);
 
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingDepositRequest(0);                       // below head (filled)
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingDepositRequest(1);                       // == length
 
         _setCapacity(vault.totalSupply());
@@ -249,9 +250,9 @@ contract ViewsTest is LocalTestBase {
         assertEq(o_, carol);
         assertEq(s_, 23_863_317);
 
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingDepositRequest(3);                       // == length
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingDepositRequest(type(uint256).max);
 
         // Cancelled id inside the window returns all zeros, no revert.
@@ -275,29 +276,29 @@ contract ViewsTest is LocalTestBase {
         assertGt(s_, 0);
         assertLt(s_, 23_863_317);
         assertEq(s_, vault.pendingDepositSavingsShares());
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingDepositRequest(bobId);                   // now below the head
 
         // Full fill: head == length, every id rejected.
         _setCapacity(type(uint128).max);
         _processDeposits(type(uint256).max, 10);
         assertEq(vault.firstPendingDepositId(), 3);
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingDepositRequest(carolId);
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingDepositRequest(3);
         assertEq(vault.getPendingDepositRequests().length, 0);
     }
 
     function test_getPendingDepositCancellationRequest_bounds() public {
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingDepositCancellationRequest(0);
 
         _setCapacity(0);
         uint256 aId = _deposit(alice, 100e6);
         uint256 bId = _deposit(bob,   40e6);
 
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingDepositCancellationRequest(0);           // nothing cancelled yet
 
         vm.prank(alice);
@@ -315,7 +316,7 @@ contract ViewsTest is LocalTestBase {
         assertEq(o_, bob);
         assertEq(r_, bob);
         assertEq(s_, 38_181_307);
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingDepositCancellationRequest(2);           // == length
 
         // Partial settlement of the head: spUSDC can only redeem 50e6 worth.
@@ -336,18 +337,18 @@ contract ViewsTest is LocalTestBase {
         _returnSpUsdcLiquidity(spUsdcUsdc_);
         _processCancelledDeposits(type(uint256).max, 10);
         assertEq(vault.firstPendingDepositCancellationId(), 2);
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingDepositCancellationRequest(0);
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingDepositCancellationRequest(1);
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingDepositCancellationRequest(2);
         assertApproxEqAbs(usdc.balanceOf(carol), 100e6, 2);
         assertEq(usdc.balanceOf(bob), 39_999_999);
     }
 
     function test_getPendingRedeemRequest_bounds() public {
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingRedeemRequest(0);
 
         _setRedeemFeeRate(0.01e18);
@@ -366,7 +367,7 @@ contract ViewsTest is LocalTestBase {
         (o_, r_, s_) = vault.getPendingRedeemRequest(real_);
         assertEq(o_, alice);
         assertEq(s_, 49_500_000);
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingRedeemRequest(2);
 
         // Partial fill of the real entry: the ghost at the head is skipped, head moves to 1.
@@ -374,12 +375,12 @@ contract ViewsTest is LocalTestBase {
         assertEq(vault.firstPendingRedeemId(), real_);
         (o_, r_, s_) = vault.getPendingRedeemRequest(real_);
         assertEq(s_, 29_500_000);
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingRedeemRequest(ghost_);                   // below the head now
 
         _processRedeems(type(uint256).max, 10);
         assertEq(vault.firstPendingRedeemId(), 2);
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingRedeemRequest(real_);
         assertEq(vault.balanceOf(alice), aliceShares_ - 1 - 50e6);
     }
@@ -390,7 +391,7 @@ contract ViewsTest is LocalTestBase {
 
     // With `availableCapacity() == 0` the deposit walk never runs (`remaining_ == 0`), so
     // cancelled entries stay inside `getPendingDepositRequests()` as zero structs indefinitely,
-    // and `processPendingDeposits(max, max)` by the rebalancer cannot clear them either. The
+    // and `processPendingDeposits(max, max)` by the operator cannot clear them either. The
     // view's `length` therefore overstates the number of open requests; integrators must filter
     // `shares == 0`. Once capacity returns, the next depositor pays the walk over every ghost.
     function test_getPendingDepositRequests_includesCancelledWhileCapacityIsZero() public {
@@ -714,7 +715,7 @@ contract ViewsTest is LocalTestBase {
         vm.prank(admin);
         vm.expectRevert(panic_);
         vault.adjustTotalAssets(-delta_);                        // cannot undo: drip() first
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         vm.expectRevert(panic_);
         vault.setVSR(RAY);
 
@@ -726,13 +727,13 @@ contract ViewsTest is LocalTestBase {
         vm.prank(alice);
         vm.expectRevert(panic_);
         vault.requestRedeem(1e6, alice);
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert(panic_);
         vault.processPendingRedeems(type(uint256).max, 1);
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert(panic_);
         vault.processPendingDeposits(type(uint256).max, 1);
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert(panic_);
         vault.processPendingDepositCancellations(type(uint256).max, 1);
 
@@ -836,7 +837,7 @@ contract ViewsTest is LocalTestBase {
         vm.prank(carol);
         vm.expectRevert(abi.encodeWithSignature("Panic(uint256)", 0x11));
         vault.requestDeposit(1e6, carol, 0);
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert(abi.encodeWithSignature("Panic(uint256)", 0x11));
         vault.processPendingDeposits(type(uint256).max, 1);
 

@@ -4,6 +4,7 @@ pragma solidity ^0.8.34;
 import { stdError } from "../../lib/forge-std/src/StdError.sol";
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
+import { ISparkPrimeVault } from "src/ISparkPrimeVault.sol";
 
 /// @dev Cancelled-deposit queue tests for `SparkPrimeVault` (round 5, `master` @ 0ebb452).
 ///
@@ -524,15 +525,15 @@ contract CancelledDepositQueueTest is LocalTestBase {
         uint256 id = _deposit(alice, ONE_M);
         _pause();
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.requestDepositCancellation(id, alice);
     }
 
     function test_processPendingDepositCancellations_revertsWhenPaused() public {
         _cancel(alice, _deposit(alice, ONE_M), alice);
         _pause();
-        vm.prank(rebalancer);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.prank(operator);
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.processPendingDepositCancellations(type(uint256).max, type(uint256).max);
         _unpause();
         _processCancelledDeposits(type(uint256).max, type(uint256).max);
@@ -546,10 +547,10 @@ contract CancelledDepositQueueTest is LocalTestBase {
     function test_fixed_requestDepositCancellation_guardianCannotCancel() public {
         uint256 id = _deposit(alice, ONE_M);
 
-        address[3] memory named = [guardian, bob, alice];
+        address[3] memory named = [pauser, bob, alice];
         for (uint256 i; i < 3; ++i) {
-            vm.prank(guardian);
-            vm.expectRevert("SparkPrimeVault/not-authorized");
+            vm.prank(pauser);
+            vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
             vault.requestDepositCancellation(id, named[i]);
         }
 
@@ -562,15 +563,15 @@ contract CancelledDepositQueueTest is LocalTestBase {
 
         // The owner can, and the pause guard sits before the ownership check.
         _pause();
-        vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.prank(pauser);
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.requestDepositCancellation(id, alice);
         _unpause();
 
         uint256 cid = _cancel(alice, id, alice);
         _processCancelledDeposits(type(uint256).max, type(uint256).max);
         assertEq(cid, 0);
-        assertEq(usdc.balanceOf(guardian), 0);
+        assertEq(usdc.balanceOf(pauser), 0);
         assertEq(usdc.balanceOf(alice),    A_1M);
     }
 
@@ -582,7 +583,7 @@ contract CancelledDepositQueueTest is LocalTestBase {
         uint256 id = _deposit(alice, ONE_M);
         _cancel(alice, id, alice);
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.requestDepositCancellation(id, alice);
     }
 
@@ -592,21 +593,21 @@ contract CancelledDepositQueueTest is LocalTestBase {
         assertEq(id, 0);
         assertEq(vault.balanceOf(alice), SH_1M);
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.requestDepositCancellation(id, alice);
     }
 
     function test_requestDepositCancellation_zeroRecipientReverts() public {
         uint256 id = _deposit(alice, ONE_M);
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/zero-recipient");
+        vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
         vault.requestDepositCancellation(id, address(0));
     }
 
     function test_requestDepositCancellation_notOwnerReverts() public {
         uint256 id = _deposit(alice, ONE_M);
         vm.prank(mallory);
-        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
         vault.requestDepositCancellation(id, mallory);
     }
 
@@ -636,19 +637,19 @@ contract CancelledDepositQueueTest is LocalTestBase {
                 // queue a deposit (capacity is 0, nothing fills)
                 _deposit(u, bound(amt, 1, 1_000_000e6));
             } else if (a == 1) {
-                // cancel a random open deposit entry: only its owner can (master), the guardian
+                // cancel a random open deposit entry: only its owner can (master), the pauser
                 // and a non-owner user get `not-authorized`
                 uint256 len = _depositLength();
                 if (len == 0) continue;
                 uint256 id = amt % len;
                 ( address o,, uint256 s ) = _depositRequest(id);
                 if (s == 0) continue;
-                vm.prank(guardian);
-                vm.expectRevert("SparkPrimeVault/not-authorized");
+                vm.prank(pauser);
+                vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
                 vault.requestDepositCancellation(id, o);
                 if (o != u) {
                     vm.prank(u);
-                    vm.expectRevert("SparkPrimeVault/not-authorized");
+                    vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
                     vault.requestDepositCancellation(id, u);
                 }
                 uint256 headBef = vault.firstPendingDepositId();
@@ -782,7 +783,7 @@ contract CancelledDepositQueueTest is LocalTestBase {
         assertEq(usdc.balanceOf(address(vault)), 0);
         assertEq(vault.claimableAssets(alice),   0);
 
-        vm.expectRevert("SparkPrimeVault/nothing-to-claim");
+        vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
         vault.claim(alice);
     }
 
@@ -856,7 +857,7 @@ contract CancelledDepositQueueTest is LocalTestBase {
 
         // Closed entry: no repoint any more.
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.updateDepositCancellationRecipient(cid, carol);
     }
 
@@ -939,7 +940,7 @@ contract CancelledDepositQueueTest is LocalTestBase {
         vm.cool(address(vault));
         vm.cool(address(spUsdc));
         vm.cool(address(usdc));
-        vm.prank(rebalancer);
+        vm.prank(operator);
         uint256 g0 = gasleft();
         vault.processPendingDepositCancellations(type(uint256).max, n);
         uint256 gasBloat = g0 - gasleft();

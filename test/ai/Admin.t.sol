@@ -8,6 +8,7 @@ import { ERC1967Proxy } from "../../lib/oz/contracts/proxy/ERC1967/ERC1967Proxy.
 import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
+import { ISparkPrimeVault } from "src/ISparkPrimeVault.sol";
 
 // OZ 5.x refuses an empty-data proxy construction; opt out so `initialize` can be observed.
 contract UninitializedERC1967Proxy is ERC1967Proxy {
@@ -166,10 +167,10 @@ contract AdminTest is LocalTestBase {
         (, , uint256 aliceQueued_) = _depositRequest(aliceId_);
         assertGt(aliceQueued_, 0);
 
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert(stdError.arithmeticError);
         vault.processPendingDeposits(type(uint256).max, 10);
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert(stdError.arithmeticError);
         vault.processPendingDeposits(1, 1);  // maxSavingsShares does not help: overflow is before _min
 
@@ -336,7 +337,7 @@ contract AdminTest is LocalTestBase {
     }
 
     // C-8 (open): no validation at all. minRedeem = max blocks every redeem request forever
-    // (the rebalancer can still process what is already queued).
+    // (the operator can still process what is already queued).
     function test_BUG_C8_setMinRedeem_noValidation_blocksAllRedeems() public {
         _deposit(alice, 1_000e6);
         uint256 shares_ = vault.balanceOf(alice);
@@ -450,7 +451,7 @@ contract AdminTest is LocalTestBase {
 
     function test_setVSRBounds_minVsrGtMaxVsrBoundary() public {
         vm.startPrank(admin);
-        vm.expectRevert("SparkPrimeVault/min-vsr-gt-max-vsr");
+        vm.expectRevert(ISparkPrimeVault.MinVSRGtMaxVSR.selector);
         vault.setVSRBounds(FOUR_PCT_VSR + 1, FOUR_PCT_VSR);
 
         vault.setVSRBounds(FOUR_PCT_VSR, FOUR_PCT_VSR);
@@ -470,7 +471,7 @@ contract AdminTest is LocalTestBase {
     }
 
     // C-7 (open): bounds may be set so the current vsr is outside them; drip keeps accruing at
-    // the old vsr until the vsrSetter moves it. The admin cannot bring it back into range.
+    // the old vsr until the operator moves it. The admin cannot bring it back into range.
     function test_BUG_C7_setVSRBounds_doesNotClampLiveVsr() public {
         _deposit(alice, 1_000e6);
         _setPrimeVsr(TEN_PCT_VSR);
@@ -487,13 +488,13 @@ contract AdminTest is LocalTestBase {
         assertGt(assetsAfter_, assetsBefore_ * 109 / 100);
         assertLt(assetsAfter_, assetsBefore_ * 111 / 100);
 
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         vm.expectRevert("SparkPrimeVault/vsr-too-high");
         vault.setVSR(TEN_PCT_VSR);
 
         vm.prank(admin);
         vm.expectRevert(abi.encodeWithSignature(
-            "AccessControlUnauthorizedAccount(address,bytes32)", admin, VSR_SETTER_ROLE
+            "AccessControlUnauthorizedAccount(address,bytes32)", admin, OPERATOR_ROLE
         ));
         vault.setVSR(ONE_PCT_VSR);
 
@@ -502,14 +503,14 @@ contract AdminTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** setVSR (VSR_SETTER_ROLE, hot wallet)                                                   ***/
+    /*** setVSR (OPERATOR_ROLE, hot wallet)                                                   ***/
     /**********************************************************************************************/
 
     function test_setVSR_belowMinVsrBoundary() public {
         vm.prank(admin);
         vault.setVSRBounds(ONE_PCT_VSR, FOUR_PCT_VSR);
 
-        vm.startPrank(vsrSetter);
+        vm.startPrank(operator);
         vm.expectRevert("SparkPrimeVault/vsr-too-low");
         vault.setVSR(ONE_PCT_VSR - 1);
 
@@ -521,7 +522,7 @@ contract AdminTest is LocalTestBase {
         vm.prank(admin);
         vault.setVSRBounds(ONE_PCT_VSR, FOUR_PCT_VSR);
 
-        vm.startPrank(vsrSetter);
+        vm.startPrank(operator);
         vm.expectRevert("SparkPrimeVault/vsr-too-high");
         vault.setVSR(FOUR_PCT_VSR + 1);
 
@@ -529,12 +530,12 @@ contract AdminTest is LocalTestBase {
         assertEq(vault.vsr(), FOUR_PCT_VSR);
     }
 
-    // With bounds [RAY, RAY] (deploy default) a compromised vsrSetter cannot move the rate at all.
+    // With bounds [RAY, RAY] (deploy default) a compromised operator cannot move the rate at all.
     function test_setVSR_lockedWhenBoundsEqual() public {
         vm.prank(admin);
         vault.setVSRBounds(RAY, RAY);
 
-        vm.startPrank(vsrSetter);
+        vm.startPrank(operator);
         vm.expectRevert("SparkPrimeVault/vsr-too-high");
         vault.setVSR(RAY + 1);
         vm.expectRevert("SparkPrimeVault/vsr-too-low");
@@ -550,7 +551,7 @@ contract AdminTest is LocalTestBase {
         assertEq(nChi_, vault.chi());  // vsr is RAY: no accrual
         assertEq(vault.rho(), rhoBefore_);
 
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         vm.expectEmit(address(vault));
         emit Drip(nChi_, 0);
         vm.expectEmit(address(vault));
@@ -575,7 +576,7 @@ contract AdminTest is LocalTestBase {
         uint256 supply_   = vault.totalSupply();
         uint256 diff_     = supply_ * nChi_ / RAY - supply_ * vault.chi() / RAY;
 
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         vm.expectEmit(address(vault));
         emit Drip(nChi_, diff_);
         vault.setVSR(RAY);
@@ -646,11 +647,11 @@ contract AdminTest is LocalTestBase {
         uint192 chi_ = vault.chi();
 
         vm.startPrank(admin);
-        vm.expectRevert("SparkPrimeVault/not-paused");
+        vm.expectRevert(ISparkPrimeVault.IsNotPaused.selector);
         vault.adjustTotalAssets(1e6);
-        vm.expectRevert("SparkPrimeVault/not-paused");
+        vm.expectRevert(ISparkPrimeVault.IsNotPaused.selector);
         vault.adjustTotalAssets(-1e6);
-        vm.expectRevert("SparkPrimeVault/not-paused");
+        vm.expectRevert(ISparkPrimeVault.IsNotPaused.selector);
         vault.adjustTotalAssets(0);
         vm.stopPrank();
         assertEq(vault.chi(), chi_);
@@ -658,17 +659,17 @@ contract AdminTest is LocalTestBase {
         _pause();
         _fund(bob, 100e6);
         vm.prank(bob);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.requestDeposit(100e6, bob, 0);
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.requestRedeem(1e6, alice);
 
         _adjustTotalAssets(100e6);
         assertGt(vault.chi(), chi_);
 
         vm.prank(bob);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.requestDeposit(100e6, bob, 0);
         _unpause();
         vm.prank(bob);
@@ -681,7 +682,7 @@ contract AdminTest is LocalTestBase {
         _deposit(alice, 1_000e6);
         _pause();
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/delta-total-assets-zero");
+        vm.expectRevert(ISparkPrimeVault.ZeroDeltaTotalAssets.selector);
         vault.adjustTotalAssets(0);
     }
 
@@ -892,11 +893,11 @@ contract AdminTest is LocalTestBase {
         assertApproxEqAbs(totalAssets_, 1_000_000e6, 2);
 
         vm.startPrank(admin);
-        vm.expectRevert("SparkPrimeVault/loss-too-high");
+        vm.expectRevert(ISparkPrimeVault.LossTooHigh.selector);
         vault.adjustTotalAssets(type(int256).min);
-        vm.expectRevert("SparkPrimeVault/loss-too-high");
+        vm.expectRevert(ISparkPrimeVault.LossTooHigh.selector);
         vault.adjustTotalAssets(-int256(totalAssets_ + 1));
-        vm.expectRevert("SparkPrimeVault/loss-too-high");
+        vm.expectRevert(ISparkPrimeVault.LossTooHigh.selector);
         vault.adjustTotalAssets(-int256(totalAssets_));
 
         vm.expectEmit(address(vault));
@@ -931,11 +932,11 @@ contract AdminTest is LocalTestBase {
         uint256 totalAssets_ = vault.totalAssets();
 
         vm.startPrank(admin);
-        vm.expectRevert("SparkPrimeVault/chi-too-low");
+        vm.expectRevert(ISparkPrimeVault.ChiTooLow.selector);
         vault.adjustTotalAssets(-int256(totalAssets_ - 1));
 
         uint256 floor_ = supply_ / RAY + 1;  // smallest totalAssets_ with chi >= 1
-        vm.expectRevert("SparkPrimeVault/chi-too-low");
+        vm.expectRevert(ISparkPrimeVault.ChiTooLow.selector);
         vault.adjustTotalAssets(-int256(totalAssets_ - (floor_ - 1)));
         vault.adjustTotalAssets(-int256(totalAssets_ - floor_));
         vm.stopPrank();
@@ -955,7 +956,7 @@ contract AdminTest is LocalTestBase {
         vault.adjustTotalAssets(int256(uint256(1e30)));
         vm.expectRevert(stdError.arithmeticError);  // (int256.max) * RAY overflows before the division
         vault.adjustTotalAssets(type(int256).max);
-        vm.expectRevert("SparkPrimeVault/loss-too-high");
+        vm.expectRevert(ISparkPrimeVault.LossTooHigh.selector);
         vault.adjustTotalAssets(-1);
         vm.stopPrank();
         assertEq(vault.chi(), vault.nowChi());
@@ -989,7 +990,7 @@ contract AdminTest is LocalTestBase {
         assertGt(taHi_ * RAY / supply_, K_);
 
         vm.startPrank(admin);
-        vm.expectRevert("SparkPrimeVault/chi-too-high");
+        vm.expectRevert(ISparkPrimeVault.ChiTooHigh.selector);
         vault.adjustTotalAssets(int256(taHi_ - totalAssets_));
         assertEq(vault.chi(), chiBefore_);
 
@@ -1151,7 +1152,7 @@ contract AdminTest is LocalTestBase {
         vm.expectRevert(stdError.arithmeticError);
         vault.adjustTotalAssets(type(int256).min + 1);
 
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         vm.expectRevert(stdError.arithmeticError);
         vault.setVSR(RAY);
 
@@ -1163,7 +1164,7 @@ contract AdminTest is LocalTestBase {
         vm.prank(alice);
         vm.expectRevert(stdError.arithmeticError);
         vault.requestRedeem(1e6, alice);
-        vm.startPrank(rebalancer);
+        vm.startPrank(operator);
         vm.expectRevert(stdError.arithmeticError);
         vault.processPendingDeposits(type(uint256).max, 1);
         vm.expectRevert(stdError.arithmeticError);
@@ -1244,7 +1245,7 @@ contract AdminTest is LocalTestBase {
         assertEq(_vaultSpUsdc(), 0);
     }
 
-    // R3-1 residual (info): the admin's payload is public before the guardian pauses. A deposit
+    // R3-1 residual (info): the admin's payload is public before the pauser pauses. A deposit
     // that lands between "payload public" and `pause` captures its pro-rata share of the gain
     // and can queue a redeem right after the unpause. alice and bob hold equal shares: bob's
     // last-minute deposit takes 50e6 of a 100e6 gain earned before he arrived.
@@ -1348,12 +1349,12 @@ contract AdminTest is LocalTestBase {
 
     // `pause` / `unpause` emit argument-less events; nothing else is logged.
     function test_pauseUnpause_eventsExact() public {
-        vm.prank(guardian);
+        vm.prank(pauser);
         vm.recordLogs();
         vault.pause();
         assertEq(vm.getRecordedLogs().length, 1);
 
-        vm.prank(guardian);
+        vm.prank(pauser);
         vm.expectEmit(address(vault));
         emit Paused();
         vault.pause();
@@ -1373,7 +1374,7 @@ contract AdminTest is LocalTestBase {
         uint256 bal_ = _vaultSpUsdc();
 
         vm.startPrank(taker);
-        vm.expectRevert("SparkPrimeVault/insufficient-shares");
+        vm.expectRevert(ISparkPrimeVault.InsufficientShares.selector);
         vault.take(bal_ + 1);
 
         vault.take(bal_);
@@ -1506,11 +1507,11 @@ contract AdminTest is LocalTestBase {
         assertTrue(fresh_.hasRole(DEFAULT_ADMIN_ROLE, admin));
         assertEq(fresh_.getRoleMemberCount(DEFAULT_ADMIN_ROLE),      1);
         assertEq(fresh_.getRoleMember(DEFAULT_ADMIN_ROLE, 0),        admin);
-        assertEq(fresh_.getRoleMemberCount(GUARDIAN_ROLE),           0);
-        assertEq(fresh_.getRoleMemberCount(REBALANCER_ROLE),         0);
+        assertEq(fresh_.getRoleMemberCount(PAUSER_ROLE),           0);
+        assertEq(fresh_.getRoleMemberCount(OPERATOR_ROLE),         0);
         assertEq(fresh_.getRoleMemberCount(REDEEM_FEE_SETTER_ROLE),  0);
         assertEq(fresh_.getRoleMemberCount(TAKER_ROLE),              0);
-        assertEq(fresh_.getRoleMemberCount(VSR_SETTER_ROLE),         0);
+        assertEq(fresh_.getRoleMemberCount(OPERATOR_ROLE),         0);
 
         vm.expectRevert(abi.encodeWithSignature("InvalidInitialization()"));
         fresh_.initialize(address(spUsdc), "Spark Prime USDC", "spPRIME", admin);
@@ -1522,11 +1523,11 @@ contract AdminTest is LocalTestBase {
         SparkPrimeVault fresh_ = _freshProxy();
         fresh_.initialize(address(spUsdc), "Spark Prime USDC", "spPRIME", admin);
         vm.startPrank(admin);
-        fresh_.grantRole(VSR_SETTER_ROLE,        vsrSetter);
+        fresh_.grantRole(OPERATOR_ROLE,        operator);
         fresh_.grantRole(REDEEM_FEE_SETTER_ROLE, redeemFeeSetter);
         vm.stopPrank();
 
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         vm.expectRevert("SparkPrimeVault/vsr-too-high");
         fresh_.setVSR(RAY + 1);
 
@@ -1557,7 +1558,7 @@ contract AdminTest is LocalTestBase {
         vm.expectRevert(abi.encodeWithSignature(
             "AccessControlUnauthorizedAccount(address,bytes32)", admin, DEFAULT_ADMIN_ROLE
         ));
-        fresh_.grantRole(GUARDIAN_ROLE, admin);  // No guardian can ever be appointed either
+        fresh_.grantRole(PAUSER_ROLE, admin);  // No pauser can ever be appointed either
     }
 
     /**********************************************************************************************/

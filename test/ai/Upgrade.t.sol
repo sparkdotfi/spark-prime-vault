@@ -157,7 +157,7 @@ contract UpgradeTest is LocalTestBase {
 
     function test_upgradeToAndCall_notAdmin() public {
         address[6] memory strangers_ = [
-            address(this), guardian, rebalancer, redeemFeeSetter, taker, vsrSetter
+            address(this), pauser, operator, redeemFeeSetter, taker, operator
         ];
         for (uint256 i; i < strangers_.length; ++i) {
             vm.prank(strangers_[i]);
@@ -488,11 +488,11 @@ contract UpgradeTest is LocalTestBase {
 
     function _roleMembers() internal view returns (address[][6] memory members_) {
         members_[0] = vault.getRoleMembers(DEFAULT_ADMIN_ROLE);
-        members_[1] = vault.getRoleMembers(GUARDIAN_ROLE);
-        members_[2] = vault.getRoleMembers(REBALANCER_ROLE);
+        members_[1] = vault.getRoleMembers(PAUSER_ROLE);
+        members_[2] = vault.getRoleMembers(OPERATOR_ROLE);
         members_[3] = vault.getRoleMembers(REDEEM_FEE_SETTER_ROLE);
         members_[4] = vault.getRoleMembers(TAKER_ROLE);
-        members_[5] = vault.getRoleMembers(VSR_SETTER_ROLE);
+        members_[5] = vault.getRoleMembers(OPERATOR_ROLE);
     }
 
     function test_upgradeToAndCall() public {
@@ -502,7 +502,7 @@ contract UpgradeTest is LocalTestBase {
         bytes32[] memory slotsBefore_ = _rawSlots(address(vault));
 
         address[][6] memory rolesBefore_ = _roleMembers();
-        address[6]   memory expected_    = [admin, guardian, rebalancer, redeemFeeSetter, taker, vsrSetter];
+        address[6]   memory expected_    = [admin, pauser, operator, redeemFeeSetter, taker, operator];
         for (uint256 i; i < 6; ++i) {
             assertEq(rolesBefore_[i].length, 1);
             assertEq(rolesBefore_[i][0],     expected_[i]);
@@ -551,7 +551,7 @@ contract UpgradeTest is LocalTestBase {
         vm.expectRevert(abi.encodeWithSignature("InvalidInitialization()"));
         vault.initialize(address(spUsdc), "Spark Prime USDC", "spPRIME", admin);
 
-        // The vault keeps working: all three open queues can be processed by the rebalancer,
+        // The vault keeps working: all three open queues can be processed by the operator,
         // and carol's claim pays once she is un-blacklisted.
         _setCapacity(type(uint128).max);
         _processDeposits(type(uint256).max, 10);
@@ -660,15 +660,15 @@ contract UpgradeTest is LocalTestBase {
     // Every role's admin is DEFAULT_ADMIN_ROLE, before and after upgrade.
     function test_roleAdmins_unchangedByUpgrade() public {
         bytes32[6] memory roles_ = [
-            DEFAULT_ADMIN_ROLE, GUARDIAN_ROLE, REBALANCER_ROLE, REDEEM_FEE_SETTER_ROLE,
-            TAKER_ROLE, VSR_SETTER_ROLE
+            DEFAULT_ADMIN_ROLE, PAUSER_ROLE, OPERATOR_ROLE, REDEEM_FEE_SETTER_ROLE,
+            TAKER_ROLE, OPERATOR_ROLE
         ];
         assertEq(vault.DEFAULT_ADMIN_ROLE(),     bytes32(0));
-        assertEq(vault.GUARDIAN_ROLE(),          GUARDIAN_ROLE);
-        assertEq(vault.REBALANCER_ROLE(),        REBALANCER_ROLE);
+        assertEq(vault.PAUSER_ROLE(),          PAUSER_ROLE);
+        assertEq(vault.OPERATOR_ROLE(),        OPERATOR_ROLE);
         assertEq(vault.REDEEM_FEE_SETTER_ROLE(), REDEEM_FEE_SETTER_ROLE);
         assertEq(vault.TAKER_ROLE(),             TAKER_ROLE);
-        assertEq(vault.VSR_SETTER_ROLE(),        VSR_SETTER_ROLE);
+        assertEq(vault.OPERATOR_ROLE(),        OPERATOR_ROLE);
 
         string[3] memory gone_ = ["RISK_MANAGER_ROLE()", "SETTER_ROLE()", "UNPAUSER_ROLE()"];
         for (uint256 i; i < gone_.length; ++i) {
@@ -901,10 +901,10 @@ contract UpgradeTest is LocalTestBase {
 
         // AccessControl: _roles[role] = RoleData { mapping hasRole; bytes32 adminRole }.
         bytes32[6] memory roles_ = [
-            DEFAULT_ADMIN_ROLE, GUARDIAN_ROLE, REBALANCER_ROLE, REDEEM_FEE_SETTER_ROLE,
-            TAKER_ROLE, VSR_SETTER_ROLE
+            DEFAULT_ADMIN_ROLE, PAUSER_ROLE, OPERATOR_ROLE, REDEEM_FEE_SETTER_ROLE,
+            TAKER_ROLE, OPERATOR_ROLE
         ];
-        address[6] memory members_ = [admin, guardian, rebalancer, redeemFeeSetter, taker, vsrSetter];
+        address[6] memory members_ = [admin, pauser, operator, redeemFeeSetter, taker, operator];
 
         for (uint256 i; i < 6; ++i) {
             bytes32 roleData_ = keccak256(abi.encode(roles_[i], ACCESS_CONTROL_STORAGE));

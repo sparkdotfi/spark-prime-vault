@@ -37,10 +37,10 @@ contract Init is Test {
     uint256 constant MAX_VSR       = 1.000000021979553151239153027e27;
 
     bytes32 constant DEFAULT_ADMIN_ROLE     = 0x00;
-    bytes32 constant GUARDIAN_ROLE          = keccak256("GUARDIAN_ROLE");
-    bytes32 constant REBALANCER_ROLE        = keccak256("REBALANCER_ROLE");
+    bytes32 constant PAUSER_ROLE          = keccak256("PAUSER_ROLE");
+    bytes32 constant OPERATOR_ROLE        = keccak256("OPERATOR_ROLE");
     bytes32 constant REDEEM_FEE_SETTER_ROLE = keccak256("REDEEM_FEE_SETTER_ROLE");
-    bytes32 constant VSR_SETTER_ROLE        = keccak256("VSR_SETTER_ROLE");
+    bytes32 constant OPERATOR_ROLE        = keccak256("OPERATOR_ROLE");
     bytes32 constant SETTER_ROLE            = keccak256("SETTER_ROLE");  // spUSDC
     bytes32 constant TAKER_ROLE             = keccak256("TAKER_ROLE");
 
@@ -54,10 +54,10 @@ contract Init is Test {
 
     // spPRIME actors
     address public admin;
-    address public guardian;
-    address public rebalancer;
+    address public pauser;
+    address public operator;
     address public redeemFeeSetter;
-    address public vsrSetter;
+    address public operator;
     address public taker;
 
     // spUSDC actors
@@ -223,10 +223,10 @@ contract Init is Test {
         usdc   = MockUSDC(spUsdc.asset());
 
         admin           = vault.getRoleMember(DEFAULT_ADMIN_ROLE,     0);
-        guardian        = vault.getRoleMember(GUARDIAN_ROLE,          0);
-        rebalancer      = vault.getRoleMember(REBALANCER_ROLE,        0);
+        pauser        = vault.getRoleMember(PAUSER_ROLE,          0);
+        operator      = vault.getRoleMember(OPERATOR_ROLE,        0);
         redeemFeeSetter = vault.getRoleMember(REDEEM_FEE_SETTER_ROLE, 0);
-        vsrSetter       = vault.getRoleMember(VSR_SETTER_ROLE,        0);
+        operator       = vault.getRoleMember(OPERATOR_ROLE,        0);
         taker           = vault.getRoleMember(TAKER_ROLE,             0);
 
         spSetter = spUsdc.getRoleMember(SETTER_ROLE, 0);

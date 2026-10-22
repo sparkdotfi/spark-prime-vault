@@ -103,7 +103,7 @@ contract FlowsUser is Init {
         _capacityCheck(supplyBefore);
     }
 
-    // Owner-only since 0ebb452 (guardian path removed). Moves the entry into the cancelled-deposit
+    // Owner-only since 0ebb452 (pauser path removed). Moves the entry into the cancelled-deposit
     // queue; nothing is paid here. A blacklisted recipient is probed for the exact guard revert.
     function requestDepositCancellation(uint256 idSeed, uint256 recipientIndex, uint256 seed)
         public counted("requestDepositCancellation")
@@ -355,7 +355,7 @@ contract FlowsUser is Init {
         // The blacklist guard runs before the ownership check on the cancel / redeem queues, so a
         // stranger naming a blacklisted recipient legitimately sees `recipient-cannot-receive`.
         bool blacklistFirst = q != 0 && usdc.isBlacklisted(recipient);
-        if (!ok && _eq(reason, "SparkPrimeVault/not-authorized")) {
+        if (!ok && _eq(reason, abi.encodeWithSelector(ISparkPrimeVault.NotRequestOwner.selector))) {
             _recordRevert(reason, true);
             recipientUpdateStrangerReverts++;
         } else if (!ok && blacklistFirst && _eq(reason, "SparkPrimeVault/recipient-cannot-receive")) {
@@ -434,7 +434,7 @@ contract FlowsUser is Init {
                 _recordRevert("<no revert: claim of nothing>", false);
             } catch Error(string memory r) {
                 vm.stopPrank();
-                if (_recordRevert(r, _eq(r, "SparkPrimeVault/nothing-to-claim"))) claimNothingProbeReverts++;
+                if (_recordRevert(r, _eq(r, abi.encodeWithSelector(ISparkPrimeVault.NothingToClaim.selector)))) claimNothingProbeReverts++;
             } catch {
                 vm.stopPrank();
                 _recordRevert("<non-string revert: claim of nothing>", false);

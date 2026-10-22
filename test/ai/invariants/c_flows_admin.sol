@@ -78,7 +78,7 @@ contract FlowsAdmin is FlowsUser {
         if (seed % 8 == 0) vsr_ = _bound(vsr_, vault.minVSR(), vault.maxVSR());
         else               vsr_ = _bound(vsr_, vault.minVSR(), _min(vault.maxVSR(), spVsr));
 
-        vm.startPrank(vsrSetter);
+        vm.startPrank(operator);
         vault.setVSR(vsr_);
         vm.stopPrank();
 
@@ -103,11 +103,11 @@ contract FlowsAdmin is FlowsUser {
     /*** Pause and total-assets adjustments                                                     ***/
     /**********************************************************************************************/
 
-    // Pauses in ~1 of 4 calls so the vault is not paused half of the time (GUARDIAN_ROLE).
+    // Pauses in ~1 of 4 calls so the vault is not paused half of the time (PAUSER_ROLE).
     function pause(uint256 seed) public counted("pause") {
         if (seed % 4 != 0) return;
 
-        vm.startPrank(guardian);
+        vm.startPrank(pauser);
         vault.pause();
         vm.stopPrank();
     }
@@ -128,12 +128,12 @@ contract FlowsAdmin is FlowsUser {
         bool negative = seed % 2 == 0;
 
         // The vault is rarely paused when this flow is drawn, so 3 of 4 unpaused draws pause it
-        // first (guardian), adjust, and leave it paused in 1 of 4 of those; the remaining draw
+        // first (pauser), adjust, and leave it paused in 1 of 4 of those; the remaining draw
         // probes the `not-paused` guard instead.
         bool pausedHere;
         if (!vault.paused()) {
             if (seed / 2 % 4 == 0) { _probeAdjustNotPaused(); return; }
-            vm.startPrank(guardian);
+            vm.startPrank(pauser);
             vault.pause();
             vm.stopPrank();
             pausedHere = seed / 8 % 4 != 0;
@@ -197,7 +197,7 @@ contract FlowsAdmin is FlowsUser {
             _recordRevert("<no revert: adjustTotalAssets while not paused>", false);
         } catch Error(string memory r) {
             vm.stopPrank();
-            _recordRevert(r, _eq(r, "SparkPrimeVault/not-paused"));
+            _recordRevert(r, _eq(r, abi.encodeWithSelector(ISparkPrimeVault.IsNotPaused.selector)));
         } catch {
             vm.stopPrank();
             _recordRevert("<non-string revert: adjustTotalAssets while not paused>", false);
@@ -243,7 +243,7 @@ contract FlowsAdmin is FlowsUser {
         uint256[N] memory balsBefore  = _balances();
         uint256          supplyBefore = vault.totalSupply();
 
-        vm.startPrank(rebalancer);
+        vm.startPrank(operator);
         vault.processPendingDeposits(maxSavingsShares, maxRequests);
         vm.stopPrank();
 
@@ -274,7 +274,7 @@ contract FlowsAdmin is FlowsUser {
         uint256          claimableBefore = _usersClaimable();
         uint256          supplyBefore    = vault.totalSupply();
 
-        vm.startPrank(rebalancer);
+        vm.startPrank(operator);
         try vault.processPendingDepositCancellations(maxSavingsShares, maxRequests) {
             vm.stopPrank();
             uint256 expected = _countCancelledFills(head, sharesBefore);
@@ -319,7 +319,7 @@ contract FlowsAdmin is FlowsUser {
         // The call is wrapped: spUSDC's `withdraw` burns ceil(assets*RAY/chi_s) shares per fill,
         // so a multi-entry fill bounded by the vault's spUSDC *balance* (not spUSDC liquidity) can
         // exceed the balance by up to one share per entry and revert (C-1). Observed, not asserted.
-        vm.startPrank(rebalancer);
+        vm.startPrank(operator);
         try vault.processPendingRedeems(maxShares, maxRequests) {
             vm.stopPrank();
             uint256 expected = _countRedeemFills(head, sharesBefore);

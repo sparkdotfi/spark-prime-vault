@@ -9,6 +9,7 @@ import { IAccessControl } from "../../lib/oz/contracts/access/IAccessControl.sol
 import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
+import { ISparkPrimeVault } from "src/ISparkPrimeVault.sol";
 
 /// @dev Authorization matrix, pause scope and mid-flight role revocation for `SparkPrimeVault`
 ///      on `master` @ 0ebb452. Every role-gated function is exercised by all six role holders
@@ -18,7 +19,7 @@ import { LocalTestBase } from "./LocalTestBase.t.sol";
 ///      Round 5 (0ebb452): roles are DEFAULT_ADMIN, GUARDIAN, REBALANCER, REDEEM_FEE_SETTER,
 ///      TAKER, VSR_SETTER (`RISK_MANAGER_ROLE`, `SETTER_ROLE`, `UNPAUSER_ROLE` are gone).
 ///      `realizeGain` / `realizeLoss` are replaced by `adjustTotalAssets(int256)` (DEFAULT_ADMIN,
-///      requires `paused`). `requestDepositCancellation` is owner-only (guardian path removed),
+///      requires `paused`). `requestDepositCancellation` is owner-only (pauser path removed),
 ///      `claim(recipient)` is new and permissionless, the 2-arg `requestDeposit` is gone.
 contract AuthorizationTest is LocalTestBase {
 
@@ -36,13 +37,13 @@ contract AuthorizationTest is LocalTestBase {
 
     // All actors that hold exactly one role, plus a stranger with none.
     function _actors() internal view returns (address[7] memory actors_) {
-        actors_ = [admin, guardian, rebalancer, redeemFeeSetter, taker, vsrSetter, stranger];
+        actors_ = [admin, pauser, operator, redeemFeeSetter, taker, operator, stranger];
     }
 
     function _roles() internal view returns (bytes32[6] memory roles_) {
         roles_ = [
-            DEFAULT_ADMIN_ROLE, GUARDIAN_ROLE, REBALANCER_ROLE, REDEEM_FEE_SETTER_ROLE,
-            TAKER_ROLE, VSR_SETTER_ROLE
+            DEFAULT_ADMIN_ROLE, PAUSER_ROLE, OPERATOR_ROLE, REDEEM_FEE_SETTER_ROLE,
+            TAKER_ROLE, OPERATOR_ROLE
         ];
     }
 
@@ -217,7 +218,7 @@ contract AuthorizationTest is LocalTestBase {
         assertFalse(vault.paused());
 
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/not-paused");
+        vm.expectRevert(ISparkPrimeVault.IsNotPaused.selector);
         vault.adjustTotalAssets(1e6);
 
         vm.prank(stranger);
@@ -256,11 +257,11 @@ contract AuthorizationTest is LocalTestBase {
         assertFalse(vault.paused());
     }
 
-    // The guardian can pause but never unpause: an incident always needs the admin to resume.
+    // The pauser can pause but never unpause: an incident always needs the admin to resume.
     function test_unpause_guardianCannotUnpause() public {
         _pause();
-        vm.prank(guardian);
-        _expectUnauthorized(guardian, DEFAULT_ADMIN_ROLE);
+        vm.prank(pauser);
+        _expectUnauthorized(pauser, DEFAULT_ADMIN_ROLE);
         vault.unpause();
         assertTrue(vault.paused());
     }
@@ -342,9 +343,9 @@ contract AuthorizationTest is LocalTestBase {
     function test_grantRole_alreadyHeldIsNoOp() public {
         vm.prank(admin);
         vm.recordLogs();
-        vault.grantRole(GUARDIAN_ROLE, guardian);
+        vault.grantRole(PAUSER_ROLE, pauser);
         assertEq(vm.getRecordedLogs().length, 0);
-        assertEq(vault.getRoleMemberCount(GUARDIAN_ROLE), 1);
+        assertEq(vault.getRoleMemberCount(PAUSER_ROLE), 1);
     }
 
     function test_revokeRole_notAuthorized() public {
@@ -363,9 +364,9 @@ contract AuthorizationTest is LocalTestBase {
 
     function test_revokeRole_authorized() public {
         bytes32[5] memory roles_   = [
-            GUARDIAN_ROLE, REBALANCER_ROLE, REDEEM_FEE_SETTER_ROLE, TAKER_ROLE, VSR_SETTER_ROLE
+            PAUSER_ROLE, OPERATOR_ROLE, REDEEM_FEE_SETTER_ROLE, TAKER_ROLE, OPERATOR_ROLE
         ];
-        address[5] memory holders_ = [guardian, rebalancer, redeemFeeSetter, taker, vsrSetter];
+        address[5] memory holders_ = [pauser, operator, redeemFeeSetter, taker, operator];
 
         vm.startPrank(admin);
         for (uint256 j; j < roles_.length; ++j) {
@@ -387,28 +388,28 @@ contract AuthorizationTest is LocalTestBase {
     function test_renounceRole_badConfirmation() public {
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlBadConfirmation.selector));
-        vault.renounceRole(VSR_SETTER_ROLE, vsrSetter);
+        vault.renounceRole(OPERATOR_ROLE, operator);
 
         vm.prank(admin);
         vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlBadConfirmation.selector));
-        vault.renounceRole(VSR_SETTER_ROLE, vsrSetter);
+        vault.renounceRole(OPERATOR_ROLE, operator);
 
-        assertTrue(vault.hasRole(VSR_SETTER_ROLE, vsrSetter));
+        assertTrue(vault.hasRole(OPERATOR_ROLE, operator));
     }
 
     function test_renounceRole_self() public {
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         vm.expectEmit(address(vault));
-        emit RoleRevoked(VSR_SETTER_ROLE, vsrSetter, vsrSetter);
-        vault.renounceRole(VSR_SETTER_ROLE, vsrSetter);
+        emit RoleRevoked(OPERATOR_ROLE, operator, operator);
+        vault.renounceRole(OPERATOR_ROLE, operator);
 
-        assertFalse(vault.hasRole(VSR_SETTER_ROLE, vsrSetter));
-        assertEq(vault.getRoleMemberCount(VSR_SETTER_ROLE), 0);
+        assertFalse(vault.hasRole(OPERATOR_ROLE, operator));
+        assertEq(vault.getRoleMemberCount(OPERATOR_ROLE), 0);
 
         // A stranger renouncing a role it never held is a silent no-op.
         vm.prank(stranger);
         vm.recordLogs();
-        vault.renounceRole(VSR_SETTER_ROLE, stranger);
+        vault.renounceRole(OPERATOR_ROLE, stranger);
         assertEq(vm.getRecordedLogs().length, 0);
     }
 
@@ -455,7 +456,7 @@ contract AuthorizationTest is LocalTestBase {
         assertEq(vault.getRoleMembers(DEFAULT_ADMIN_ROLE)[0],     admin);
 
         bytes32[6] memory roles_   = _roles();
-        address[6] memory holders_ = [admin, guardian, rebalancer, redeemFeeSetter, taker, vsrSetter];
+        address[6] memory holders_ = [admin, pauser, operator, redeemFeeSetter, taker, operator];
         for (uint256 j; j < roles_.length; ++j) {
             assertEq(vault.getRoleMemberCount(roles_[j]), 1);
             assertEq(vault.getRoleMember(roles_[j], 0),   holders_[j]);
@@ -464,49 +465,49 @@ contract AuthorizationTest is LocalTestBase {
         }
 
         vm.startPrank(admin);
-        vault.grantRole(GUARDIAN_ROLE, alice);
-        vault.grantRole(GUARDIAN_ROLE, bob);
+        vault.grantRole(PAUSER_ROLE, alice);
+        vault.grantRole(PAUSER_ROLE, bob);
         vm.stopPrank();
-        assertEq(vault.getRoleMemberCount(GUARDIAN_ROLE), 3);
-        assertEq(vault.getRoleMember(GUARDIAN_ROLE, 0),   guardian);
-        assertEq(vault.getRoleMember(GUARDIAN_ROLE, 1),   alice);
-        assertEq(vault.getRoleMember(GUARDIAN_ROLE, 2),   bob);
+        assertEq(vault.getRoleMemberCount(PAUSER_ROLE), 3);
+        assertEq(vault.getRoleMember(PAUSER_ROLE, 0),   pauser);
+        assertEq(vault.getRoleMember(PAUSER_ROLE, 1),   alice);
+        assertEq(vault.getRoleMember(PAUSER_ROLE, 2),   bob);
 
         // Revoking the first member moves the last one into its slot (EnumerableSet swap-pop).
         vm.prank(admin);
-        vault.revokeRole(GUARDIAN_ROLE, guardian);
-        assertEq(vault.getRoleMemberCount(GUARDIAN_ROLE), 2);
-        assertEq(vault.getRoleMember(GUARDIAN_ROLE, 0),   bob);
-        assertEq(vault.getRoleMember(GUARDIAN_ROLE, 1),   alice);
-        address[] memory members_ = vault.getRoleMembers(GUARDIAN_ROLE);
+        vault.revokeRole(PAUSER_ROLE, pauser);
+        assertEq(vault.getRoleMemberCount(PAUSER_ROLE), 2);
+        assertEq(vault.getRoleMember(PAUSER_ROLE, 0),   bob);
+        assertEq(vault.getRoleMember(PAUSER_ROLE, 1),   alice);
+        address[] memory members_ = vault.getRoleMembers(PAUSER_ROLE);
         assertEq(members_.length, 2);
         assertEq(members_[0], bob);
         assertEq(members_[1], alice);
 
         vm.expectRevert(stdError.indexOOBError);
-        vault.getRoleMember(GUARDIAN_ROLE, 2);
+        vault.getRoleMember(PAUSER_ROLE, 2);
         vm.expectRevert(stdError.indexOOBError);
         vault.getRoleMember(keccak256("NEVER_GRANTED"), 0);
         assertEq(vault.getRoleMemberCount(keccak256("NEVER_GRANTED")), 0);
     }
 
     /**********************************************************************************************/
-    /*** VSR_SETTER_ROLE                                                                        ***/
+    /*** OPERATOR_ROLE                                                                        ***/
     /**********************************************************************************************/
 
     function test_setVSR_notAuthorized() public {
         address[7] memory actors_ = _actors();
         for (uint256 i; i < actors_.length; ++i) {
-            if (actors_[i] == vsrSetter) continue;
+            if (actors_[i] == operator) continue;
             vm.prank(actors_[i]);
-            _expectUnauthorized(actors_[i], VSR_SETTER_ROLE);
+            _expectUnauthorized(actors_[i], OPERATOR_ROLE);
             vault.setVSR(FOUR_PCT_VSR);
         }
         assertEq(vault.vsr(), RAY);
     }
 
     function test_setVSR_authorized() public {
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         vault.setVSR(FOUR_PCT_VSR);
         assertEq(vault.vsr(), FOUR_PCT_VSR);
     }
@@ -540,15 +541,15 @@ contract AuthorizationTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** REBALANCER_ROLE                                                                        ***/
+    /*** OPERATOR_ROLE                                                                        ***/
     /**********************************************************************************************/
 
     function test_processPendingDeposits_notAuthorized() public {
         address[7] memory actors_ = _actors();
         for (uint256 i; i < actors_.length; ++i) {
-            if (actors_[i] == rebalancer) continue;
+            if (actors_[i] == operator) continue;
             vm.prank(actors_[i]);
-            _expectUnauthorized(actors_[i], REBALANCER_ROLE);
+            _expectUnauthorized(actors_[i], OPERATOR_ROLE);
             vault.processPendingDeposits(type(uint256).max, 10);
         }
     }
@@ -556,7 +557,7 @@ contract AuthorizationTest is LocalTestBase {
     function test_processPendingDeposits_authorized() public {
         uint256 id_ = _queueDeposit(alice, 100e6);
         _setCapacity(type(uint128).max);
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vault.processPendingDeposits(type(uint256).max, 10);
         (, , uint256 left_) = _depositRequest(id_);
         assertEq(left_, 0);
@@ -566,9 +567,9 @@ contract AuthorizationTest is LocalTestBase {
     function test_processPendingRedeems_notAuthorized() public {
         address[7] memory actors_ = _actors();
         for (uint256 i; i < actors_.length; ++i) {
-            if (actors_[i] == rebalancer) continue;
+            if (actors_[i] == operator) continue;
             vm.prank(actors_[i]);
-            _expectUnauthorized(actors_[i], REBALANCER_ROLE);
+            _expectUnauthorized(actors_[i], OPERATOR_ROLE);
             vault.processPendingRedeems(type(uint256).max, 10);
         }
     }
@@ -576,7 +577,7 @@ contract AuthorizationTest is LocalTestBase {
     function test_processPendingRedeems_authorized() public {
         _deposit(alice, 100e6);
         uint256 id_ = _requestRedeem(alice, vault.balanceOf(alice));
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vault.processPendingRedeems(type(uint256).max, 10);
         (, , uint256 left_) = _redeemRequest(id_);
         assertEq(left_, 0);
@@ -586,9 +587,9 @@ contract AuthorizationTest is LocalTestBase {
     function test_processPendingDepositCancellations_notAuthorized() public {
         address[7] memory actors_ = _actors();
         for (uint256 i; i < actors_.length; ++i) {
-            if (actors_[i] == rebalancer) continue;
+            if (actors_[i] == operator) continue;
             vm.prank(actors_[i]);
-            _expectUnauthorized(actors_[i], REBALANCER_ROLE);
+            _expectUnauthorized(actors_[i], OPERATOR_ROLE);
             vault.processPendingDepositCancellations(type(uint256).max, 10);
         }
     }
@@ -597,7 +598,7 @@ contract AuthorizationTest is LocalTestBase {
         uint256 id_ = _queueDeposit(alice, 100e6);
         vm.prank(alice);
         uint256 cancelId_ = vault.requestDepositCancellation(id_, alice);
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vault.processPendingDepositCancellations(type(uint256).max, 10);
         (, , uint256 left_) = _cancelledDepositRequest(cancelId_);
         assertEq(left_, 0);
@@ -626,22 +627,22 @@ contract AuthorizationTest is LocalTestBase {
     }
 
     /**********************************************************************************************/
-    /*** GUARDIAN_ROLE                                                                          ***/
+    /*** PAUSER_ROLE                                                                          ***/
     /**********************************************************************************************/
 
     function test_pause_notAuthorized() public {
         address[7] memory actors_ = _actors();
         for (uint256 i; i < actors_.length; ++i) {
-            if (actors_[i] == guardian) continue;
+            if (actors_[i] == pauser) continue;
             vm.prank(actors_[i]);
-            _expectUnauthorized(actors_[i], GUARDIAN_ROLE);
+            _expectUnauthorized(actors_[i], PAUSER_ROLE);
             vault.pause();
         }
         assertFalse(vault.paused());
     }
 
     function test_pause_authorized() public {
-        vm.prank(guardian);
+        vm.prank(pauser);
         vm.expectEmit(address(vault));
         emit Paused();
         vault.pause();
@@ -651,7 +652,7 @@ contract AuthorizationTest is LocalTestBase {
     function test_pause_idempotent() public {
         _pause();
         assertTrue(vault.paused());
-        vm.prank(guardian);
+        vm.prank(pauser);
         vm.expectEmit(address(vault));
         emit Paused();
         vault.pause();
@@ -662,7 +663,7 @@ contract AuthorizationTest is LocalTestBase {
     /*** Owner-only request functions                                                          ***/
     /**********************************************************************************************/
 
-    // V2-2 / F-1 fixed at 0ebb452: `requestDepositCancellation` is owner-only. The guardian (and
+    // V2-2 / F-1 fixed at 0ebb452: `requestDepositCancellation` is owner-only. The pauser (and
     // every other role holder) reverts `not-authorized` even when naming the owner as recipient;
     // the entry, both pending counters and the cancellation queue are untouched.
     function test_fixed_F1_requestDepositCancellation_ownerOnly() public {
@@ -671,11 +672,11 @@ contract AuthorizationTest is LocalTestBase {
         address[7] memory actors_ = _actors();
         for (uint256 i; i < actors_.length; ++i) {
             vm.prank(actors_[i]);
-            vm.expectRevert("SparkPrimeVault/not-authorized");
+            vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
             vault.requestDepositCancellation(id_, actors_[i]);
 
             vm.prank(actors_[i]);
-            vm.expectRevert("SparkPrimeVault/not-authorized");
+            vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
             vault.requestDepositCancellation(id_, alice);  // owner as recipient does not help
         }
         (, , uint256 shares_) = _depositRequest(id_);
@@ -686,7 +687,7 @@ contract AuthorizationTest is LocalTestBase {
     }
 
     // The owner cancels: the entry moves to the cancellation queue, nothing is paid until the
-    // rebalancer settles it, and the owner may name any non-blacklisted recipient.
+    // operator settles it, and the owner may name any non-blacklisted recipient.
     function test_requestDepositCancellation_owner() public {
         uint256 id_ = _queueDeposit(alice, 100e6);
         (, , uint256 queued_) = _depositRequest(id_);
@@ -720,7 +721,7 @@ contract AuthorizationTest is LocalTestBase {
         uint256 id_ = _queueDeposit(alice, 100e6);
 
         vm.prank(stranger);
-        vm.expectRevert("SparkPrimeVault/zero-recipient");
+        vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
         vault.requestDepositCancellation(id_, address(0));
 
         _blacklist(bob);
@@ -733,7 +734,7 @@ contract AuthorizationTest is LocalTestBase {
         _unblacklist(bob);
 
         vm.prank(stranger);
-        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
         vault.requestDepositCancellation(id_, alice);
 
         vm.prank(stranger);
@@ -744,10 +745,10 @@ contract AuthorizationTest is LocalTestBase {
         vault.requestDepositCancellation(id_, bob);
 
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.requestDepositCancellation(id_, alice);
         vm.prank(stranger);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.requestDepositCancellation(id_, alice);
     }
 
@@ -767,24 +768,24 @@ contract AuthorizationTest is LocalTestBase {
         address[7] memory actors_ = _actors();
         for (uint256 i; i < actors_.length; ++i) {
             vm.startPrank(actors_[i]);
-            vm.expectRevert("SparkPrimeVault/not-authorized");
+            vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
             vault.updateDepositRecipient(depId_, actors_[i]);
-            vm.expectRevert("SparkPrimeVault/not-authorized");
+            vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
             vault.updateDepositCancellationRecipient(cancelId_, actors_[i]);
-            vm.expectRevert("SparkPrimeVault/not-authorized");
+            vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
             vault.updateRedeemRecipient(redId_, actors_[i]);
             vm.stopPrank();
         }
 
         // The other depositor is not authorized either (owner check, not "any owner").
         vm.startPrank(alice);
-        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
         vault.updateDepositRecipient(depId_, alice);
-        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
         vault.updateDepositCancellationRecipient(cancelId_, alice);
         vm.stopPrank();
         vm.prank(bob);
-        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
         vault.updateRedeemRecipient(redId_, bob);
 
         (, address depRecipient_, )    = _depositRequest(depId_);
@@ -825,11 +826,11 @@ contract AuthorizationTest is LocalTestBase {
         address[2] memory callers_ = [bob, stranger];
         for (uint256 i; i < callers_.length; ++i) {
             vm.startPrank(callers_[i]);
-            vm.expectRevert("SparkPrimeVault/no-request");
+            vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
             vault.updateDepositRecipient(depId_, callers_[i]);
-            vm.expectRevert("SparkPrimeVault/no-request");
+            vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
             vault.updateDepositCancellationRecipient(cancelId_, callers_[i]);
-            vm.expectRevert("SparkPrimeVault/no-request");
+            vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
             vault.updateRedeemRecipient(redId_, callers_[i]);
             vm.stopPrank();
         }
@@ -859,14 +860,14 @@ contract AuthorizationTest is LocalTestBase {
         address[2] memory callers_ = [stranger, bob];
         for (uint256 i; i < callers_.length; ++i) {
             vm.startPrank(callers_[i]);
-            vm.expectRevert("SparkPrimeVault/zero-recipient");
+            vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
             vault.updateDepositRecipient(depId_, address(0));
-            vm.expectRevert("SparkPrimeVault/zero-recipient");
+            vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
             vault.updateDepositCancellationRecipient(cancelId_, address(0));
-            vm.expectRevert("SparkPrimeVault/zero-recipient");
+            vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
             vault.updateRedeemRecipient(redId_, address(0));
 
-            vm.expectRevert("SparkPrimeVault/vault-recipient");
+            vm.expectRevert(ISparkPrimeVault.VaultIsRecipient.selector);
             vault.updateDepositRecipient(depId_, address(vault));
             vm.stopPrank();
         }
@@ -952,7 +953,7 @@ contract AuthorizationTest is LocalTestBase {
             assertEq(vault.claimableAssets(bob),     0);
 
             vm.prank(actors_[i]);
-            vm.expectRevert("SparkPrimeVault/nothing-to-claim");
+            vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
             vault.claim(bob);
         }
     }
@@ -970,7 +971,7 @@ contract AuthorizationTest is LocalTestBase {
         assertEq(vault.claimableAssets(bob), assets_);
 
         vm.prank(stranger);
-        vm.expectRevert("SparkPrimeVault/nothing-to-claim");
+        vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
         vault.claim(stranger);
 
         _unblacklist(bob);
@@ -1034,7 +1035,7 @@ contract AuthorizationTest is LocalTestBase {
     /**********************************************************************************************/
 
     // alice holds shares, a deposit is queued (bob), a cancelled deposit awaits settlement (bob),
-    // a redeem is queued (alice), bob has a claimable balance, then the guardian pauses.
+    // a redeem is queued (alice), bob has a claimable balance, then the pauser pauses.
     function _pausedFixture()
         internal
         returns (uint256 depId_, uint256 cancelId_, uint256 redId_)
@@ -1055,17 +1056,17 @@ contract AuthorizationTest is LocalTestBase {
     function test_pause_blocksRequestDeposit() public {
         _pausedFixture();
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.requestDeposit(1e6, alice, 0);
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.requestDeposit(1e6, alice, 1);
     }
 
     function test_pause_blocksRequestDepositCancellation() public {
         (uint256 depId_, , ) = _pausedFixture();
         vm.prank(bob);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.requestDepositCancellation(depId_, bob);
         _unpause();
         vm.prank(bob);
@@ -1075,20 +1076,20 @@ contract AuthorizationTest is LocalTestBase {
     function test_pause_blocksRequestRedeem() public {
         _pausedFixture();
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.requestRedeem(1e6, alice);
     }
 
-    // `onlyRole` runs before `whenNotPaused`: the rebalancer sees `paused`, a stranger sees the
+    // `onlyRole` runs before `whenNotPaused`: the operator sees `paused`, a stranger sees the
     // role error.
     function test_pause_blocksProcessPendingDeposits() public {
         (uint256 depId_, , ) = _pausedFixture();
         _setCapacity(type(uint128).max);
-        vm.prank(rebalancer);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.prank(operator);
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.processPendingDeposits(type(uint256).max, 10);
         vm.prank(stranger);
-        _expectUnauthorized(stranger, REBALANCER_ROLE);
+        _expectUnauthorized(stranger, OPERATOR_ROLE);
         vault.processPendingDeposits(type(uint256).max, 10);
         (, , uint256 left_) = _depositRequest(depId_);
         assertGt(left_, 0);
@@ -1096,11 +1097,11 @@ contract AuthorizationTest is LocalTestBase {
 
     function test_pause_blocksProcessPendingRedeems() public {
         (, , uint256 redId_) = _pausedFixture();
-        vm.prank(rebalancer);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.prank(operator);
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.processPendingRedeems(type(uint256).max, 10);
         vm.prank(stranger);
-        _expectUnauthorized(stranger, REBALANCER_ROLE);
+        _expectUnauthorized(stranger, OPERATOR_ROLE);
         vault.processPendingRedeems(type(uint256).max, 10);
         (, , uint256 left_) = _redeemRequest(redId_);
         assertEq(left_, 100e6);
@@ -1108,11 +1109,11 @@ contract AuthorizationTest is LocalTestBase {
 
     function test_pause_blocksProcessPendingDepositCancellations() public {
         (, uint256 cancelId_, ) = _pausedFixture();
-        vm.prank(rebalancer);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.prank(operator);
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.processPendingDepositCancellations(type(uint256).max, 10);
         vm.prank(stranger);
-        _expectUnauthorized(stranger, REBALANCER_ROLE);
+        _expectUnauthorized(stranger, OPERATOR_ROLE);
         vault.processPendingDepositCancellations(type(uint256).max, 10);
         (, , uint256 left_) = _cancelledDepositRequest(cancelId_);
         assertGt(left_, 0);
@@ -1125,11 +1126,11 @@ contract AuthorizationTest is LocalTestBase {
         address payout_ = makeAddr("payout");
 
         vm.startPrank(stranger);
-        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
         vault.updateDepositRecipient(depId_, stranger);
-        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
         vault.updateDepositCancellationRecipient(cancelId_, stranger);
-        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
         vault.updateRedeemRecipient(redId_, stranger);
         vm.stopPrank();
 
@@ -1188,7 +1189,7 @@ contract AuthorizationTest is LocalTestBase {
 
     function test_pause_doesNotBlockSetVSR() public {
         _pausedFixture();
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         vault.setVSR(FOUR_PCT_VSR);
         assertEq(vault.vsr(), FOUR_PCT_VSR);
     }
@@ -1242,8 +1243,8 @@ contract AuthorizationTest is LocalTestBase {
         vault.setMinDeposit(1);
         vault.setMinRedeem(2);
         vault.setVSRBounds(RAY, FOUR_PCT_VSR);
-        vault.grantRole(VSR_SETTER_ROLE, alice);
-        vault.revokeRole(VSR_SETTER_ROLE, alice);
+        vault.grantRole(OPERATOR_ROLE, alice);
+        vault.revokeRole(OPERATOR_ROLE, alice);
         vm.stopPrank();
         vm.prank(redeemFeeSetter);
         vault.setRedeemFeeRate(0.005e18);
@@ -1281,18 +1282,18 @@ contract AuthorizationTest is LocalTestBase {
         _setCapacity(type(uint128).max);
 
         vm.prank(admin);
-        vault.revokeRole(REBALANCER_ROLE, rebalancer);
+        vault.revokeRole(OPERATOR_ROLE, operator);
 
-        vm.prank(rebalancer);
-        _expectUnauthorized(rebalancer, REBALANCER_ROLE);
+        vm.prank(operator);
+        _expectUnauthorized(operator, OPERATOR_ROLE);
         vault.processPendingDeposits(type(uint256).max, 10);
 
-        vm.prank(rebalancer);
-        _expectUnauthorized(rebalancer, REBALANCER_ROLE);
+        vm.prank(operator);
+        _expectUnauthorized(operator, OPERATOR_ROLE);
         vault.processPendingRedeems(type(uint256).max, 10);
 
-        vm.prank(rebalancer);
-        _expectUnauthorized(rebalancer, REBALANCER_ROLE);
+        vm.prank(operator);
+        _expectUnauthorized(operator, OPERATOR_ROLE);
         vault.processPendingDepositCancellations(type(uint256).max, 10);
 
         // All three queues are intact and frozen; bob's refund is unpaid until a planner exists.
@@ -1306,7 +1307,7 @@ contract AuthorizationTest is LocalTestBase {
 
         address newRebalancer_ = makeAddr("newRebalancer");
         vm.prank(admin);
-        vault.grantRole(REBALANCER_ROLE, newRebalancer_);
+        vault.grantRole(OPERATOR_ROLE, newRebalancer_);
 
         vm.startPrank(newRebalancer_);
         vault.processPendingDeposits(type(uint256).max, 10);
@@ -1352,16 +1353,16 @@ contract AuthorizationTest is LocalTestBase {
         assertApproxEqAbs(usdc.balanceOf(alice), 1_000e6, 2);
     }
 
-    // A revoked guardian loses pause; the admin can still unpause.
+    // A revoked pauser loses pause; the admin can still unpause.
     function test_revokeGuardian_whilePaused_adminCanStillUnpause() public {
         _deposit(alice, 1_000e6);
         _pause();
         vm.prank(admin);
-        vault.revokeRole(GUARDIAN_ROLE, guardian);
+        vault.revokeRole(PAUSER_ROLE, pauser);
         assertTrue(vault.paused());
 
-        vm.prank(guardian);
-        _expectUnauthorized(guardian, GUARDIAN_ROLE);
+        vm.prank(pauser);
+        _expectUnauthorized(pauser, PAUSER_ROLE);
         vault.pause();
 
         _unpause();
@@ -1374,10 +1375,10 @@ contract AuthorizationTest is LocalTestBase {
         _deposit(alice, 1_000e6);
         _setPrimeVsr(TEN_PCT_VSR);
         vm.prank(admin);
-        vault.revokeRole(VSR_SETTER_ROLE, vsrSetter);
+        vault.revokeRole(OPERATOR_ROLE, operator);
 
         vm.prank(admin);
-        _expectUnauthorized(admin, VSR_SETTER_ROLE);
+        _expectUnauthorized(admin, OPERATOR_ROLE);
         vault.setVSR(RAY);
 
         uint256 before_ = vault.assetsOf(alice);
@@ -1425,8 +1426,8 @@ contract AuthorizationTest is LocalTestBase {
         }
         assertTrue(vault.paused());
 
-        vm.prank(rebalancer);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.prank(operator);
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.processPendingRedeems(type(uint256).max, 10);
 
         // The backing can still leave.
@@ -1448,7 +1449,7 @@ contract AuthorizationTest is LocalTestBase {
     }
 
     // V2-8 (open): `initialize(..., address(0))` is accepted. The zero address is the only admin
-    // member: no setters, no pause (no guardian can ever be appointed), no upgrade, from block
+    // member: no setters, no pause (no pauser can ever be appointed), no upgrade, from block
     // one.
     function test_BUG_V2_8_zeroAdminAtInit() public {
         SparkPrimeVault fresh_ = SparkPrimeVault(address(new ERC1967Proxy(
@@ -1470,8 +1471,8 @@ contract AuthorizationTest is LocalTestBase {
             _expectUnauthorized(actors_[i], DEFAULT_ADMIN_ROLE);
             fresh_.setCapacity(1);
             _expectUnauthorized(actors_[i], DEFAULT_ADMIN_ROLE);
-            fresh_.grantRole(GUARDIAN_ROLE, actors_[i]);
-            _expectUnauthorized(actors_[i], GUARDIAN_ROLE);
+            fresh_.grantRole(PAUSER_ROLE, actors_[i]);
+            _expectUnauthorized(actors_[i], PAUSER_ROLE);
             fresh_.pause();
             vm.stopPrank();
         }

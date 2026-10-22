@@ -4,6 +4,7 @@ pragma solidity ^0.8.34;
 import { VmSafe } from "../../lib/forge-std/src/Vm.sol";
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
+import { ISparkPrimeVault } from "src/ISparkPrimeVault.sol";
 
 /// @dev Redeem-queue campaign: `requestRedeem`, `updateRedeemRecipient`, `processPendingRedeems`.
 ///
@@ -161,7 +162,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(burn1 * 2, 1_002_834);  // > 1_002_833 held
 
         // The batch of two reverts: the second spUSDC withdraw needs 501_417 spUSDC, 501_416 left.
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert("SparkVault/insufficient-balance");
         vault.processPendingRedeems(type(uint256).max, 2);
 
@@ -220,7 +221,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(a1 + a2 + a3, 999_999_999_997);  // <= L, liquidity is fine
         assertEq(b1 + b2 + b3, 954_532_691_144);  // > S by exactly 1 wei
 
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert("SparkVault/insufficient-balance");
         vault.processPendingRedeems(type(uint256).max, 3);
 
@@ -322,7 +323,7 @@ contract RedeemQueueTest is LocalTestBase {
         uint256 aggregateBurn = _divUp(sumAssets * RAY, spUsdc.nowChi());
         bool    budgetCoversAll = vault.convertToShares(vault.availableLiquidAssets()) >= vault.pendingRedeemShares();
 
-        vm.prank(rebalancer);
+        vm.prank(operator);
         try vault.processPendingRedeems(type(uint256).max, n) {
             if (budgetCoversAll) {
                 uint256 burned = spUsdcBefore - _vaultSpUsdc();
@@ -704,7 +705,7 @@ contract RedeemQueueTest is LocalTestBase {
 
         // The burned wei is gone: there is no cancel, and the dead entry rejects the only updater.
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.updateRedeemRecipient(id, alice);
 
         // The ghost is skipped by processing and the head moves past it.
@@ -743,7 +744,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(usdc.balanceOf(address(vault)), 99_999_999_998);
         assertEq(vault.claimableAssets(address(vault)), 0);  // no credit, unlike the blacklist path
         assertEq(vault.claimableAssets(alice),          0);
-        vm.expectRevert("SparkPrimeVault/nothing-to-claim");
+        vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
         vault.claim(address(vault));
         assertEq(usdc.balanceOf(alice),          0);
         assertEq(_queued(id),                    0);
@@ -783,7 +784,7 @@ contract RedeemQueueTest is LocalTestBase {
     function test_requestRedeem_revertsRecipientZero() public {
         _deposit(alice, 100_000e6);
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/zero-recipient");
+        vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
         vault.requestRedeem(1, address(0));
     }
 
@@ -797,12 +798,12 @@ contract RedeemQueueTest is LocalTestBase {
 
         _pause();
 
-        vm.prank(rebalancer);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.prank(operator);
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.processPendingRedeems(type(uint256).max, 10);
 
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.requestRedeem(1, alice);
 
         // `updateRedeemRecipient` (src/SparkPrimeVault.sol:506-516) is not pause-gated: the
@@ -1001,7 +1002,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(vault.pendingRedeemShares(), 0);
 
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.updateRedeemRecipient(ghost, alice);
 
         // Anyone can push ghosts for gas only: 10 more from carol, who holds no shares at all.
@@ -1158,12 +1159,12 @@ contract RedeemQueueTest is LocalTestBase {
                     (address owner, , uint256 sh) = _redeemRequest(id);
                     if (sh == 0) {
                         vm.prank(u);
-                        vm.expectRevert("SparkPrimeVault/no-request");  // dead entry
+                        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);  // dead entry
                         vault.updateRedeemRecipient(id, to);
                     } else {
                         if (u != owner) {
                             vm.prank(u);
-                            vm.expectRevert("SparkPrimeVault/not-authorized");  // owner-only
+                            vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);  // owner-only
                             vault.updateRedeemRecipient(id, to);
                         }
                         vm.prank(owner);
@@ -1181,13 +1182,13 @@ contract RedeemQueueTest is LocalTestBase {
                     uint256 id = _requestRedeemTo(u, bound(amt, 1, bal), users[(r >> 72) % 3]);
                     uint256 escrow = vault.balanceOf(address(vault));
                     assertFalse(_tryCancel(u, id, u));
-                    assertFalse(_tryCancel(guardian, id, u));
+                    assertFalse(_tryCancel(pauser, id, u));
                     assertEq(vault.balanceOf(address(vault)), escrow);
                 }
             } else if (action == 3) {
                 uint256 escrowBefore = vault.balanceOf(address(vault));
                 uint256 maxShares = (r >> 40) % 2 == 0 ? type(uint256).max : amt;
-                vm.prank(rebalancer);
+                vm.prank(operator);
                 try vault.processPendingRedeems(maxShares, (r >> 48) % 4) {}
                 catch Error(string memory reason) {
                     assertEq(reason, "SparkVault/insufficient-balance");  // known over-burn (C-1)
@@ -1268,7 +1269,7 @@ contract RedeemQueueTest is LocalTestBase {
         for (uint256 i; i < s.qlen; ++i) (, rcpts[i], before[i]) = _redeemRequest(i);
         for (uint256 i; i < 3; ++i) balBefore[i] = usdc.balanceOf(users[i]);
 
-        vm.prank(rebalancer);
+        vm.prank(operator);
         try vault.processPendingRedeems(maxShares, maxReq) {}
         catch Error(string memory reason) {
             assertEq(reason, "SparkVault/insufficient-balance");  // known over-burn (C-1)
@@ -1310,7 +1311,7 @@ contract RedeemQueueTest is LocalTestBase {
     /**********************************************************************************************/
 
     // The selector is gone from the ABI: the proxy forwards to an implementation with no
-    // matching function and the call fails for the owner, the guardian and the admin. On
+    // matching function and the call fails for the owner, the pauser and the admin. On
     // 0ebb452 the dead `CancelRedeemRequest` event declaration is gone too; a full request /
     // repoint / fill lifecycle emits no log with its topic.
     function test_cancelRedeemRequest_selectorRemovedAndEventDead() public {
@@ -1320,7 +1321,7 @@ contract RedeemQueueTest is LocalTestBase {
         vm.recordLogs();
 
         assertFalse(_tryCancel(alice,    id, alice));
-        assertFalse(_tryCancel(guardian, id, alice));
+        assertFalse(_tryCancel(pauser, id, alice));
         assertFalse(_tryCancel(admin,    id, alice));
 
         assertEq(vault.balanceOf(address(vault)), DEPOSIT_100K_SHARES);
@@ -1339,7 +1340,7 @@ contract RedeemQueueTest is LocalTestBase {
 
     // Design property (closes E-2 "free option" and C-10 "free capacity hog"): once queued, the
     // shares sit at `address(vault)` and nothing but a fill moves them. The owner has no
-    // function, no allowance and no signature that reaches them; the guardian and the admin
+    // function, no allowance and no signature that reaches them; the pauser and the admin
     // have none either; pause does not release them; time does not release them. Exits are
     // 100% planner-dependent.
     function test_requestRedeem_isFinal_noPathRecoversEscrow() public {
@@ -1566,7 +1567,7 @@ contract RedeemQueueTest is LocalTestBase {
 
         // The deleted entry is dead for the updater; the slot still exists in the array.
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.updateRedeemRecipient(idA, alice);
         assertEq(_queueLength(), 2);
     }
@@ -1602,7 +1603,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(sh, DEPOSIT_100K_SHARES);
 
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/zero-recipient");
+        vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
         vault.updateRedeemRecipient(id, address(0));
 
         _processRedeems(type(uint256).max, 1);
@@ -1621,15 +1622,15 @@ contract RedeemQueueTest is LocalTestBase {
         _processRedeems(type(uint256).max, 1);
 
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.updateRedeemRecipient(filled, carol);
 
         vm.prank(carol);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.updateRedeemRecipient(filled, carol);
 
         vm.prank(bob);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.updateRedeemRecipient(ghost, carol);
 
         (address o, address r, uint256 sh) = _redeemRequest(filled);
@@ -1684,7 +1685,7 @@ contract RedeemQueueTest is LocalTestBase {
         // The zero-recipient check comes first, the blacklist check second, minimum third.
         _setMinRedeem(2);
         vm.prank(attacker);
-        vm.expectRevert("SparkPrimeVault/zero-recipient");
+        vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
         vault.requestRedeem(1, address(0));
         vm.prank(attacker);
         vm.expectRevert("SparkPrimeVault/recipient-cannot-receive");
@@ -1740,9 +1741,9 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(vault.claimableAssets(alice), 99_999_999_998);
 
         // Nothing to claim for anyone else.
-        vm.expectRevert("SparkPrimeVault/nothing-to-claim");
+        vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
         vault.claim(bob);
-        vm.expectRevert("SparkPrimeVault/nothing-to-claim");
+        vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
         vault.claim(address(vault));
 
         _unblacklist(alice);
@@ -1759,7 +1760,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(usdc.balanceOf(address(vault)),  0);
         assertEq(vault.claimableAssets(alice),    0);
 
-        vm.expectRevert("SparkPrimeVault/nothing-to-claim");
+        vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
         vault.claim(alice);
     }
 
@@ -1966,7 +1967,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(usdc.balanceOf(alice),          99_999_999_998);
         assertEq(vault.claimableAssets(alice),   0);
         assertEq(usdc.balanceOf(address(vault)), 0);
-        vm.expectRevert("SparkPrimeVault/nothing-to-claim");
+        vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
         vault.claim(alice);
     }
 
@@ -1991,7 +1992,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(vault.firstPendingRedeemId(), 1);
 
         _blacklist(bob);
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert(BLACKLISTED);
         vault.processPendingRedeems(type(uint256).max, 1);
         assertEq(vault.firstPendingRedeemId(), 1);
@@ -2015,8 +2016,8 @@ contract RedeemQueueTest is LocalTestBase {
         _blacklist(alice);
 
         _pause();
-        vm.prank(rebalancer);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.prank(operator);
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.processPendingRedeems(type(uint256).max, 10);
         _unpause();
 
@@ -2066,7 +2067,7 @@ contract RedeemQueueTest is LocalTestBase {
             } else if (action == 2) {
                 uint256[3] memory credit;
                 for (uint256 i; i < 3; ++i) credit[i] = vault.claimableAssets(users[i]);
-                vm.prank(rebalancer);
+                vm.prank(operator);
                 try vault.processPendingRedeems((r >> 40) % 2 == 0 ? type(uint256).max : amt, (r >> 48) % 4) {}
                 catch Error(string memory reason) {
                     assertEq(reason, "SparkVault/insufficient-balance");  // C-1
@@ -2081,7 +2082,7 @@ contract RedeemQueueTest is LocalTestBase {
                 uint256 credit = vault.claimableAssets(u);
                 uint256 before = usdc.balanceOf(u);
                 if (credit == 0) {
-                    vm.expectRevert("SparkPrimeVault/nothing-to-claim");
+                    vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
                     vault.claim(u);
                 } else if (usdc.isBlacklisted(u)) {
                     vm.expectRevert(BLACKLISTED);
@@ -2260,18 +2261,18 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(vault.totalAssets(),                        199_999_999_997);
 
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/not-paused");
+        vm.expectRevert(ISparkPrimeVault.IsNotPaused.selector);
         vault.adjustTotalAssets(10_000e6);
 
         _pause();
 
         // Nobody can queue a redeem (or deposit) against the pending gain.
         vm.prank(bob);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.requestRedeem(1, bob);
         _fund(carol, 1e6);
         vm.prank(carol);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.requestDeposit(1e6, carol, 0);
 
         vm.expectEmit(true, true, true, true, address(vault));
@@ -2300,7 +2301,7 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(spUsdc.convertToAssets(_vaultSpUsdc()), 95_000_000_000);
     }
 
-    // R3-1 residual: the admin payload is public before the guardian pauses. A redeem request
+    // R3-1 residual: the admin payload is public before the pauser pauses. A redeem request
     // placed in that window is NOT a way to capture a gain early (the fill happens after the
     // adjustment anyway), but a holder who sees a LOSS coming cannot exit either: the request
     // is final and the escrow takes the loss. Queue position buys nothing in either direction.
@@ -2336,12 +2337,12 @@ contract RedeemQueueTest is LocalTestBase {
         assertEq(r,  carol);
         assertEq(sh, DEPOSIT_100K_SHARES);
 
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingRedeemRequest(2);
 
         _processRedeems(DEPOSIT_100K_SHARES + 1, 10);  // alice full, bob 1 share
 
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingRedeemRequest(idA);  // below the head now
         (o, r, sh) = vault.getPendingRedeemRequest(idB);
         assertEq(o,  bob);

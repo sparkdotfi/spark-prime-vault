@@ -19,7 +19,7 @@ interface ISpUsdc {
 }
 
 // Proof-of-concept tests for the review findings against mainnet spUSDC. Each test name carries
-// the finding id. Round 5 (`master` @ 0ebb452): F-1 is fixed upstream (the guardian cancel path
+// the finding id. Round 5 (`master` @ 0ebb452): F-1 is fixed upstream (the pauser cancel path
 // is gone, `requestDepositCancellation` is owner-only, `cancelRedeemRequest` removed) and F-3 is
 // fixed (the walk honours `maxRequests`); both are `test_fixed_`. F-2 (queue backing not
 // ring-fenced from `take`), F-4 (dust fill mints zero shares) and F-5 (ghost entries) are still
@@ -38,10 +38,10 @@ contract ReviewTest is TestBase {
         super.setUp();
 
         vm.startPrank(admin);
-        vault.grantRole(GUARDIAN_ROLE,     guardian);
-        vault.grantRole(REBALANCER_ROLE,   rebalancer);
+        vault.grantRole(PAUSER_ROLE,     pauser);
+        vault.grantRole(OPERATOR_ROLE,   operator);
         vault.grantRole(REDEEM_FEE_SETTER_ROLE, redeemFeeSetter);
-        vault.grantRole(VSR_SETTER_ROLE,       vsrSetter);
+        vault.grantRole(OPERATOR_ROLE,       operator);
         vault.grantRole(TAKER_ROLE,        taker);
         vault.setCapacity(1_000_000e6);
         vault.setMaxRedeemFeeRate(0.01e18);
@@ -64,7 +64,7 @@ contract ReviewTest is TestBase {
     }
 
     function _settleCancels() internal {
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vault.processPendingDepositCancellations(type(uint256).max, type(uint256).max);
     }
 
@@ -80,14 +80,14 @@ contract ReviewTest is TestBase {
         assertGt(queued, 0);
 
         // Guardian and admin have no cancel path at all, whatever recipient they name.
-        vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.prank(pauser);
+        vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
         vault.requestDepositCancellation(id, thief);
-        vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.prank(pauser);
+        vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
         vault.requestDepositCancellation(id, bob);
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
         vault.requestDepositCancellation(id, bob);
 
         assertEq(vault.pendingDepositSavingsShares(), queued);
@@ -116,7 +116,7 @@ contract ReviewTest is TestBase {
         vm.prank(alice);
         uint256 id = vault.requestRedeem(shares, alice);
 
-        vm.prank(guardian);
+        vm.prank(pauser);
         (bool ok, ) = address(vault).call(
             abi.encodeWithSignature("cancelRedeemRequest(uint256,address)", id, thief)
         );
@@ -168,11 +168,11 @@ contract ReviewTest is TestBase {
         vm.prank(taker);
         vault.take(aliceBacking);
 
-        // alice requests a redeem of 50k; rebalancer processes it.
+        // alice requests a redeem of 50k; operator processes it.
         vm.prank(alice);
         vault.requestRedeem(50_000e6, alice);
 
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vault.processPendingRedeems(type(uint256).max, 10);
 
         assertApproxEqAbs(usdcT.balanceOf(alice), 50_000e6, 1);   // paid from bob's backing
@@ -205,7 +205,7 @@ contract ReviewTest is TestBase {
         vm.prank(admin);
         vault.setCapacity(2_000_000e6);            // plenty of room for both
 
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vault.processPendingDeposits(type(uint256).max, 10);
 
         // FIXED (F-3): both requests fill in one call.
@@ -224,7 +224,7 @@ contract ReviewTest is TestBase {
         uint256 maxVsr = vault.MAX_VSR();
         vm.prank(admin);
         vault.setVSRBounds(1e27, maxVsr);
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         vault.setVSR(1.000000003022265980097387650e27);  // ~10% APY
         vm.warp(block.timestamp + 365 days);
         vault.drip();
@@ -248,7 +248,7 @@ contract ReviewTest is TestBase {
         vm.prank(admin);
         vault.setCapacity(cap);
 
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vault.processPendingDeposits(type(uint256).max, 10);
 
         assertEq(vault.balanceOf(bob), 0,                    "zero shares minted");

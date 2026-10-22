@@ -7,7 +7,8 @@ import { ERC1967Proxy }       from "../../lib/oz/contracts/proxy/ERC1967/ERC1967
 import { ERC20 }              from "../../lib/oz/contracts/token/ERC20/ERC20.sol";
 
 import { SparkVault }      from "./lib/spusdc/SparkVault.sol";
-import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
+import { ISparkPrimeVault } from "../../src/ISparkPrimeVault.sol";
+import { SparkPrimeVault }  from "../../src/SparkPrimeVault.sol";
 
 // 6-decimal mock USDC with public mint/burn and a Circle-style blacklist: `transfer`,
 // `transferFrom` and `approve` revert with the mainnet FiatToken message when the sender, the
@@ -51,12 +52,12 @@ contract MockUSDC is ERC20 {
 /// @dev Local (non-fork) harness: real spUSDC `SparkVault` code deployed behind a proxy over a
 ///      6-decimal mock USDC, and the `SparkPrimeVault` under test on top of it. No RPC needed.
 ///      Both indexes start "ugly" (spUSDC chi ~1.0476e27, spPRIME chi ~1.0098e27) with VSR frozen
-///      at RAY; tests that want accrual set a rate explicitly. `src/` is upstream
-///      `master` @ 0ebb452, unpatched.
+///      at RAY; tests that want accrual set a rate explicitly. Minimums are 1 wei. `src/` is upstream
+///      `master` @ c512609, unpatched.
 ///
 ///      Actors
 ///        spUSDC side : spAdmin (DEFAULT_ADMIN + sets cap/bounds), spSetter (VSR), spTaker (USDC out)
-///        spPRIME side: admin, guardian, rebalancer, redeemFeeSetter, taker, vsrSetter
+///        spPRIME side: admin, lossManager, operator, pauser, unpauser, redeemFeeSetter, taker
 ///
 ///      Helpers at the bottom cover the operations every test file needs: funding, deposits,
 ///      redeems, draining spUSDC's USDC liquidity, taking spUSDC out of the prime vault and
@@ -84,18 +85,25 @@ contract LocalTestBase is Test {
 
     // spPRIME actors
     address internal admin           = makeAddr("admin");
-    address internal guardian        = makeAddr("guardian");
-    address internal rebalancer      = makeAddr("rebalancer");
+    address internal lossManager     = makeAddr("lossManager");
+    address internal operator        = makeAddr("operator");
+    address internal pauser          = makeAddr("pauser");
     address internal redeemFeeSetter = makeAddr("redeemFeeSetter");
     address internal taker           = makeAddr("taker");
-    address internal vsrSetter       = makeAddr("vsrSetter");
+    address internal unpauser        = makeAddr("unpauser");
 
     bytes32 internal DEFAULT_ADMIN_ROLE     = 0x00;
-    bytes32 internal GUARDIAN_ROLE          = keccak256("GUARDIAN_ROLE");
-    bytes32 internal REBALANCER_ROLE        = keccak256("REBALANCER_ROLE");
+    bytes32 internal LOSS_MANAGER_ROLE      = keccak256("LOSS_MANAGER_ROLE");
+    bytes32 internal OPERATOR_ROLE          = keccak256("OPERATOR_ROLE");
+    bytes32 internal PAUSER_ROLE            = keccak256("PAUSER_ROLE");
     bytes32 internal REDEEM_FEE_SETTER_ROLE = keccak256("REDEEM_FEE_SETTER_ROLE");
     bytes32 internal TAKER_ROLE             = keccak256("TAKER_ROLE");
-    bytes32 internal VSR_SETTER_ROLE        = keccak256("VSR_SETTER_ROLE");
+    bytes32 internal UNPAUSER_ROLE          = keccak256("UNPAUSER_ROLE");
+
+    // Harness minimums: the contract rejects zero, 1 wei keeps every amount reachable.
+    uint256 internal constant MIN_DEPOSIT              = 1;
+    uint256 internal constant MIN_DEPOSIT_CANCELLATION = 1;
+    uint256 internal constant MIN_REDEEM               = 1;
 
     // spUSDC's own role names (SparkVault).
     bytes32 internal SETTER_ROLE = keccak256("SETTER_ROLE");
@@ -137,28 +145,39 @@ contract LocalTestBase is Test {
             address(new ERC1967Proxy(
                 address(new SparkPrimeVault()),
                 abi.encodeCall(
-                    SparkPrimeVault.initialize,
-                    (address(spUsdc), "Spark Prime USDC", "spPRIME", admin)
+                    ISparkPrimeVault.initialize,
+                    (
+                        address(spUsdc),
+                        "Spark Prime USDC",
+                        "spPRIME",
+                        admin,
+                        MIN_DEPOSIT,
+                        MIN_DEPOSIT_CANCELLATION,
+                        MIN_REDEEM
+                    )
                 )
             ))
         );
 
         vm.startPrank(admin);
-        vault.grantRole(GUARDIAN_ROLE,          guardian);
-        vault.grantRole(REBALANCER_ROLE,        rebalancer);
+        vault.grantRole(LOSS_MANAGER_ROLE,      lossManager);
+        vault.grantRole(OPERATOR_ROLE,          operator);
+        vault.grantRole(PAUSER_ROLE,            pauser);
         vault.grantRole(REDEEM_FEE_SETTER_ROLE, redeemFeeSetter);
         vault.grantRole(TAKER_ROLE,             taker);
-        vault.grantRole(VSR_SETTER_ROLE,        vsrSetter);
-        vault.setCapacity(type(uint128).max);
+        vault.grantRole(UNPAUSER_ROLE,          unpauser);
         vault.setMaxRedeemFeeRate(vault.MAX_REDEEM_FEE());
         vault.setVSRBounds(RAY, MAX_VSR);
         vm.stopPrank();
 
+        vm.prank(operator);
+        vault.setCapacity(type(uint128).max);
+
         // Make spPRIME's index ugly too (~2.9% APY for 123 days), then freeze at RAY.
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         vault.setVSR(UGLY_PRIME_VSR);
         vm.warp(block.timestamp + 123 days + 6789);
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         vault.setVSR(RAY);  // drips internally
 
         assertGt(spUsdc.nowChi(), RAY, "harness: spUSDC chi not ugly");
@@ -192,7 +211,7 @@ contract LocalTestBase is Test {
     /**********************************************************************************************/
 
     function _setCapacity(uint256 cap) internal {
-        vm.prank(admin);
+        vm.prank(operator);
         vault.setCapacity(cap);
     }
 
@@ -211,10 +230,15 @@ contract LocalTestBase is Test {
         vault.setMinRedeem(minRedeemShares);
     }
 
-    /// @dev Admin-only, requires the vault to be paused. Negative delta realises a loss, positive
-    ///      a gain.
-    function _adjustTotalAssets(int256 delta) internal {
+    function _setMinDepositCancellation(uint256 minSavingsShares) internal {
         vm.prank(admin);
+        vault.setMinDepositCancellation(minSavingsShares);
+    }
+
+    /// @dev LOSS_MANAGER only, requires the vault to be paused. Negative delta realises a loss,
+    ///      positive a gain.
+    function _adjustTotalAssets(int256 delta) internal {
+        vm.prank(lossManager);
         vault.adjustTotalAssets(delta);
     }
 
@@ -227,7 +251,7 @@ contract LocalTestBase is Test {
     }
 
     function _setPrimeVsr(uint256 vsr_) internal {
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         vault.setVSR(vsr_);
     }
 
@@ -237,34 +261,40 @@ contract LocalTestBase is Test {
     }
 
     function _processDeposits(uint256 maxSavingsShares, uint256 maxRequests) internal {
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vault.processPendingDeposits(maxSavingsShares, maxRequests);
     }
 
     function _processRedeems(uint256 maxShares, uint256 maxRequests) internal {
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vault.processPendingRedeems(maxShares, maxRequests);
     }
 
     function _processCancelledDeposits(uint256 maxSavingsShares, uint256 maxRequests) internal {
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vault.processPendingDepositCancellations(maxSavingsShares, maxRequests);
     }
 
-    /// @dev Owner cancels a queued deposit and the planner settles the refund immediately.
-    function _cancelDepositAndSettle(address who, uint256 id) internal returns (uint256 cancelId) {
+    /// @dev Owner cancels the whole remaining deposit request to themselves.
+    function _cancelDeposit(address who, uint256 id) internal returns (uint256 cancelId) {
+        ( , , uint256 shares ) = vault.getPendingDepositRequest(id);
         vm.prank(who);
-        cancelId = vault.requestDepositCancellation(id, who);
+        cancelId = vault.requestDepositCancellation(id, who, shares);
+    }
+
+    /// @dev Owner cancels a queued deposit in full and the operator settles the refund immediately.
+    function _cancelDepositAndSettle(address who, uint256 id) internal returns (uint256 cancelId) {
+        cancelId = _cancelDeposit(who, id);
         _processCancelledDeposits(type(uint256).max, type(uint256).max);
     }
 
     function _pause() internal {
-        vm.prank(guardian);
+        vm.prank(pauser);
         vault.pause();
     }
 
     function _unpause() internal {
-        vm.prank(admin);
+        vm.prank(unpauser);
         vault.unpause();
     }
 
@@ -347,26 +377,23 @@ contract LocalTestBase is Test {
     /**********************************************************************************************/
 
 
-    /// @dev Raw array read (works for filled/cancelled ids below the head too).
+    /// @dev Pending-window read; ids below the head revert `InvalidRequestId` in the vault.
     function _depositRequest(uint256 id)
         internal view returns (address owner, address recipient, uint256 shares)
     {
-        SparkPrimeVault.Request[] memory r = vault.getPendingDepositRequests(id, id + 1);
-        return (r[0].owner, r[0].recipient, r[0].shares);
+        return vault.getPendingDepositRequest(id);
     }
 
     function _redeemRequest(uint256 id)
         internal view returns (address owner, address recipient, uint256 shares)
     {
-        SparkPrimeVault.Request[] memory r = vault.getPendingRedeemRequests(id, id + 1);
-        return (r[0].owner, r[0].recipient, r[0].shares);
+        return vault.getPendingRedeemRequest(id);
     }
 
     function _cancelledDepositRequest(uint256 id)
         internal view returns (address owner, address recipient, uint256 shares)
     {
-        SparkPrimeVault.Request[] memory r = vault.getPendingDepositCancellationRequests(id, id + 1);
-        return (r[0].owner, r[0].recipient, r[0].shares);
+        return vault.getPendingDepositCancellationRequest(id);
     }
 
     function _depositQueueLength() internal view returns (uint256) {

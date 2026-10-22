@@ -9,6 +9,7 @@ import { ERC1967Proxy } from "../../lib/oz/contracts/proxy/ERC1967/ERC1967Proxy.
 import { SparkPrimeVault } from "../../src/SparkPrimeVault.sol";
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
+import { ISparkPrimeVault } from "src/ISparkPrimeVault.sol";
 import { DripTable }     from "./tables/DripTable.sol";
 
 // Exposes the pure math helpers (same pattern as spark-vaults-v2 test/Math.t.sol).
@@ -198,7 +199,7 @@ contract RoundingTest is LocalTestBase {
             abi.encodeCall(SparkPrimeVault.initialize, (address(spUsdc), "fresh", "fresh", admin))
         )));
         vm.startPrank(admin);
-        fresh.grantRole(VSR_SETTER_ROLE, vsrSetter);
+        fresh.grantRole(OPERATOR_ROLE, operator);
         fresh.setVSRBounds(RAY, MAX_VSR);
         vm.stopPrank();
     }
@@ -242,7 +243,7 @@ contract RoundingTest is LocalTestBase {
         assertEq(usdc.balanceOf(address(spUsdc)), 1);
 
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.requestDepositCancellation(id, alice);
     }
 
@@ -400,7 +401,7 @@ contract RoundingTest is LocalTestBase {
         // Redeem requests are final (no cancel at 0ebb452); the dead entry is skipped by the
         // planner (`:911` continue) and cannot be repointed (`:513` no-request).
         vm.prank(bob);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.updateRedeemRecipient(id, bob);
         // No spUSDC in the vault: `remaining_ == 0` skips the loop (`:908`) and the dead head is
         // not walked. Dead redeem entries only advance the head once there is liquidity.
@@ -431,7 +432,7 @@ contract RoundingTest is LocalTestBase {
         assertEq(vault.pendingRedeemShares(), 0);
 
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.updateRedeemRecipient(id, alice);
         _processRedeems(type(uint256).max, type(uint256).max);
         assertEq(vault.firstPendingRedeemId(), 1);  // dead entry skipped, nothing paid
@@ -604,7 +605,7 @@ contract RoundingTest is LocalTestBase {
 
         uint256 usdcBefore = usdc.balanceOf(alice);
 
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert("SparkVault/insufficient-balance");
         vault.processPendingRedeems(type(uint256).max, 2);
 
@@ -950,7 +951,7 @@ contract RoundingTest is LocalTestBase {
                 v = vault;
             }
 
-            vm.prank(vsrSetter);
+            vm.prank(operator);
             v.setVSR(row.vsr);
 
             uint256 rho = v.rho();
@@ -1167,11 +1168,11 @@ contract RoundingTest is LocalTestBase {
 
         _pause();
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/delta-total-assets-zero");
+        vm.expectRevert(ISparkPrimeVault.ZeroDeltaTotalAssets.selector);
         vault.adjustTotalAssets(0);
         for (int256 loss = 1; loss <= 2; ++loss) {
             vm.prank(admin);
-            vm.expectRevert("SparkPrimeVault/loss-too-high");
+            vm.expectRevert(ISparkPrimeVault.LossTooHigh.selector);
             vault.adjustTotalAssets(-loss);
         }
         assertEq(vault.totalAssets(), 1);
@@ -1188,7 +1189,7 @@ contract RoundingTest is LocalTestBase {
         assertEq(vault.chi(), RAY / 2);
         assertEq(vault.totalAssets(), 1);
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/loss-too-high");
+        vm.expectRevert(ISparkPrimeVault.LossTooHigh.selector);
         vault.adjustTotalAssets(-1);                // TA is 1 again: nothing more can be lost
     }
 
@@ -1211,15 +1212,15 @@ contract RoundingTest is LocalTestBase {
         _pause();
 
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/loss-too-high");
+        vm.expectRevert(ISparkPrimeVault.LossTooHigh.selector);
         vault.adjustTotalAssets(-int256(ta + 1));
 
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/loss-too-high");
+        vm.expectRevert(ISparkPrimeVault.LossTooHigh.selector);
         vault.adjustTotalAssets(-int256(ta));
 
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/delta-total-assets-zero");
+        vm.expectRevert(ISparkPrimeVault.ZeroDeltaTotalAssets.selector);
         vault.adjustTotalAssets(0);
 
         if (ta == 1) {
@@ -1247,7 +1248,7 @@ contract RoundingTest is LocalTestBase {
 
         _pause();
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/chi-too-low");
+        vm.expectRevert(ISparkPrimeVault.ChiTooLow.selector);
         vault.adjustTotalAssets(-int256(ta - 1));
 
         // TA - delta = ceil(S / RAY) is the smallest surviving notional: chi = 1
@@ -1268,9 +1269,9 @@ contract RoundingTest is LocalTestBase {
 
         vm.prank(admin);
         if (delta == 0) {
-            vm.expectRevert("SparkPrimeVault/delta-total-assets-zero");
+            vm.expectRevert(ISparkPrimeVault.ZeroDeltaTotalAssets.selector);
         } else if (delta < 0) {
-            vm.expectRevert("SparkPrimeVault/loss-too-high");
+            vm.expectRevert(ISparkPrimeVault.LossTooHigh.selector);
         } else if (uint256(delta) > type(uint256).max / RAY) {
             vm.expectRevert(stdError.arithmeticError);
         } else {
@@ -1289,7 +1290,7 @@ contract RoundingTest is LocalTestBase {
         _pause();
 
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/loss-too-high");
+        vm.expectRevert(ISparkPrimeVault.LossTooHigh.selector);
         vault.adjustTotalAssets(type(int256).min);
 
         vm.prank(admin);
@@ -1601,7 +1602,7 @@ contract RoundingTest is LocalTestBase {
         assertGt(taAccrued, 999_999_999_998);
 
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/not-paused");
+        vm.expectRevert(ISparkPrimeVault.IsNotPaused.selector);
         vault.adjustTotalAssets(1);
 
         _pause();
@@ -1611,16 +1612,16 @@ contract RoundingTest is LocalTestBase {
 
         _fund(bob, 1e6);
         vm.prank(bob);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.requestDeposit(1e6, bob, 0);
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.requestRedeem(1, alice);
-        vm.prank(rebalancer);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.prank(operator);
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.processPendingDeposits(type(uint256).max, type(uint256).max);
-        vm.prank(rebalancer);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.prank(operator);
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.processPendingRedeems(type(uint256).max, type(uint256).max);
 
         vm.prank(redeemFeeSetter);
@@ -1661,7 +1662,7 @@ contract RoundingTest is LocalTestBase {
         _deposit(alice, 1_000e6);
         _pause();
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/delta-total-assets-zero");
+        vm.expectRevert(ISparkPrimeVault.ZeroDeltaTotalAssets.selector);
         vault.adjustTotalAssets(0);
     }
 
@@ -1738,7 +1739,7 @@ contract RoundingTest is LocalTestBase {
         vault.adjustTotalAssets(int256(gOvf + 1));
 
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/chi-too-high");
+        vm.expectRevert(ISparkPrimeVault.ChiTooHigh.selector);
         vault.adjustTotalAssets(int256(gOvf));
     }
 
@@ -1771,7 +1772,7 @@ contract RoundingTest is LocalTestBase {
         wide = (ta + gTrunc) * RAY / supply;
         assertGe(wide, 2 ** 192);
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/chi-too-high");
+        vm.expectRevert(ISparkPrimeVault.ChiTooHigh.selector);
         vault.adjustTotalAssets(int256(gTrunc));
         assertEq(uint256(vault.chi()), vault.nowChi());
     }
@@ -1787,7 +1788,7 @@ contract RoundingTest is LocalTestBase {
 
         _pause();
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/chi-too-high");
+        vm.expectRevert(ISparkPrimeVault.ChiTooHigh.selector);
         vault.adjustTotalAssets(int256(gain));
         assertEq(vault.totalAssets(), ta);
     }
@@ -1850,7 +1851,7 @@ contract RoundingTest is LocalTestBase {
         vm.prank(admin);
         vm.expectRevert(stdError.arithmeticError);
         vault.adjustTotalAssets(1);
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         vm.expectRevert(stdError.arithmeticError);
         vault.setVSR(RAY);
 
@@ -1862,7 +1863,7 @@ contract RoundingTest is LocalTestBase {
         vm.prank(alice);
         vm.expectRevert(stdError.arithmeticError);
         vault.requestRedeem(1, alice);
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert(stdError.arithmeticError);
         vault.processPendingRedeems(type(uint256).max, type(uint256).max);
     }
@@ -2127,7 +2128,7 @@ contract RoundingTest is LocalTestBase {
         vm.expectRevert(stdError.arithmeticError);
         vault.requestDeposit(1e6, bob, 0);
 
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert(stdError.arithmeticError);
         vault.processPendingDeposits(type(uint256).max, type(uint256).max);
     }
@@ -2470,7 +2471,7 @@ contract RoundingTest is LocalTestBase {
         uint256 id1 = _requestRedeem(alice, 108);
         uint256 id2 = _requestRedeem(alice, 3420);
 
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert("SparkVault/insufficient-balance");
         vault.processPendingRedeems(type(uint256).max, 2);
 
@@ -2510,7 +2511,7 @@ contract RoundingTest is LocalTestBase {
         uint256 chiP = vault.chi();
         assertEq(_ceilBurn(7036, chiS, chiP) + _ceilBurn(6840, chiS, chiP) + _ceilBurn(261, chiS, chiP), 13627);
 
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert("SparkVault/insufficient-balance");
         vault.processPendingRedeems(type(uint256).max, 3);
 
@@ -2553,7 +2554,7 @@ contract RoundingTest is LocalTestBase {
 
         if (burns > bal) {
             assertLe(burns - bal, n - 1, "C-1: shortfall exceeds n - 1");
-            vm.prank(rebalancer);
+            vm.prank(operator);
             vm.expectRevert("SparkVault/insufficient-balance");
             vault.processPendingRedeems(type(uint256).max, n);
         } else {
@@ -2701,10 +2702,10 @@ contract RoundingTest is LocalTestBase {
         assertEq(vault.firstPendingDepositId(), 1);                        // ghost walked past
 
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.requestDepositCancellation(id, alice);
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.updateDepositRecipient(id, alice);
 
         // the boundary: xMax + 1 buys exactly 1 spUSDC share and fills instantly
@@ -2796,7 +2797,7 @@ contract RoundingTest is LocalTestBase {
 
         // fresh vault, chi == RAY: same bound as _rpow (chi * rpow / RAY == rpow)
         SparkPrimeVault fresh = _freshVault(address(new SparkPrimeVault()));
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         fresh.setVSR(MAX_VSR);
         uint256 rho = fresh.rho();
         vm.warp(rho + 2_416_158_482);

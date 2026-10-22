@@ -6,9 +6,10 @@ import { stdError } from "../../lib/forge-std/src/StdError.sol";
 import { IAccessControl } from "../../lib/oz/contracts/access/IAccessControl.sol";
 
 import { LocalTestBase } from "./LocalTestBase.t.sol";
+import { ISparkPrimeVault } from "src/ISparkPrimeVault.sol";
 
 /// @dev Tests for the surface that was new in rounds 3/4 and survived onto `master` @ 0ebb452:
-///      owner-only recipient updaters (V2-1), the removed guardian cancel path (V2-2 / F-1),
+///      owner-only recipient updaters (V2-1), the removed pauser cancel path (V2-2 / F-1),
 ///      unbounded `setCapacity`, `requestRedeem(0)` ghosts, the deferred head walk (no
 ///      head-advance loops any more), `delete` after fill, `pause` on GUARDIAN / `unpause` on
 ///      admin, getters and event shapes. `adjustTotalAssets` lives in `AdjustTotalAssets.t.sol`,
@@ -143,10 +144,10 @@ contract NewSurfaceTest is NewSurfaceBase {
         _setCapacity(0);
         uint256 id = _deposit(alice, ONE_M);
 
-        address[4] memory who = [mallory, guardian, admin, rebalancer];
+        address[4] memory who = [mallory, pauser, admin, operator];
         for (uint256 i; i < 4; ++i) {
             vm.prank(who[i]);
-            vm.expectRevert("SparkPrimeVault/not-authorized");
+            vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
             vault.updateDepositRecipient(id, who[i]);
         }
 
@@ -154,7 +155,7 @@ contract NewSurfaceTest is NewSurfaceBase {
         vm.prank(alice);
         vault.updateDepositRecipient(id, bob);
         vm.prank(bob);
-        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
         vault.updateDepositRecipient(id, mallory);
 
         ( address owner, address recipient, uint256 shares ) = _depositRequest(id);
@@ -180,7 +181,7 @@ contract NewSurfaceTest is NewSurfaceBase {
         assertEq(left, S_1M - fillable);
 
         vm.prank(mallory);
-        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
         vault.updateDepositRecipient(id, mallory);
 
         vm.prank(alice);
@@ -202,11 +203,11 @@ contract NewSurfaceTest is NewSurfaceBase {
         assertEq(vault.balanceOf(alice), SH_1M);
 
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.updateDepositRecipient(id, bob);
 
         vm.prank(mallory);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.updateDepositRecipient(id, mallory);
 
         ( address o, address r, uint256 s ) = _depositRequest(id);
@@ -215,7 +216,7 @@ contract NewSurfaceTest is NewSurfaceBase {
         assertEq(s, 0);
 
         // The pending-only single getter rejects the id once the head moved past it.
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingDepositRequest(id);
     }
 
@@ -226,7 +227,7 @@ contract NewSurfaceTest is NewSurfaceBase {
         vault.requestDepositCancellation(id, alice);
 
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.updateDepositRecipient(id, bob);
     }
 
@@ -236,7 +237,7 @@ contract NewSurfaceTest is NewSurfaceBase {
         _setCapacity(0);
         uint256 id = _deposit(alice, ONE_M);
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/vault-recipient");
+        vm.expectRevert(ISparkPrimeVault.VaultIsRecipient.selector);
         vault.updateDepositRecipient(id, address(vault));
     }
 
@@ -272,17 +273,17 @@ contract NewSurfaceTest is NewSurfaceBase {
         _deposit(alice, ONE_M);
         uint256 id = _requestRedeem(alice, SH_1M);
 
-        address[4] memory who = [mallory, guardian, admin, rebalancer];
+        address[4] memory who = [mallory, pauser, admin, operator];
         for (uint256 i; i < 4; ++i) {
             vm.prank(who[i]);
-            vm.expectRevert("SparkPrimeVault/not-authorized");
+            vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
             vault.updateRedeemRecipient(id, who[i]);
         }
 
         vm.prank(alice);
         vault.updateRedeemRecipient(id, bob);
         vm.prank(bob);
-        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
         vault.updateRedeemRecipient(id, mallory);
 
         _processRedeems(type(uint256).max, type(uint256).max);
@@ -300,7 +301,7 @@ contract NewSurfaceTest is NewSurfaceBase {
         assertEq(s, 0);
 
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.updateRedeemRecipient(filled, bob);
 
         // The selector is gone from the contract: a call to the old function is a plain revert
@@ -323,12 +324,12 @@ contract NewSurfaceTest is NewSurfaceBase {
         uint256 cid = vault.requestDepositCancellation(id, alice);
 
         vm.prank(mallory);
-        vm.expectRevert("SparkPrimeVault/not-authorized");
+        vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
         vault.updateDepositCancellationRecipient(cid, mallory);
 
-        vm.prank(guardian);
-        vm.expectRevert("SparkPrimeVault/not-authorized");
-        vault.updateDepositCancellationRecipient(cid, guardian);
+        vm.prank(pauser);
+        vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
+        vault.updateDepositCancellationRecipient(cid, pauser);
 
         vm.prank(alice);
         vm.expectEmit(address(vault));
@@ -347,23 +348,23 @@ contract NewSurfaceTest is NewSurfaceBase {
         assertEq(usdc.balanceOf(alice), 0);
 
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/no-request");  // settled entry
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);  // settled entry
         vault.updateDepositCancellationRecipient(cid, alice);
     }
 
-    // V2-2 / F-1 fixed: the guardian cancel path is gone. `requestDepositCancellation` (:419-444)
+    // V2-2 / F-1 fixed: the pauser cancel path is gone. `requestDepositCancellation` (:419-444)
     // is owner-only for every recipient, including the owner.
     function test_fixed_V2_2_guardianCannotCancelDeposits() public {
         _setCapacity(0);
         uint256 id = _deposit(alice, ONE_M);
 
-        address[4] memory who = [guardian, admin, rebalancer, mallory];
+        address[4] memory who = [pauser, admin, operator, mallory];
         for (uint256 i; i < 4; ++i) {
             vm.prank(who[i]);
-            vm.expectRevert("SparkPrimeVault/not-authorized");
+            vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
             vault.requestDepositCancellation(id, alice);
             vm.prank(who[i]);
-            vm.expectRevert("SparkPrimeVault/not-authorized");
+            vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
             vault.requestDepositCancellation(id, who[i]);
         }
 
@@ -383,7 +384,7 @@ contract NewSurfaceTest is NewSurfaceBase {
         _processCancelledDeposits(type(uint256).max, type(uint256).max);
         assertEq(usdc.balanceOf(bob),      A_1M);
         assertEq(usdc.balanceOf(alice),    0);
-        assertEq(usdc.balanceOf(guardian), 0);
+        assertEq(usdc.balanceOf(pauser), 0);
     }
 
     // `zero-recipient` is checked before the entry is loaded, so it fires even on ids that do
@@ -392,13 +393,13 @@ contract NewSurfaceTest is NewSurfaceBase {
         _setCapacity(0);
         uint256 id = _deposit(alice, ONE_M);
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/zero-recipient");
+        vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
         vault.updateDepositRecipient(id, address(0));
-        vm.expectRevert("SparkPrimeVault/zero-recipient");
+        vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
         vault.updateDepositRecipient(99, address(0));
-        vm.expectRevert("SparkPrimeVault/zero-recipient");
+        vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
         vault.updateDepositCancellationRecipient(0, address(0));
-        vm.expectRevert("SparkPrimeVault/zero-recipient");
+        vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
         vault.updateRedeemRecipient(0, address(0));
     }
 
@@ -415,7 +416,7 @@ contract NewSurfaceTest is NewSurfaceBase {
         assertEq(recipient, bob);
 
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.requestDepositCancellation(id, alice);
     }
 
@@ -438,7 +439,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         vm.expectRevert(stdError.arithmeticError);
         vault.requestDeposit(ONE_M, alice, 0);
 
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert(stdError.arithmeticError);
         vault.processPendingDeposits(type(uint256).max, type(uint256).max);
 
@@ -464,7 +465,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         vm.expectRevert(stdError.arithmeticError);
         vault.requestDeposit(ONE_M, bob, 0);
 
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert(stdError.arithmeticError);
         vault.processPendingDeposits(type(uint256).max, type(uint256).max);
 
@@ -498,7 +499,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
 
         // Permanent: no cancel exists and the updater rejects the 0-share slot.
         vm.prank(mallory);
-        vm.expectRevert("SparkPrimeVault/no-request");
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vault.updateRedeemRecipient(id, mallory);
     }
 
@@ -590,7 +591,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         assertEq(vault.balanceOf(dave), SH_100K);
         assertEq(vault.firstPendingDepositId(), 5);
 
-        // A bounded rebalancer walk over a dead slot only moves the head.
+        // A bounded operator walk over a dead slot only moves the head.
         _setCapacity(0);
         _deposit(alice, ONE_M);                      // 5, queued
         vm.prank(alice);
@@ -658,7 +659,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         _processRedeems(type(uint256).max, type(uint256).max);
         ( o, r, s ) = _redeemRequest(rid);
         assertEq(o, address(0)); assertEq(r, address(0)); assertEq(s, 0);
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingRedeemRequest(rid);
     }
 
@@ -671,7 +672,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         vault.updateRedeemRecipient(0, mallory);
         vm.expectRevert("SparkPrimeVault/invalid-range");  // range getter guards the index
         vault.getPendingDepositRequests(0, 1);
-        vm.expectRevert("SparkPrimeVault/invalid-request-id");
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vault.getPendingDepositRequest(0);
     }
 
@@ -681,21 +682,21 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
 
     function test_pause_guardianCanAdminCannot() public {
         vm.prank(admin);
-        vm.expectRevert(_unauthorized(admin, GUARDIAN_ROLE));
+        vm.expectRevert(_unauthorized(admin, PAUSER_ROLE));
         vault.pause();
 
-        vm.prank(guardian);
+        vm.prank(pauser);
         vm.expectEmit(address(vault));
         emit Paused();
         vault.pause();
         assertTrue(vault.paused());
 
-        vm.prank(rebalancer);
-        vm.expectRevert(_unauthorized(rebalancer, DEFAULT_ADMIN_ROLE));
+        vm.prank(operator);
+        vm.expectRevert(_unauthorized(operator, DEFAULT_ADMIN_ROLE));
         vault.unpause();
 
-        vm.prank(guardian);
-        vm.expectRevert(_unauthorized(guardian, DEFAULT_ADMIN_ROLE));
+        vm.prank(pauser);
+        vm.expectRevert(_unauthorized(pauser, DEFAULT_ADMIN_ROLE));
         vault.unpause();
 
         vm.prank(admin);
@@ -732,7 +733,7 @@ contract NewSurfaceMiscTest is NewSurfaceBase {
         _deposit(alice, ONE_M);
         assertEq(_vaultSpUsdc(), S_1M);
         vm.prank(taker);
-        vm.expectRevert("SparkPrimeVault/insufficient-shares");
+        vm.expectRevert(ISparkPrimeVault.InsufficientShares.selector);
         vault.take(S_1M + 1);
         _take(S_1M);
         assertEq(_vaultSpUsdc(), 0);

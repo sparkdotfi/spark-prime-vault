@@ -63,7 +63,7 @@ contract AdjustTotalAssetsFailureTests is AdjustTotalAssetsBase {
     function test_adjustTotalAssets_notAdmin() public {
         _depositAndPause(alice, ONE_M);
         address[7] memory who =
-            [guardian, rebalancer, redeemFeeSetter, taker, vsrSetter, alice, address(this)];
+            [pauser, operator, redeemFeeSetter, taker, operator, alice, address(this)];
         for (uint256 i; i < 7; ++i) {
             vm.prank(who[i]);
             vm.expectRevert(_unauthorized(who[i], DEFAULT_ADMIN_ROLE));
@@ -78,31 +78,31 @@ contract AdjustTotalAssetsFailureTests is AdjustTotalAssetsBase {
         _deposit(alice, ONE_M);
 
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/not-paused");
+        vm.expectRevert(ISparkPrimeVault.IsNotPaused.selector);
         vault.adjustTotalAssets(-1e6);
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/not-paused");
+        vm.expectRevert(ISparkPrimeVault.IsNotPaused.selector);
         vault.adjustTotalAssets(1e6);
 
         _pause();
         _fund(bob, ONE_M);
         vm.prank(bob);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.requestDeposit(ONE_M, bob, 0);
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.requestRedeem(1, alice);
         vm.prank(alice);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.requestDepositCancellation(0, alice);
-        vm.prank(rebalancer);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.prank(operator);
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.processPendingDeposits(type(uint256).max, type(uint256).max);
-        vm.prank(rebalancer);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.prank(operator);
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.processPendingRedeems(type(uint256).max, type(uint256).max);
-        vm.prank(rebalancer);
-        vm.expectRevert("SparkPrimeVault/paused");
+        vm.prank(operator);
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vault.processPendingDepositCancellations(type(uint256).max, type(uint256).max);
 
         // What still works while paused: drip, transfer, take, setVSR, the adjustment itself.
@@ -118,7 +118,7 @@ contract AdjustTotalAssetsFailureTests is AdjustTotalAssetsBase {
     function test_adjustTotalAssets_zeroDelta() public {
         _depositAndPause(alice, ONE_M);
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/delta-total-assets-zero");
+        vm.expectRevert(ISparkPrimeVault.ZeroDeltaTotalAssets.selector);
         vault.adjustTotalAssets(0);
     }
 
@@ -132,7 +132,7 @@ contract AdjustTotalAssetsFailureTests is AdjustTotalAssetsBase {
         int256[4] memory deltas = [-ta, -ta - 1, -int256(ONE_M), type(int256).min];
         for (uint256 i; i < 4; ++i) {
             vm.prank(admin);
-            vm.expectRevert("SparkPrimeVault/loss-too-high");
+            vm.expectRevert(ISparkPrimeVault.LossTooHigh.selector);
             vault.adjustTotalAssets(deltas[i]);
         }
         assertEq(vault.chi(), CHI_P);
@@ -156,7 +156,7 @@ contract AdjustTotalAssetsFailureTests is AdjustTotalAssetsBase {
         vault.adjustTotalAssets(type(int256).max);
 
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/loss-too-high");
+        vm.expectRevert(ISparkPrimeVault.LossTooHigh.selector);
         vault.adjustTotalAssets(-1);
     }
 
@@ -172,7 +172,7 @@ contract AdjustTotalAssetsFailureTests is AdjustTotalAssetsBase {
 
         // totalAssets -> 9: chi = 9e27 / 1e28 = 0
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/chi-too-low");
+        vm.expectRevert(ISparkPrimeVault.ChiTooLow.selector);
         vault.adjustTotalAssets(-(ta - 9));
         assertEq(vault.chi(), CHI_P);
 
@@ -190,10 +190,10 @@ contract AdjustTotalAssetsFailureTests is AdjustTotalAssetsBase {
         _depositAndPause(alice, ONE_M);
 
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/chi-too-high");
+        vm.expectRevert(ISparkPrimeVault.ChiTooHigh.selector);
         vault.adjustTotalAssets(int256(GAIN_TRUNCATE));
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/chi-too-high");
+        vm.expectRevert(ISparkPrimeVault.ChiTooHigh.selector);
         vault.adjustTotalAssets(int256(GAIN_OVERFLOW - 1));
         assertEq(vault.chi(), CHI_P);
 
@@ -454,7 +454,7 @@ contract AdjustTotalAssetsSuccessTests is AdjustTotalAssetsBase {
 
         // Nothing further can be taken (totalAssets is 0) and any gain divides the whole supply.
         vm.prank(admin);
-        vm.expectRevert("SparkPrimeVault/loss-too-high");
+        vm.expectRevert(ISparkPrimeVault.LossTooHigh.selector);
         vault.adjustTotalAssets(-1);
 
         // The VSR cannot undo it in any useful time: 100% APY for a year doubles 9e14 to 1.8e15.
@@ -536,7 +536,7 @@ contract AdjustTotalAssetsSuccessTests is AdjustTotalAssetsBase {
         vm.expectRevert(stdError.arithmeticError);
         vault.adjustTotalAssets(type(int256).min);
 
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         vm.expectRevert(stdError.arithmeticError);
         vault.setVSR(RAY);
 
@@ -549,13 +549,13 @@ contract AdjustTotalAssetsSuccessTests is AdjustTotalAssetsBase {
         vm.prank(alice);
         vm.expectRevert(stdError.arithmeticError);
         vault.requestRedeem(1, alice);
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert(stdError.arithmeticError);
         vault.processPendingDeposits(type(uint256).max, type(uint256).max);
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert(stdError.arithmeticError);
         vault.processPendingRedeems(type(uint256).max, type(uint256).max);
-        vm.prank(rebalancer);
+        vm.prank(operator);
         vm.expectRevert(stdError.arithmeticError);
         vault.processPendingDepositCancellations(type(uint256).max, type(uint256).max);
 
