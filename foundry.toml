@@ -14,6 +14,33 @@ fs_permissions = [
 runs = 1000
 
 [invariant]
+runs             = 20
+depth            = 50
+fail_on_revert   = true
+shrink_run_limit = 50
+show_metrics     = true
+show_solidity    = true
+
+[profile.pr-ci.invariant]
+runs             = 50
+depth            = 200
+fail_on_revert   = true
+shrink_run_limit = 50
+show_metrics     = true
+show_solidity    = true
+
+[profile.master-ci.invariant]
+runs             = 100
+depth            = 500
+fail_on_revert   = true
+shrink_run_limit = 50
+show_metrics     = true
+show_solidity    = true
+timeout          = 10_000
+
+[profile.coverage.invariant]
+runs           = 5
+depth          = 25
 fail_on_revert = true
 
 [rpc_endpoints]
