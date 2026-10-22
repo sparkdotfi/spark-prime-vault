@@ -535,6 +535,18 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _assertDepositRequest(9, ali,        ali,        1_000_000e6 - 1);
     }
 
+    // Failure tests
+
+    function test_processPendingDeposits_isPaused() external {
+        _pause();
+
+        vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
+        vm.prank(operator);
+        spPrime.processPendingDeposits(type(uint256).max, type(uint256).max);
+    }
+
+    // Success tests
+
     function test_processPendingDeposits_infiniteMaxSavingsShares_infiniteMaxRequests() external {
         // Deposit Request 3
 
