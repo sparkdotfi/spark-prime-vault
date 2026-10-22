@@ -748,7 +748,7 @@ contract E2ETests is TestBase {
         _assertAccountBalances(bobBalances);
         _assertAccountBalances(vaultBalances);
 
-        // 7. Guardian pauses the vault
+        // 7. Pauser pauses the vault
 
         _pause();
 
@@ -765,9 +765,9 @@ contract E2ETests is TestBase {
         _assertAccountBalances(bobBalances);
         _assertAccountBalances(vaultBalances);
 
-        // 8. Admin records a 10% loss on deployed funds
+        // 8. Loss Manager records a 10% loss on deployed funds
 
-        vm.prank(admin);
+        vm.prank(lossManager);
         spPrime.adjustTotalAssets(-(110_250e6 - 1));  // 10% of 1_102_500e6 - 2 totalAssets
 
         // Chi drops by 10%, so Ali's held shares and her pending redeem lose 10% of their value
@@ -792,7 +792,7 @@ contract E2ETests is TestBase {
         _assertAccountBalances(bobBalances);
         _assertAccountBalances(vaultBalances);
 
-        // 9. Admin unpauses the vault
+        // 9. Unpauser unpauses the vault
 
         _unpause();
 
@@ -803,7 +803,7 @@ contract E2ETests is TestBase {
         _assertAccountBalances(bobBalances);
         _assertAccountBalances(vaultBalances);
 
-        // 10. Admin raises capacity
+        // 10. Operator raises capacity
 
         _setCapacity(VAULT_CAPACITY);
 

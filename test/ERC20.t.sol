@@ -7,14 +7,16 @@ import { Ethereum } from "../lib/spark-address-registry/src/Ethereum.sol";
 
 import { TokenFuzzChecks } from "../lib/token-tests/src/TokenFuzzChecks.sol";
 
+import { ISparkPrimeVault } from "../src/ISparkPrimeVault.sol";
+
 import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
 
 contract ERC20Tests is TokenFuzzChecks {
 
-    bytes32 internal VSR_SETTER_ROLE = keccak256("VSR_SETTER_ROLE");
+    bytes32 internal OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
 
-    address internal admin     = makeAddr("admin");
-    address internal vsrSetter = makeAddr("vsrSetter");
+    address internal admin    = makeAddr("admin");
+    address internal operator = makeAddr("operator");
 
     SparkPrimeVault internal spPrime;
 
@@ -25,14 +27,14 @@ contract ERC20Tests is TokenFuzzChecks {
             address(new ERC1967Proxy(
                 address(new SparkPrimeVault()),
                 abi.encodeCall(
-                    SparkPrimeVault.initialize,
+                    ISparkPrimeVault.initialize,
                     (Ethereum.SPARK_VAULT_V2_SPUSDC, "Spark Prime USDC", "spPrime", admin, 1, 1, 1)
                 )
             ))
         );
 
         vm.startPrank(admin);
-        spPrime.grantRole(VSR_SETTER_ROLE, vsrSetter);
+        spPrime.grantRole(OPERATOR_ROLE, operator);
 
         spPrime.setVSRBounds(1e27, spPrime.MAX_VSR());
         vm.stopPrank();
@@ -52,7 +54,7 @@ contract ERC20Tests is TokenFuzzChecks {
         vsr      = bound(vsr,      1e27, 1.000000012857214317438491659e27);  // 0 to 50% APY
         warpTime = bound(warpTime, 0,    10 days);
 
-        vm.prank(vsrSetter);
+        vm.prank(operator);
         spPrime.setVSR(vsr);
 
         skip(warpTime);
