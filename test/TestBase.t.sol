@@ -26,6 +26,8 @@ interface ISparkVaultLike {
 
     function transfer(address to, uint256 amount) external returns (bool);
 
+    function withdraw(uint256 assets, address to, address from) external returns (uint256);
+
     function assetsOf(address owner) external view returns (uint256);
 
     function balanceOf(address owner) external view returns (uint256);
@@ -35,16 +37,6 @@ interface ISparkVaultLike {
     function convertToShares(uint256 assets) external view returns (uint256);
 
     function nowChi() external view returns (uint256);
-
-}
-
-interface IUSDCLike {
-
-    function blacklist(address account) external;
-
-    function unblacklist(address account) external;
-
-    function blacklister() external view returns (address);
 
 }
 
@@ -88,18 +80,20 @@ abstract contract TestBase is Test {
     uint256 internal constant FIVE_PCT_VSR = 1.000000001547125957863212448e27;
 
     address internal admin           = makeAddr("admin");
-    address internal guardian        = makeAddr("guardian");
-    address internal processor       = makeAddr("processor");
+    address internal lossManager     = makeAddr("lossManager");
+    address internal operator        = makeAddr("operator");
+    address internal pauser          = makeAddr("pauser");
     address internal redeemFeeSetter = makeAddr("redeemFeeSetter");
     address internal taker           = makeAddr("taker");
-    address internal vsrSetter       = makeAddr("vsrSetter");
+    address internal unpauser        = makeAddr("unpauser");
 
     bytes32 internal DEFAULT_ADMIN_ROLE     = 0x00;
-    bytes32 internal GUARDIAN_ROLE          = keccak256("GUARDIAN_ROLE");
-    bytes32 internal PROCESSOR_ROLE         = keccak256("PROCESSOR_ROLE");
+    bytes32 internal LOSS_MANAGER_ROLE      = keccak256("LOSS_MANAGER_ROLE");
+    bytes32 internal OPERATOR_ROLE          = keccak256("OPERATOR_ROLE");
+    bytes32 internal PAUSER_ROLE            = keccak256("PAUSER_ROLE");
     bytes32 internal REDEEM_FEE_SETTER_ROLE = keccak256("REDEEM_FEE_SETTER_ROLE");
     bytes32 internal TAKER_ROLE             = keccak256("TAKER_ROLE");
-    bytes32 internal VSR_SETTER_ROLE        = keccak256("VSR_SETTER_ROLE");
+    bytes32 internal UNPAUSER_ROLE          = keccak256("UNPAUSER_ROLE");
 
     IERC20Like      internal usdc   = IERC20Like(Ethereum.USDC);
     ISparkVaultLike internal spUSDC = ISparkVaultLike(Ethereum.SPARK_VAULT_V2_SPUSDC);
@@ -115,7 +109,7 @@ abstract contract TestBase is Test {
             address(new ERC1967Proxy(
                 address(new SparkPrimeVault()),
                 abi.encodeCall(
-                    SparkPrimeVault.initialize,
+                    ISparkPrimeVault.initialize,
                     (
                         address(spUSDC),
                         "Spark Prime USDC",
@@ -131,19 +125,22 @@ abstract contract TestBase is Test {
 
         vm.startPrank(admin);
 
-        spPrime.grantRole(GUARDIAN_ROLE,          guardian);
-        spPrime.grantRole(PROCESSOR_ROLE,         processor);
+        spPrime.grantRole(LOSS_MANAGER_ROLE,      lossManager);
+        spPrime.grantRole(OPERATOR_ROLE,          operator);
+        spPrime.grantRole(PAUSER_ROLE,            pauser);
         spPrime.grantRole(REDEEM_FEE_SETTER_ROLE, redeemFeeSetter);
         spPrime.grantRole(TAKER_ROLE,             taker);
-        spPrime.grantRole(VSR_SETTER_ROLE,        vsrSetter);
+        spPrime.grantRole(UNPAUSER_ROLE,          unpauser);
 
-        spPrime.setCapacity(VAULT_CAPACITY);
         spPrime.setVSRBounds(RAY, spPrime.MAX_VSR());
 
         vm.stopPrank();
 
-        vm.prank(vsrSetter);
+
+        vm.startPrank(operator);
+        spPrime.setCapacity(VAULT_CAPACITY);
         spPrime.setVSR(FIVE_PCT_VSR);
+        vm.stopPrank();
 
         PendingRequestsState memory depositRequests = PendingRequestsState({
             pendingShareValue : 0,
@@ -176,14 +173,14 @@ abstract contract TestBase is Test {
         });
 
         vm.label(address(admin),           "admin");
-        vm.label(address(guardian),        "guardian");
-        vm.label(address(processor),       "processor");
+        vm.label(address(lossManager),     "lossManager");
+        vm.label(address(operator),        "operator");
         vm.label(address(redeemFeeSetter), "redeemFeeSetter");
         vm.label(address(spPrime),         "spPrime");
         vm.label(address(spUSDC),          "spUSDC");
         vm.label(address(taker),           "taker");
+        vm.label(address(unpauser),        "unpauser");
         vm.label(address(usdc),            "usdc");
-        vm.label(address(vsrSetter),       "vsrSetter");
     }
 
     function _getBlock() internal pure returns (uint256) {
@@ -195,17 +192,17 @@ abstract contract TestBase is Test {
     /**********************************************************************************************/
 
     function _pause() internal {
-        vm.prank(guardian);
+        vm.prank(pauser);
         spPrime.pause();
     }
 
     function _unpause() internal {
-        vm.prank(admin);
+        vm.prank(unpauser);
         spPrime.unpause();
     }
 
     function _setCapacity(uint256 capacity) internal {
-        vm.prank(admin);
+        vm.prank(operator);
         spPrime.setCapacity(capacity);
     }
 
@@ -254,7 +251,7 @@ abstract contract TestBase is Test {
     }
 
     function _processPendingDeposits(uint256 maxSavingsShares, uint256 maxRequests) internal {
-        vm.prank(processor);
+        vm.prank(operator);
         spPrime.processPendingDeposits(maxSavingsShares, maxRequests);
     }
 
@@ -262,8 +259,12 @@ abstract contract TestBase is Test {
         _processPendingDeposits(type(uint256).max, maxRequests);
     }
 
+    function _processPendingDeposits() internal {
+        _processPendingDeposits(type(uint256).max, type(uint256).max);
+    }
+
     function _processPendingDepositCancellations(uint256 maxSavingsShares, uint256 maxRequests) internal {
-        vm.prank(processor);
+        vm.prank(operator);
         spPrime.processPendingDepositCancellations(maxSavingsShares, maxRequests);
     }
 
@@ -272,7 +273,7 @@ abstract contract TestBase is Test {
     }
 
     function _processPendingRedeems(uint256 maxShares, uint256 maxRequests) internal {
-        vm.prank(processor);
+        vm.prank(operator);
         spPrime.processPendingRedeems(maxShares, maxRequests);
     }
 
@@ -284,14 +285,9 @@ abstract contract TestBase is Test {
         _processPendingRedeems(type(uint256).max, type(uint256).max);
     }
 
-    function _blacklist(address account) internal {
-        vm.prank(IUSDCLike(Ethereum.USDC).blacklister());
-        IUSDCLike(Ethereum.USDC).blacklist(account);
-    }
-
-    function _unblacklist(address account) internal {
-        vm.prank(IUSDCLike(Ethereum.USDC).blacklister());
-        IUSDCLike(Ethereum.USDC).unblacklist(account);
+    function _take(uint256 savingsShares) internal {
+        vm.prank(taker);
+        spPrime.take(savingsShares);
     }
 
     /**********************************************************************************************/
@@ -476,6 +472,33 @@ abstract contract TestBase is Test {
 
     }
 
+    function _assertDepositRequest(
+        ISparkPrimeVault.Request memory request,
+        address                         owner,
+        address                         recipient,
+        uint256                         savingsShareValue
+    )
+        internal view
+    {
+        assertEq(
+            request.owner,
+            owner,
+            "depositRequest.owner"
+        );
+
+        assertEq(
+            request.recipient,
+            recipient,
+            "depositRequest.recipient"
+        );
+
+        assertEq(
+            spUSDC.convertToAssets(request.shares),
+            savingsShareValue,
+            "depositRequest.savingsShareValue"
+        );
+    }
+
     function _assertDepositCancellationRequest(
         uint256 requestId,
         address owner,
@@ -501,6 +524,33 @@ abstract contract TestBase is Test {
 
         assertEq(
             spUSDC.convertToAssets(shares_),
+            savingsShareValue,
+            "depositCancellationRequest.savingsShareValue"
+        );
+    }
+
+    function _assertDepositCancellationRequest(
+        ISparkPrimeVault.Request memory request,
+        address                         owner,
+        address                         recipient,
+        uint256                         savingsShareValue
+    )
+        internal view
+    {
+        assertEq(
+            request.owner,
+            owner,
+            "depositCancellationRequest.owner"
+        );
+
+        assertEq(
+            request.recipient,
+            recipient,
+            "depositCancellationRequest.recipient"
+        );
+
+        assertEq(
+            spUSDC.convertToAssets(request.shares),
             savingsShareValue,
             "depositCancellationRequest.savingsShareValue"
         );
@@ -538,87 +588,49 @@ abstract contract TestBase is Test {
 
     function _assertRedeemRequest(
         ISparkPrimeVault.Request memory request,
-        address                        owner,
-        address                        recipient,
-        uint256                        shareValue
+        address                         owner,
+        address                         recipient,
+        uint256                         shareValue
     )
         internal view
     {
         assertEq(
             request.owner,
             owner,
-            "owner"
+            "redeemRequest.owner"
         );
+
         assertEq(
             request.recipient,
             recipient,
-            "recipient"
+            "redeemRequest.recipient"
         );
+
         assertEq(
             spPrime.convertToAssets(request.shares),
             shareValue,
-            "shareValue"
-        );
-    }
-
-    function _assertPendingDepositCancellationRequest(
-        uint256 requestId,
-        address owner,
-        address recipient,
-        uint256 savingsShareValue
-    )
-        internal view
-    {
-        (
-            address requestOwner_,
-            address requestRecipient_,
-            uint256 requestShares_
-        ) = spPrime.getPendingDepositCancellationRequest(requestId);
-
-        assertEq(
-            requestOwner_,
-            owner,
-            "DepositCancellationRequest.owner"
-        );
-        assertEq(
-            requestRecipient_,
-            recipient,
-            "DepositCancellationRequest.recipient"
-        );
-        assertEq(
-            spUSDC.convertToAssets(requestShares_),
-            savingsShareValue,
-            "DepositCancellationRequest.shares"
-        );
-    }
-
-    function _assertRequest(
-        ISparkPrimeVault.Request memory request,
-        address                        owner,
-        address                        recipient,
-        uint256                        savingsShareValue
-    )
-        internal view
-    {
-        assertEq(
-            request.owner,
-            owner,
-            "owner"
-        );
-        assertEq(
-            request.recipient,
-            recipient,
-            "recipient"
-        );
-        assertEq(
-            spUSDC.convertToAssets(request.shares),
-            savingsShareValue,
-            "savingsShareValue"
+            "redeemRequest.shareValue"
         );
     }
 
     function _assertEmptyRequest(ISparkPrimeVault.Request memory request) internal view {
-        _assertRequest(request, address(0), address(0), 0);
+        assertEq(
+            request.owner,
+            address(0),
+            "request.owner not zero"
+        );
+
+        assertEq(
+            request.recipient,
+            address(0),
+            "request.recipient not zero"
+        );
+
+        assertEq(
+            request.shares,
+            0,
+            "request.shares not zero"
+        );
     }
 
 }

@@ -7,6 +7,8 @@ import { ERC1967Proxy, TestBase, SparkPrimeVault } from "./TestBase.t.sol";
 
 import { ISparkPrimeVault } from "../src/ISparkPrimeVault.sol";
 
+import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
+
 contract InitializeTests is TestBase {
 
     SparkPrimeVault internal implementation;
@@ -19,13 +21,13 @@ contract InitializeTests is TestBase {
 
     function _deploy(uint256 minDeposit, uint256 minDepositCancellation, uint256 minRedeem)
         internal
-        returns (SparkPrimeVault)
+        returns (ISparkPrimeVault)
     {
         return SparkPrimeVault(
             address(new ERC1967Proxy(
                 address(implementation),
                 abi.encodeCall(
-                    SparkPrimeVault.initialize,
+                    ISparkPrimeVault.initialize,
                     (
                         address(spUSDC),
                         "Spark Prime USDC",
@@ -70,7 +72,7 @@ contract InitializeTests is TestBase {
     }
 
     function test_initialize() external {
-        SparkPrimeVault vault = _deploy(MINIMUM_DEPOSIT, MINIMUM_DEPOSIT_CANCELLATION, MINIMUM_REDEEM);
+        ISparkPrimeVault vault = _deploy(MINIMUM_DEPOSIT, MINIMUM_DEPOSIT_CANCELLATION, MINIMUM_REDEEM);
 
         assertEq(vault.savings(),  address(spUSDC));
         assertEq(vault.asset(),    address(usdc));
