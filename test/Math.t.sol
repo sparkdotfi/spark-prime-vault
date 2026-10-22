@@ -67,7 +67,7 @@ contract DivupSuccessTests is MathTestBase {
 
 }
 
-contract RpowSuccessTests is MathTestBase {
+contract RpowTests is MathTestBase {
 
     struct ApyVsrTestCase {
         uint256 apy;
@@ -87,6 +87,15 @@ contract RpowSuccessTests is MathTestBase {
             });
         }
     }
+
+    // Failure Tests.
+
+    function test_rpow_squareOverflow() external {
+        vm.expectRevert();
+        harness.rpow(2 ** 128, 2);
+    }
+
+    // Success Tests.
 
     function table_rpow_apyVsr18Decimals(ApyVsrTestCase memory apyVsr) external view {
         uint256 deposit = 1_000_000e18;
@@ -128,6 +137,22 @@ contract RpowSuccessTests is MathTestBase {
         uint256 minVsrChi = harness.rpow(minVsr, 1000 * 365 days);
 
         assertEq(minVsrChi, 1e27);
+    }
+
+    function test_rpow_zeroBase() external view {
+        assertEq(harness.rpow(0, 0),        1e27);
+        assertEq(harness.rpow(0, 1),        0);
+        assertEq(harness.rpow(0, 365 days), 0);
+    }
+
+    function test_rpow_oddExponent() external view {
+        uint256 fivePctVsr = 1.000000001547125957863212448e27;
+
+        assertEq(harness.rpow(2e27, 1), 2e27);
+        assertEq(harness.rpow(2e27, 3), 8e27);
+        assertEq(harness.rpow(2e27, 5), 32e27);
+
+        assertEq(harness.rpow(fivePctVsr, 1), fivePctVsr);
     }
 
 }
