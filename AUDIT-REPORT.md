@@ -1,4 +1,163 @@
-# spPRIME (`src/SparkPrimeVault.sol`) review and testing campaign: final report, round 5
+# spPRIME (`src/SparkPrimeVault.sol`) review and testing campaign: final report, round 6
+
+Target: `master` @ `c512609` ("test: Small fix and improve coverage (#51)", 2026-10-22), the code that is with the external auditors. Branch `review/poc-tests-v2` (PR #17), suite under `test/ai/`. Earlier rounds follow as appendices. Round 6 ports the whole suite to this master, pins every earlier finding as fixed or open, and covers the paths that are new since `0ebb452`: the seven-role model, custom errors, partial deposit cancellations with the self-skipping head, the per-entry liquidity bound in the redeem loop, the try/catch blacklist fallback, `totalClaimable`, the `(startId, length)` getters and the repacked storage.
+
+## 1. Executive summary
+
+1,022 tests across 18 suites, all passing, no deliberate failing proof left (the two C-1 proofs became regressions because the bug is fixed). 14 invariants held over 250,000 handler calls (500 runs x depth 500, 32 handler flows, 0 reverts), in the handlers / InvariantsBase / Invariants layout used by the other Spark vault repos. Coverage of `src/SparkPrimeVault.sol` by the suite (`forge coverage`, legacy pipeline; `Authorization`, `Admin`, `Upgrade`, `Adversarial` and `CancelAndFees` excluded because they hit the coverage compiler's stack limit, they run normally): 100% of lines (374/374), 100% of functions (64/64), 97.5% of statements (393/403), 97.6% of branches (161/165). The uncovered branches are the `_rpow` zero-base cases and the ERC-1271 decode fallbacks, which are unreachable through the public surface with a sane `vsr`.
+
+Fixed since round 5 and pinned with `test_fixed_*` regressions: **C-1** (batched redeem fills no longer revert; the bound is recomputed per entry), **V2-13** for the vault (rejected as recipient on all six paths), **R5-9** in part (zero-asset requests are impossible, a cancelled head is skipped by the cancel itself, a budget-0 walk advances the head), **R4-A / R4-B** (fallback now by try/catch, same amounts), **C-8** (zero minimums rejected), cancellations and their settlement no longer pause-gated (the round-4 ask).
+
+No Critical. Two things moved up because of the role split: `adjustTotalAssets` now sits on a `LOSS_MANAGER_ROLE` hot wallet with no bound in either direction, and the `OPERATOR_ROLE` holds both the rate and the queue processing.
+
+| Severity | Count | Items |
+|---|---|---|
+| Critical | 0 | |
+| High | 1 | R6-1 (`adjustTotalAssets` unbounded on a hot wallet: wipe holders, or let one holder drain the backing) |
+| Medium | 4 | R6-2 (G-1 chi brick), R6-3 (gain sandwich around the pause, plus the cancel-during-pause free option), R6-4 (operator sets `MAX_VSR` and redeems first), R6-5 (F-2 backing not ring-fenced) |
+| Low | 10 | R6-6 (uncancellable remainder below `minDepositCancellation`), R6-7 (unbounded self-skip walk), R6-8 (capacity overflow now bricks cancels too), R6-9 (redeem loop has no zero-share skip), R6-10 (redeem-head dust, per-entry bound double-floors), R6-11 (spUSDC as recipient donates), R6-12 (zero admin / last-admin renounce), R6-13 (bounds do not clamp live values), R6-14 (minimums unbounded above), R6-15 (1-wei and 2-wei dust entries) |
+| Informational | 9 | section 4 |
+
+Fix before the audit report lands, in this order (patches in section 7):
+
+1. **R6-1.** Cap `adjustTotalAssets` relative to `totalAssets` in both directions, and bound `chi` by `type(uint256).max / RAY` (R6-2). Both are one line each.
+2. **R6-6.** Exempt the emptying cancel from `minDepositCancellation` (`savingsShares_ == request.shares`), and document that the minimum is in spUSDC share units.
+3. **R6-7.** Bound the self-skip walk at the end of `requestDepositCancellation` (a `maxRequests_` constant), and give the redeem loop the same `continue` on zero entries the deposit loop has (R6-9).
+4. **R6-11.** Reject `savings` as recipient alongside `address(this)`.
+5. **R6-3 / R6-4.** Operational: pause before the payload is public; keep the operator key cold or split `setVSR` from processing; cap `maxVSR` well under 100% APY.
+6. **R6-8, R6-12, R6-13, R6-14.** `setCapacity` bound, `require(admin != 0)` plus two-step admin, clamp live values when bounds tighten, bound minimums.
+
+## 2. Scope and method
+
+Ten parallel workers on the local harness (`test/ai/LocalTestBase.t.sol`: real spUSDC `SparkVault` code behind a proxy over a 6-decimal `MockUSDC` whose blacklist reverts transfers like Circle's; minimums 1 wei so every amount stays reachable). Each worker ported its suite, pinned each prior finding, then covered every code path in its area including the new ones; one worker read the contract cold. Per-area reports with line maps on `c512609`: `test/ai/REPORT-<area>.md`. `test/ai/Headline.t.sol` is the one-file entry point.
+
+| Suite | File | Tests | Fuzz |
+|---|---|---|---|
+| Headline reproductions | `Headline.t.sol` | 16 | 1 |
+| Authorization / Admin | `Authorization.t.sol`, `Admin.t.sol` | 195 | 11 |
+| Upgrade / Views / Review / Smoke | `Upgrade.t.sol`, `Views.t.sol`, `Review.t.sol` (fork, compile only), `LocalSmoke.t.sol` | 69 | 7 |
+| Deposit and cancellation queues | `DepositQueue.t.sol`, `CancelledDepositQueue.t.sol` | 113 | 8 |
+| Redeem queue | `RedeemQueue.t.sol` | 84 | 9 |
+| Cancels and fees | `CancelAndFees.t.sol` | 96 | 8 |
+| New surface / Blacklist / AdjustTotalAssets | `NewSurface.t.sol`, `Blacklist.t.sol`, `AdjustTotalAssets.t.sol` | 156 | 2 |
+| Adversarial | `Adversarial.t.sol` | 142 | 11 |
+| Rounding | `Rounding.t.sol` | 102 | 58 |
+| Fresh eyes | `FreshEyes.t.sol` | 51 | 6 |
+| Invariants | `invariants/Invariants.t.sol` (+ `InvariantsBase.t.sol`, `handlers/`) | 1 (14 invariants) | 250,000 calls |
+
+Run: `FOUNDRY_OFFLINE=true forge test --match-path 'test/ai/*.t.sol'` (about 6 minutes with the default invariant config) and `FOUNDRY_OFFLINE=true FOUNDRY_INVARIANT_RUNS=500 FOUNDRY_INVARIANT_DEPTH=500 forge test --match-path 'test/ai/invariants/Invariants.t.sol'` (3 minutes). Fuzz properties were re-run at 20,000 runs by each worker.
+
+## 3. What changed upstream (round 5 -> round 6)
+
+- Roles: `DEFAULT_ADMIN_ROLE` (upgrade, max fee, minimums, VSR bounds), `LOSS_MANAGER_ROLE` (`adjustTotalAssets`), `OPERATOR_ROLE` (`setCapacity`, `setVSR`, the three `processPending*`), `PAUSER_ROLE`, `UNPAUSER_ROLE`, `REDEEM_FEE_SETTER_ROLE`, `TAKER_ROLE`.
+- Custom errors throughout (ERC20 and permit strings unchanged); `ISparkPrimeVault` with NatSpec; `initialize` takes three non-zero minimums.
+- `requestDepositCancellation(requestId, recipient, savingsShares)`: partial cancels, owner only, not pause-gated, ends with `_processPendingDeposits(0, max)` which walks cancelled entries at the head. `processPendingDepositCancellations` not pause-gated. `minDepositCancellation` in spUSDC share units.
+- `_processPendingDeposits`: `continue` on cancelled entries before the `remaining_ == 0` break. `_processPendingRedeems`: `fillable_ = min(remaining_, convertToShares(availableLiquidAssets()))` per entry, `break` at 0.
+- Blacklist fallback by `try/catch` on spUSDC `redeem` / `withdraw`; no `isBlacklisted` check; `totalClaimable` counter; `claim` decrements it.
+- Vault rejected as recipient in every request and update path. Range getters `(startId, length)`. Events carry `requestId`. Storage: `rho`/`chi` packed in slot 7, `decimals` packed in slot 4, `totalClaimable` slot 18, `allowance` slot 28.
+
+## 4. Findings (line numbers on `c512609`)
+
+#### R6-1 · High (trust model, hot wallet) · `adjustTotalAssets` is unbounded in both directions
+- **Location:** lines 262-283 (`LOSS_MANAGER_ROLE`, only `totalAssets_ > 0`, `chi != 0`, `chi <= uint192.max`).
+- **Down:** `-(totalAssets - 1)` is accepted; on 1M + 100k of holders `chi` becomes 917,897,971,131,388, every `assetsOf` reads 0, the spUSDC backing is untouched and fully `take`-able. One `PAUSER` plus one `LOSS_MANAGER` key.
+- **Up (new this round):** a gain is also unbounded, and the per-entry redeem bound (line 953) is the whole vault spUSDC, so after `+1e18` the first redeemer in the queue is paid everything: a 1,000 USDC position redeems 1,000,998,999,890 USDC (the other holder's 1M plus its own), the next redeem pays 0. On 1.1M TVL with a +1M write-up the key's own 100k position takes 190,909,090,907 and leaves 1,000,000,000,000 unpayable.
+- **Why it moved up:** in round 5 this was the admin (a governance spell). Now it is a separate role that cannot be the spell if it is meant to react to losses, and no floor, cap, or delay exists.
+- **Fix:** `require(|delta| <= totalAssets * MAX_ADJUST_RATE / WAD)` per call (10% or admin-set), or a timelock on the role.
+- **Tests:** `AdjustTotalAssets.t.sol: test_BUG_C3_*`; `Admin.t.sol: test_BUG_C3_lossFloorAbsent_hotWalletsOnly`, `test_BUG_C3_gainUnbounded_hotWalletLetsOneHolderDrainBacking`; `Adversarial.t.sol: test_BUG_C3_lossManagerHotWallet_*` (2); `FreshEyes.t.sol: test_BUG_lossManager_unboundedGain_dustHolderDrainsAllBacking`; `RedeemQueue.t.sol: test_BUG_adjustTotalAssets_wipesQueuedRedeemer_C3`; `Headline.t.sol: test_BUG_H3_*`.
+
+#### R6-2 · Medium · `chi` above `type(uint256).max / RAY` bricks the vault (G-1, unchanged, now a hot-wallet call)
+- Line 280 bounds `chi` by `uint192` (~6.3e57); `drip` (line 655) and `nowChi` (line 846) multiply by `_rpow(vsr, dt) >= RAY` in uint256. Exact threshold unchanged: 115792089237316195423570985008687907853269984665640 drips, +1 panics one second later; `adjustTotalAssets` drips first so it cannot undo; same-block undo only; only an upgrade recovers. New consequence: `requestDepositCancellation` also reverts (its walk drips). Five workers re-derived the same number.
+- **Fix:** `updatedChi_ <= type(uint256).max / _rpow(maxVSR, horizon)`.
+- **Tests:** `AdjustTotalAssets.t.sol: test_BUG_G1_*`; `Admin.t.sol: test_BUG_G1_*` (4); `Rounding.t.sol: test_BUG_G1_*`; `Upgrade.t.sol: test_BUG_adjustTotalAssets_chiAboveRpowBoundBricksVault`; `FreshEyes.t.sol: test_BUG_adjustTotalAssets_chiAboveDripBound_bricksVaultPermanently`; `Headline.t.sol: test_BUG_H1_*`.
+
+#### R6-3 · Medium (process) · Gains realised through `adjustTotalAssets` are capturable around the pause; cancels are a free option during it
+- Unchanged numbers: 1M vault, 1M attacker deposit one block before the pause, +50k: profit 24,999,999,998 at 0% fee, 14,749,999,997 at 1%, the honest holder loses 25,000,000,000. New: because `requestDepositCancellation` is not pause-gated, a queued depositor who sees a loss coming can cancel out during the pause before `adjustTotalAssets` lands (`test_BUG_R5_2_queuedDepositorExitsDuringPauseBeforeLoss`).
+- **Fix:** pause before publishing, or pin capacity in the same spell, or require a minimum pause duration before `adjustTotalAssets`; decide whether cancels should be allowed while paused.
+- **Tests:** `Adversarial.t.sol: test_BUG_R3_1_*`; `AdjustTotalAssets.t.sol: test_BUG_R3_1_*`, `test_BUG_R5_2_*`; `FreshEyes.t.sol: test_BUG_adjustTotalAssets_gainSandwich_depositBeforePause`; `Headline.t.sol: test_BUG_H2_*`.
+
+#### R6-4 · Medium · The operator sets the rate and processes the queue
+- `OPERATOR_ROLE` holds `setVSR` (line 308, bounded only by `maxVSR`, which may be `MAX_VSR` = 100% APY) and `processPendingRedeems`. Own 1M deposit, `setVSR(MAX_VSR)` for one day, own redeem processed first: profit 1,900,837,676; the other holder is short 3,801,675,355 of backing. Ordering and capacity games alone extract nothing (`test_operator_orderingAndCapacity_cannotExtractValue`).
+- **Fix:** a low `maxVSR` at launch (this is C-9 re-rated), or split rate-setting from processing.
+- **Tests:** `Adversarial.t.sol: test_BUG_C9_operatorSetsMaxVsr_frontOfQueueProfit`; `Admin.t.sol: test_BUG_C9_*`.
+
+#### R6-5 · Medium (design) · Queue backing is not ring-fenced (F-2, unchanged)
+- `take` (line 289) ignores the pending counters; the per-entry redeem bound (line 953) is the vault's whole spUSDC, so redeem fills spend spUSDC owed to queued deposits and cancellations whenever notional exceeds backing; the operator decides who is paid. `take` works while paused.
+- **Tests:** `Adversarial.t.sol: test_BUG_F2_*`, `test_pause_matrix`; `FreshEyes.t.sol: test_BUG_redeemsConsumeQueuedDepositBacking_cancellerStuck`; `DepositQueue.t.sol: test_priority_*`; invariant J (gap opened only by `take` or redeem fills).
+
+#### Low
+
+- **R6-6 (new)** · A remainder below `minDepositCancellation` cannot be cancelled: line 422 applies the minimum to every cancel including the emptying one, line 423 caps at the remainder, so a leftover from a partial cancel or a partial fill (e.g. 5,453,269 of 95,453,269 shares) returns `BelowMinDepositCancellation` for less and `SavingsSharesTooHigh` for more; only an operator fill releases it. Because `minDeposit` is USDC and `minDepositCancellation` is spUSDC shares, a `minDepositCancellation` above `convertToShares(minDeposit)` makes minimum-sized deposits uncancellable outright (100e6 shares = 104.76 USDC at the harness index). Fix: `require(savingsShares_ >= minDepositCancellation || savingsShares_ == depositRequest_.shares)`. `FreshEyes.t.sol: test_BUG_cancelRemainderBelowMinDepositCancellation_isUncancellable`; `Admin.t.sol: test_BUG_R6_1_*`; `CancelAndFees.t.sol: *_partialCancels_remainderBelowMinIsStuck`, `test_setMinDepositCancellation_isInSpUsdcShareUnits`.
+- **R6-7 (new shape of R5-9)** · The self-skip walk at the end of `requestDepositCancellation` (line 445, `maxRequests_ = max`) only clears zero entries at the head and is charged to whoever triggers it. A griefer parks N `minDeposit`-sized request-then-cancel pairs behind a live head (each cancel is O(1)); the head owner's full cancel then walks them all at about 2,400 gas per slot (1,000 slots: 2,552,242 gas vs 153,513; ~12,500 slots exceed a block), and if the operator fills the head first, the next instant-filling depositor pays instead (200 slots: 750,964 vs 272,961). Escapes: a partial cancel is O(1); the operator pre-clears with `processPendingDeposits(0, k)`. Griefer cost ~360k gas per slot plus 1 wei. Fix: bound the walk. `Adversarial.t.sol: test_BUG_R6_1_selfSkipWalkChargedToHeadOwnerCancel_partialCancelEscapes`; `CancelAndFees.t.sol: test_BUG_requestDepositCancellation_deadEntriesBehindHeadMakeCancelUnboundedGas`; `DepositQueue.t.sol: test_BUG_cancelledRunBehindLiveHeadTaxesNextInstantFill`; `FreshEyes.t.sol: test_BUG_ghostsBehindLiveHead_fullCancelWalksThemAll`; `Upgrade.t.sol: test_BUG_H6_*`.
+- **R6-8 (V2-7, wider)** · `setCapacity` is unbounded (now an operator call); above `totalSupply + type(uint256).max / nowChi()` the walk's `convertToAssets(availableCapacity())` (line 864) panics, which now also bricks `requestDepositCancellation` because it runs the walk: queued users can neither be filled nor leave until the operator lowers capacity. `FreshEyes.t.sol: test_BUG_setCapacity_uint256Max_bricksDepositFillsAndCancels`; `Rounding.t.sol: test_BUG_V2_7_capacityOverflow_alsoBricksRequestDepositCancellation`; `Admin.t.sol: test_BUG_V2_7_*`.
+- **R6-9 (new)** · The redeem loop has no `continue` for zero-share entries (lines 950-973): an all-fee entry (`requestRedeem(1)` at any fee, only reachable with `minRedeem == 1`) is "filled" with a `maxWithdraw` read, `spUSDC.withdraw(0)` and a zero USDC transfer: 37,275 gas per ghost (about 800 per block) against ~2,400 for a deposit skip, and each consumes a `maxRequests_` slot. `CancelAndFees.t.sol: test_processPendingRedeems_gasWith500GhostEntries`; `Adversarial.t.sol: test_BUG_R6_2_*`; `RedeemQueue.t.sol: test_requestRedeem_oneShareAtAnyFee_zeroShareEntry_R5_14`.
+- **R6-10 (R5-10, exact)** · The per-entry bound floors twice (`maxWithdraw`, then `convertToShares`), so the last entry of an exactly backed queue can be 1 share short, and a fully drained vault leaves 1-2 shares at the head behind 1 spUSDC wei that converts to 0 shares; every later call breaks at `fillable_ == 0` until outside spUSDC arrives. No revert. The per-entry clamp is strictly more conservative than the old one: 21 spUSDC with requests (1, 20) settled on `0ebb452` and now strands 1 + 1. `Rounding.t.sol: test_fixed_C1_perEntryClamp_strandsWhereSingleClampWasSafe`; `RedeemQueue.t.sol: test_BUG_*_unpayableDustAtHeadFreezesQueue_R5_10`; `FreshEyes.t.sol: test_BUG_partialFills_leaveUnpayableDustAtRedeemHead`; `Upgrade.t.sol: test_BUG_H4_dustAtHeadUnpayableUntilTopUp`.
+- **R6-11 (V2-13 residual)** · `savings` is accepted as redeem and cancellation recipient and in the updaters; spUSDC's `withdraw` to itself is a USDC self-transfer that succeeds, so 999,999,999,998 USDC is donated to spUSDC with no claimable entry. One check next to `VaultIsRecipient` closes it. `RedeemQueue.t.sol`, `CancelAndFees.t.sol`, `DepositQueue.t.sol`, `Blacklist.t.sol`, `Upgrade.t.sol: *spUsdc*`.
+- **R6-12 (V2-8)** · `initialize(..., address(0), ...)` accepted; the last admin can renounce; afterwards no role can ever be rotated, so the next lost hot key is permanent. `Admin.t.sol: test_BUG_V2_8_*`; `Upgrade.t.sol: test_BUG_H7_*`.
+- **R6-13 (C-7)** · `setMaxRedeemFeeRate` and `setVSRBounds` do not clamp the live `redeemFeeRate` / `vsr`, and the admin cannot lower them itself (wrong role). `Admin.t.sol: test_BUG_C7_*`; `CancelAndFees.t.sol: test_BUG_setMaxRedeemFeeRate_belowCurrentFeeDoesNotClamp`.
+- **R6-14 (C-8)** · Minimums reject zero but are unbounded above. `Admin.t.sol: test_BUG_C8_*`.
+- **R6-15 (C-11, V2-11)** · A 1-wei deposit at `minDeposit == 1` mints 0 spUSDC shares and leaves an uncancellable zero-share slot (closed by `minDeposit >= ceil(chi_s / RAY)`); 2-wei deposits cancelled into 1-share entries cost the operator 35,453 gas each. `DepositQueue.t.sol: test_BUG_oneWeiDepositIsAGhostAndDonatesToSpUsdc`, `test_BUG_twoWeiCancellationsBloatQueue`; `Rounding.t.sol: testFuzz_C11_minDepositCeilChiS_closesDustRegion`.
+
+#### Informational
+
+- Range getters (lines 707, 755, 802) compute `length - startId` before `LengthTooLarge`, so `startId > length` panics 0x11; `(length, 0)` is a legal empty read, contrary to the NatSpec.
+- NatSpec for `requestDepositCancellation` and `processPendingDepositCancellations` still says pause-gated; neither is. Both work while paused, including the fallback path; the cancel's walk drips but mints nothing.
+- `adjustTotalAssets` at `totalSupply == 0` panics 0x12; `int256.max` panics 0x11 before `ChiTooHigh`. Relative-and-post-drip semantics: a spell computed off-chain overshoots by the interest accrued before execution.
+- Vault itself blacklisted by Circle: clean payouts still work, deposits and `claim` die in USDC, and a blacklisted recipient at the head makes the fallback revert and block the walk until the owner repoints.
+- Cancel-vs-fill race: a cancel for the full amount after an operator partial fill reverts `SavingsSharesTooHigh`; the owner must re-read.
+- The try/catch surface is settled: USDC has no hooks so a contract recipient is always paid directly; a USDC-wide revert fails both legs and the batch reverts with nothing credited; a 63/64 gas starvation of the try leg cannot leave the catch leg with enough gas (scanned 30k-600k); `transferFrom` reorder only changes the revert reason when both balance and allowance are short.
+- `Referral` is emitted at request time and inflated by request-then-cancel loops; the owner picks the refund recipient of each cancel slice.
+- Dead slots count against `maxRequests_` in both loops; a batch stops at the first partial fill, so a second `(max, 1)` call can scrape floor dust.
+- The V2 mock's comment says its appended variable is slot 28; it is 29.
+
+## 5. Rounding table (round 6)
+
+Re-pinned on `c512609` (full table in `test/ai/REPORT-rounding.md`): spUSDC `deposit` floors (line 388); the deposit fill floors twice (lines 883-884); the fee ceils (463); the redeem loop floors the per-entry bound then the assets (953, 958) and spUSDC `withdraw` ceil-burns, with `burn_i <= bal_i` proven for every entry so a batch cannot revert; cancellation settlement floors (924) under a `maxRedeem` budget; partial cancels move `savingsShares` verbatim, so the k-chunk refund loss (up to k-1 wei) is now user-reachable; `adjustTotalAssets` floors `chi` with the 1-wei per-call drift; `drip` matches the Python reference byte for byte. Capacity never over-mints at any index pair (20,000 runs, instant and batch, after a loss). Round trips lose `< 2 + c_s + c_p` wei.
+
+## 6. Invariants
+
+14 invariants (A-N) in `test/ai/invariants/`, mirroring the fork suite's layout on the local harness: sum of balances plus escrow == `totalSupply`; escrow == `pendingRedeemShares`; conversion formulas; pending counters == sums of the pending windows; head + window == requests made; vault USDC == `totalClaimable` == sum of `claimableAssets`; config bounds; capacity formula and `totalSupply <= maxCapacity` unless lowered; `chi`/`rho`/`drip` consistency; backing covers the queues unless `take` or a redeem fill opened the gap; roles intact; escrow == escrowed minus burned by fills; cumulative redeem payouts <= `convertToAssets` of the shares burned; cumulative refunds <= spUSDC value of the shares redeemed. Handlers only bound, prank, call and bump ghost counters; the two modifiers `chiNeverDecreases` and `headsNeverMoveBack` run on every call. `afterInvariant` settles everything from every end state (unpause, un-blacklist, return taken spUSDC and drained USDC, freeze rates, open capacity, drain all three queues, claim for all) and asserts supply, escrow, claimables, vault USDC and `totalAssets` all reach zero. Final run: 500 runs x depth 500 = 250,000 calls, 32 flows, 0 reverts.
+
+## 7. Suggested code changes (round 6)
+
+1. `adjustTotalAssets` (R6-1, R6-2):
+```solidity
+uint256 public constant MAX_ADJUST_RATE = 0.10e18;  // or admin-set
+
+uint256 magnitude_ = deltaTotalAssets_ < 0 ? uint256(-deltaTotalAssets_) : uint256(deltaTotalAssets_);
+require(magnitude_ <= totalAssets_ * MAX_ADJUST_RATE / WAD, AdjustmentTooLarge());
+...
+require(updatedChi_ <= type(uint256).max / _rpow(MAX_VSR, 10 * 365 days), ChiTooHigh());
+```
+2. `requestDepositCancellation` (R6-6, R6-7):
+```solidity
+require(
+    savingsShares_ >= minDepositCancellation || savingsShares_ == depositRequest_.shares,
+    BelowMinDepositCancellation()
+);
+...
+_processPendingDeposits(0, MAX_SELF_SKIP);  // e.g. 50
+```
+3. `_processPendingRedeems`: `if (request_.shares == 0) continue;` before the bound (R6-9); optionally pay `divUp` shares when `convertToShares(availableLiquidAssets()) == 0` but `availableLiquidAssets() >= convertToAssets(request_.shares)` (R6-10).
+4. One `_checkRecipient` rejecting `address(0)`, `address(this)` and `savings` (R6-11).
+5. `setCapacity`: `require(capacity_ <= type(uint128).max)` (R6-8). `require(admin != address(0))` and two-step admin (R6-12). Clamp live values when bounds tighten (R6-13). Bound minimums and launch with `minDeposit >= ceil(chi_s / RAY)`, `minRedeem >= 2` (R6-14, R6-15).
+6. NatSpec: pause gating of the cancellation paths; `length_ == 0` on the range getters; `LengthTooLarge` before the subtraction.
+
+## 8. Open questions for the business team
+
+36. Should `LOSS_MANAGER_ROLE` be a timelocked or governance key, and what per-call drawdown or write-up is acceptable?
+37. Should cancellations stay open during a pause (free option before a loss) or be gated like the other requests?
+38. Is the operator expected to hold both the rate and the processing, and what `maxVSR` will be set at launch?
+39. Should `savings` be rejected as a recipient, or is the donation acceptable?
+40. `minDepositCancellation`: share units are intended? Should the emptying cancel be exempt?
+
+## 9. Limitations
+
+Blacklist behaviour is mocked (the fork suite in PR #65 covers real USDC; the fork PoCs in `test/ai/Review.t.sol` compile but were not executed). Gas figures are cold-slot Foundry measurements. The G-1 threshold is exact at `vsr == RAY`. R6-10 is proven with a frozen spUSDC index. Four suite files hit the coverage tool's stack limit under instrumentation and were excluded from the coverage measurement only (they run normally).
+
+---
+
+# Appendix A00: round 5 report (`0ebb452`)
 
 Target: `master` @ `0ebb452` ("refactor: More Cleanup (#26)", 2026-10-15), unpatched. Branch `review/poc-tests-v2` (PR #17), suite under `test/ai/`.
 Earlier rounds follow as appendices. Round 5 was run overnight before the external audit hand-off and covers everything that changed between `bf93b0d` and `master`: the `adjustTotalAssets` rewrite, the blacklist fallback (`claimableAssets` / `claim`), the role split, the removal of guardian cancels and the queue-head changes.
