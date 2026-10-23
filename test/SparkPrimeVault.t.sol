@@ -854,6 +854,24 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         _assertDepositCancellationRequest(9, ali, ali, 1_000_000e6 - 1);
     }
 
+    function test_processPendingDepositCancellations_fallbackRedeemReverts() external {
+        vm.mockCallRevert(
+            address(spUSDC),
+            abi.encodeWithSelector(ISparkVaultLike.redeem.selector, spUSDC.convertToShares(100_000e6), ali, address(spPrime)),
+            ""
+        );
+
+        vm.mockCallRevert(
+            address(spUSDC),
+            abi.encodeWithSelector(ISparkVaultLike.redeem.selector, spUSDC.convertToShares(100_000e6), address(spPrime), address(spPrime)),
+            "redeem-to-vault-reverts"
+        );
+
+        vm.expectRevert(bytes("redeem-to-vault-reverts"));
+        vm.prank(operator);
+        spPrime.processPendingDepositCancellations(type(uint256).max, type(uint256).max);
+    }
+
     function _setupMockCallReverts() internal {
         vm.mockCallRevert(
             address(spUSDC),
@@ -1287,6 +1305,24 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
         _assertRedeemRequest(7, bob, dan, 800_000e6 - 1);
         _assertRedeemRequest(8, cam, cam, 900_000e6 - 1);
         _assertRedeemRequest(9, ali, ali, 1_000_000e6 - 2);
+    }
+
+    function test_processPendingRedeems_fallbackWithdrawReverts() external {
+        vm.mockCallRevert(
+            address(spUSDC),
+            abi.encodeWithSelector(ISparkVaultLike.withdraw.selector, 100_000e6 - 1, ali, address(spPrime)),
+            ""
+        );
+
+        vm.mockCallRevert(
+            address(spUSDC),
+            abi.encodeWithSelector(ISparkVaultLike.withdraw.selector, 100_000e6 - 1, address(spPrime), address(spPrime)),
+            "withdraw-to-vault-reverts"
+        );
+
+        vm.expectRevert(bytes("withdraw-to-vault-reverts"));
+        vm.prank(operator);
+        spPrime.processPendingRedeems(type(uint256).max, type(uint256).max);
     }
 
     function _setupMockCallReverts() internal {
