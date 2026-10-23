@@ -1,5 +1,174 @@
 # spPRIME adversarial campaign
 
+## Round 6 (`master` @ `c512609`)
+
+Worker: adversarial. File: `test/ai/Adversarial.t.sol`, four contracts on a shared
+`AdversarialBase` (`_cancelTo`, raw `vm.load` reads below the heads, `_unauthorized`):
+`AdversarialTest` (87), `AdversarialRound4Test` (14), `AdversarialRound5Test` (22), new
+`AdversarialRound6Test` (19); 142 tests, all passing at 1000 fuzz runs; the five ordering /
+accounting fuzzes also pass at `FOUNDRY_FUZZ_RUNS=20000`. No deliberately failing test: every
+open finding is a passing proof. Line numbers refer to `src/SparkPrimeVault.sol` @ c512609.
+Build note: `test/ai/TestBase.t.sol` (fork base, not mine) does not compile on this master; run
+with `--skip test/ai/TestBase.t.sol --skip test/ai/LocalSmoke.t.sol`. Gas note: this Foundry
+meters every queue SLOAD cold (~2_400 per walked entry); the round-5 "warm" numbers (~500-650)
+are not comparable, the cold numbers are the mainnet ones.
+
+Port notes: `requestDepositCancellation` 3-arg everywhere (full cancels via `_cancelTo`);
+`below-minimum`/`fee-too-high`/`vsr-too-high` -> selectors; `recipient-cannot-receive` cases
+rewritten as "accepted at request, credited at payout"; `admin` -> `lossManager` for
+`adjustTotalAssets`; role lists rebuilt (operator owns `setCapacity`/`setVSR`, `UNPAUSER_ROLE`
+back); zero-asset / `requestRedeem(0)` ghosts replaced by deposit(2)+cancel ghosts (`_ghost`);
+reads of filled entries use `_rawDeposit/_rawRedeem/_rawCancelled`; deleted:
+`test_griefing_ghostDepositsWhileQueueEmptyAreSkippedInstantly`, `test_griefing_zeroRedeemGhostsAreFree`,
+`test_griefing_capacityZeroFreezesHead_nextDepositorPaysWalk`,
+`test_griefing_ownerCancelAtHeadIsO1_nextDepositorWalksGhosts` (behaviour gone; replaced by the
+`test_fixed_R5_9_*` and R6-1 tests below).
+
+### (a) New findings
+
+#### R6-1 Low: the cancel's self-skip walk is unbounded and charged to the head owner's cancel
+`requestDepositCancellation` ends with `_processPendingDeposits(0, type(uint256).max)` (:445).
+The walk `continue`s over every closed entry from the head (:875) with no `maxRequests` bound.
+An attacker parks N closed entries behind a LIVE head (deposit 2 wei, cancel 1 share; each
+cancel is O(1) because the walk breaks at the live head :878) and the head owner's FULL cancel
+then walks all N: 2_552_242 gas for 1000 entries vs 153_513 for a partial cancel of the same
+entry, 2_398 per entry; 12_510 entries push the victim's cancel past 30M (attacker cost ~250k
+gas and 2 wei per entry, i.e. ~3.1B gas, refunded 1 wei each via the cancel queue). Escapes: a
+PARTIAL cancel (`shares - 1`) is O(1) because the entry stays live; the planner fills the head
+and clears the rest `maxRequests` at a time; the attacker also pays the walk if he cancels his
+own head entry last. Test: `test_BUG_R6_1_selfSkipWalkChargedToHeadOwnerCancel_partialCancelEscapes`.
+Fix shape: bound the self-skip (`_processPendingDeposits(0, k)`) or skip only when the cancelled
+entry is at the head.
+
+#### R6-2 Low: zero-share redeem ghosts run a full `withdraw(0)` round trip
+`_processPendingRedeems` has no `shares == 0` skip (:950-973): a 0-share entry (R5-14,
+`requestRedeem(1)` at fee > 0) executes `maxWithdraw` + `convertToShares` (:953), burns 0,
+calls `_withdrawSavings(0, ..)` (:966) = `spUSDC.withdraw(0)` with a 0-wei USDC transfer and
+emits `Redeem(.., 0, 0, 0)`: 37_436 gas per ghost for the planner (801 per 30M block) against
+~2_450 for a deposit-queue skip; the attacker pays 1 share and 146_793 gas per ghost. Bounded
+by `maxRequests`, removed by `minRedeem >= 100`. Test:
+`test_BUG_R6_2_zeroShareRedeemGhostCostsFullWithdrawRoundTrip`.
+
+#### R6-3 (C-3 re-rated High): `LOSS_MANAGER_ROLE` is a hot wallet with no floor
+`adjustTotalAssets` (:262-283) moved from the admin to a hot-wallet role. PAUSER + LOSS_MANAGER
+(two ops keys, or one box holding both, or any legitimate pause window) write every holder to 0
+in one call: alice 999_999_999_998 and bob 99_999_999_998 -> 0, `chi = RAY / totalSupply`, the
+1.1M of backing becomes vault equity (`test_BUG_C3_lossManagerHotWallet_pauserCollusionWipesAllHolders`).
+The unbounded gain is the extraction path: +1M unbacked gain on 1.1M TVL, the key's own 100k
+redeem at the front of the queue is paid 190_909_090_907, alice then gets 909_090_909_089 and
+1_000_000_000_000 of claims are unpayable (`test_BUG_C3_lossManagerHotWallet_overCreditThenFrontOfQueue`).
+No admin, no timelock, no bound other than `uint192.max` on the way up and `> 0` on the way
+down. The UNPAUSER is not needed for the damage.
+
+#### R6-4 (C-9 / R5-13 re-rated Medium): the OPERATOR key front-runs its own VSR
+`setVSR` (:308) and the three `processPending*` are now one key. Operator deposits 1M, sets
+MAX_VSR for one day, sets it back, redeems himself first: paid 1_001_900_837_676, profit
+1_900_837_676 out of alice's backing; alice is then short 3_801_675_355 (her own over-credit
+plus his take). Bounded only by the admin's `maxVSR` (at 10%: 261_157_876/day). Test:
+`test_BUG_C9_operatorSetsMaxVsr_frontOfQueueProfit`. Ordering and capacity games earn the
+operator nothing (`test_operator_orderingAndCapacity_cannotExtractValue`).
+
+#### R6-5 Info (C-11 residual): `minDeposit != 0` does not close the zero-share ghost
+At `minDeposit = 1` a 1-wei deposit still buys 0 spUSDC shares (`chi_s > RAY`), pushes a 0-share
+entry (skipped at once by the instant path now) and donates the wei. `minDeposit >= ceil(chi_s /
+RAY)` (2 at the harness) closes it. Test: `test_BUG_C11_oneWeiDepositGivesZeroSavingsSharesGhost_minDepositOneWei`.
+
+#### R6-6 Info (R5-10 residual, exact): the per-entry bound floors twice
+`convertToShares(maxWithdraw)` (:953) then `convertToAssets` (:958): with liquidity exactly equal
+to the owed amount the fill is one share short (`convertToShares(convertToAssets(s)) == s - 1`),
+and a fully drained vault leaves the last entry 2 shares short with 1 spUSDC share of dust. No
+revert, no fallback credit, cleared by any top-up. Tests:
+`test_fallback_exactLiquidityBoundary_neverCredits_R5_10_oneShareShort`,
+`test_fixed_C1_elevenElevenRest_paysInOneCall_R5_10_dustExact`.
+
+### (b) Status of prior findings touched
+
+| Finding | Status on c512609 | Pinning test |
+|---|---|---|
+| C-1 / R5-4 batched redeem revert | **fixed**: per-entry bound :953-955. 3401-spUSDC case pays 109 + 3451 in one call, leaves 1 spUSDC + 2 spPRIME shares; (11, 11, rest) pays 11 + 11 + 999_999_999_974, leaves 2 shares; fuzz: batched never reverts and equals chunked | `test_fixed_C1_batch3401_paysInOneCall_dustExact`, `test_fixed_C1_elevenElevenRest_paysInOneCall_R5_10_dustExact`, `testFuzz_fixed_C1_batchNeverReverts_equalsChunked` (20000), `test_C1_batchedRedeemNeverRevertsAtOrBelowFullBacking` |
+| V2-13 / R5-7 vault as recipient | **fixed for the vault** (:381, :415, :455, :484, :500, :515, before the owner check); **open low for spUSDC** (donation to spUSDC's liquidity, taker-pullable) | `test_fixed_V2_13_vaultAsRecipientRejectedEverywhere`, `test_fixed_V2_13_updateRedeemRecipientVaultRejected`, `test_BUG_V2_13_redeemRecipientSpUsdcDonates_vaultRejected`, `test_BUG_V2_13_cancelRecipientSpUsdcDonates_vaultRejected` |
+| R5-9 ghosts / frozen head | **fixed**: `requestDeposit(0)` / `requestRedeem(0)` rejected, zero minimums rejected at init and setters; budget-0 walk advances the head (`processPendingDeposits(0, 10)` moves 10); residual: cancel ghosts behind a live head (R6-1), next-depositor walk after an exact planner close (2_405/entry, 12_474 to 30M) | `test_fixed_R5_9_zeroAssetAndZeroShareRequestsRejected`, `test_fixed_R5_9_budgetZeroWalkAdvancesHeadPastCancelledEntries`, `test_griefing_headWalkChargedToNextDepositorAfterPlannerClosesHead`, `test_griefing_ghostDepositEntriesGasPerSkip` |
+| R4-A / R4-B blacklist fallback | **changed, fixed**: no request-time check; try/catch (:982, :1001) credits `claimableAssets` + `totalClaimable`; same exact amounts as round 5 (99_959_089, 989_999_999_997, 999_999); contract recipients cannot trigger it; USDC-wide reverts propagate and undo the batch | `test_fixed_R4A_blacklistedRedeemRecipient_acceptedAtRequest_claimableAtPayout`, `test_fixed_R4A_blacklistedRedeemRecipientDoesNotBlockQueue`, `test_fixed_R4B_blacklistedCancelRecipient_acceptedAtRequest_claimableAtSettlement`, `test_updateRedeemRecipient_blacklistedAccepted_paidToClaimable`, `test_blacklist_redeemQueue_fullMatrix`, `test_blacklist_cancelQueue_fullMatrix`, `test_fallback_*` |
+| C-8 minimums | zero rejected, unbounded above | `test_fixed_R5_9_zeroAssetAndZeroShareRequestsRejected`, `test_griefing_ghostsBlockedByMinimums` |
+| Pause gating of cancellations (round-4 R5-B) | **fixed**: cancel and settlement run while paused | `test_fixed_V2_2_pauserHasNoCancelPath_cancelNotPauseGated`, `test_pause_matrix` |
+| R5-1 / G-1 chi bound | open, same thresholds | `test_BUG_G1_adjustTotalAssets_chiAboveDripBoundBricks_exactThreshold` |
+| R5-2 / R3-1 gain sandwich | open, same numbers at 1M/1M/50k: 24_999_999_998 (fee 0), 14_749_999_997 (fee 1%), alice loses 25_000_000_000; killed by pause-before-deposit or capacity pin | `test_BUG_R3_1_*` (5), `test_fixed_R3_1_pauseBeforeDepositKillsSandwich` |
+| R5-3 / C-3 loss floor | open, **re-rated High** (hot wallet) | R6-3 tests, `test_BUG_C3_adjustTotalAssets_nearFullLossWipesHolders` |
+| R5-5 / F-2 queue backing not ring-fenced | open; `take` works while paused | `test_BUG_F2_redeemsCanConsumeCancellationBacking_afterTake`, `test_taker_takeAll_thenThreeQueues`, `testFuzz_operatorOrdering_underShortage_totalPayoutBoundedByBacking` |
+| R5-6 / V2-8 last admin renounce | open | `test_BUG_R5_6_lastAdminRenounce_leavesNoAdmin` |
+| R5-8 / V2-7 setCapacity unbounded | open, now on the operator key: `> totalSupply + uint256.max / nowChi()` panics every deposit, planner call and cancel (:864 via :445) | `test_BUG_R5_8_operatorSetCapacityUnbounded_overflowBricksDeposits` |
+| R5-10 redeem-head dust | open, exact (R6-6) | see R6-6 |
+| R5-11 / C-7 bounds do not clamp live values | open | `test_compromised_redeemFeeSetter_maxFeeOnEveryExit` |
+| R5-13 / C-9 MAX_VSR | open, **re-rated** for the operator key (R6-4) | `test_compromised_setter_maxVsrOverCreditsPerDay`, R6-4 |
+| R5-14 1-share redeem ghost at fee > 0 | open, now costs the planner 37k each (R6-2) | `test_requestRedeem_oneShareAtNonZeroFeeIsAllFeeGhost`, R6-2 |
+| R5-15 zero-share mints | open, same threshold | `test_BUG_F4_zeroShareMint_exactThreshold` |
+| R2-5 cancel-queue bloat | open, worse: a single deposit can be split into `shares / minDepositCancellation` slices, 33_287 planner gas each (901 per block), 183_073 attacker gas per slice | `test_cancel_minSlices_griefCancelQueue_gasPerSlice`, `test_cancelQueue_dustCancelsGasPerEntry` |
+
+### (c) Code paths in this area and the tests that cover them
+
+- `requestDepositCancellation` :405-446 bounds (`ZeroRecipient`, `VaultIsRecipient`,
+  `InvalidRequestId`, `NoRequest`, `NotRequestOwner`, `BelowMinDepositCancellation`,
+  `SavingsSharesTooHigh`), partial vs exact delete, event, self-skip:
+  `test_cancel_partial_boundsAndAccounting`, `test_cancel_sliceThenRefill_thenCancelRemainderAfterPartialFill`,
+  `testFuzz_cancel_slicesAccounting`, `test_updateRecipient_filledEntryIsHarmless`, R6-1.
+- `_processPendingDeposits` :858-900 `continue`/`break` order: `test_fixed_R5_9_budgetZeroWalk*`,
+  `test_griefing_headDoesNotAdvanceWithoutCapacityOrLiquidity`, `test_jam_*`.
+- `_processPendingRedeems` :942-976 per-entry bound, `break` at 0, zero-share entries: C-1 tests,
+  R6-2, R6-6, `test_cei_externalCallBeforeStateWrite_revertsLeaveNoPartialState`.
+- `_redeemSavings` / `_withdrawSavings` :978-1014 try, catch, credit; `claim` :531-543 and
+  `totalClaimable`: `test_fallback_contractRecipientCannotTriggerFallback`,
+  `test_fallback_usdcWideRevert_isNotRecipientSpecific_batchReverts`,
+  `test_fallback_exactLiquidityBoundary_*`, `testFuzz_fallback_onlyBlacklistedRecipientIsCredited`,
+  `test_fallback_gasScan_noParkingForCleanRecipient`, `test_fallback_gasScan_blacklistedRecipientCreditedExactlyOrReverted`,
+  blacklist matrices, `test_blacklist_claimableUsdcIsIsolatedAndAccumulates`,
+  `test_blacklist_vaultItselfSanctioned_fallbackBlocksQueue`.
+- Roles :219-368: `test_hotWalletRoles_cannotEscalate` (6 roles x every lever),
+  `test_pause_otherRolesCannot`, `test_unpause_otherRolesCannot`, `test_adjustTotalAssets_accessAndBounds`,
+  `test_adjustTotalAssets_notPaused`, `test_take_*`, `test_upgradeToAndCall_notAdmin`,
+  `test_compromised_rebalancer_starvedUsersAreLockedInAllThreeQueues`.
+- `transferFrom` :565-587 ordering: `test_transferFrom_balanceCheckedBeforeAllowance`,
+  `test_transferFrom_*`, `test_erc20_escrowCannotBeSpentViaTransferFromOrPermit`; permit / ERC-1271
+  :593-642, :1065-1094 unchanged, all round-2/4 tests kept.
+- Events: `Referral` and `RedeemRequest` shapes asserted with `vm.expectEmit`
+  (`test_referral_eventSpoofableForAnyRecipient`, `test_requestRedeem_oneShareAtNonZeroFeeIsAllFeeGhost`),
+  `DepositCancellationRequest` (`test_cancel_partial_boundsAndAccounting`), `TotalAssetsAdjusted`.
+- Getters below the head: `InvalidRequestId` pinned, raw slot reads verified zero
+  (`test_updateRecipient_filledEntryIsHarmless`, `_checkQueueInvariants`).
+
+### (d) Properties that held
+
+- Try/catch: the recipient is never called (no hooks in USDC or spUSDC); a contract recipient
+  that reverts on every call is paid directly in both queues and minted on fill. A non-recipient
+  revert (every USDC `transfer` reverting) fails both legs and undoes the batch, nothing credited.
+  For any liquidity, any backing after `take` and any entry sizes, only the blacklisted
+  recipient is credited and `totalClaimable == usdc.balanceOf(vault)` (20000 runs).
+- Gas: scanning every limit 30k..600k (1k steps) on `processPendingRedeems{gas: g}(max, 1)`, a
+  call either reverts or pays the clean recipient directly; the catch path can never succeed
+  after an OOG in the try (R/64 < G_try/63 < G_catch); smallest filling limit 150k. With a
+  blacklisted recipient every success credits exactly `owed`.
+- Partial cancels: counters move exactly per slice, the owner carries over to each cancel entry,
+  the entry keeps its FIFO place, refund + mint never exceed the deposit (20000 runs).
+- Operator ordering: when backed, any interleaving/chunking of the three queues leaves every user
+  within one floor per partial (two for a deposit fill) of the index amount and the operator's
+  balances unchanged; under shortage the total paid + credited never exceeds the backing and
+  value is conserved to rounding (20000 runs each).
+- Queue invariants under random ops incl. partial cancels, pauser-cancel attempts and repoints:
+  pending == sum of open entries, escrow == pendingRedeemShares, spUSDC >= queued claims, every
+  entry below a head is zero, `totalClaimable == vault USDC` (20000 runs).
+- Round trips never profit (bounds unchanged), capacity never exceeded, C-1 batched == chunked.
+- Vault as recipient rejected on all six paths before the owner check; pause matrix as listed.
+
+### (e) Unsettled
+
+- Gas figures are cold-metered here (2_398-2_454 per walked entry); the round-5 report's warm
+  numbers were measured with a different Foundry and are not directly comparable.
+- The gas scan is 1k-granular; the argument that the catch cannot outlive an OOG try is
+  analytical (63/64 rule), the scan is evidence, not proof.
+- R6-1's 12_510-entry bound assumes the attacker keeps capacity full (his entries must queue)
+  and a victim entry live at the head; a planner call with capacity clears it.
+- spUSDC-as-recipient (V2-13 residual) and `claimableAssets` for spUSDC itself were not
+  explored beyond the donation proof.
+
 ## Round 5 (`master` @ `0ebb452`)
 
 Worker: adversarial. File: `test/ai/Adversarial.t.sol`, three contracts: `AdversarialTest` (87),
