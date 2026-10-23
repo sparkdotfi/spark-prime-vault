@@ -4517,3 +4517,770 @@ contract AdversarialRound5Test is AdversarialBase {
     }
 
 }
+
+/**********************************************************************************************/
+/*** Round 6 (c512609): try/catch fallback, partial cancels, LOSS_MANAGER and OPERATOR as    ***/
+/*** adversaries, ERC20 ordering, ordering fuzzes                                            ***/
+/**********************************************************************************************/
+
+/// @dev Fourth contract (jump-tag limit). Line numbers refer to `src/SparkPrimeVault.sol` @ c512609.
+contract AdversarialRound6Test is AdversarialBase {
+
+    event DepositCancellationRequest(
+        uint256 indexed depositRequestId,
+        uint256 indexed cancelRequestId,
+        address indexed recipient,
+        uint256         sharesCancelled
+    );
+    event ClaimableAssetsIncreased(address indexed recipient, uint256 increase);
+
+    address internal alice    = makeAddr("alice");
+    address internal bob      = makeAddr("bob");
+    address internal carol    = makeAddr("carol");
+    address internal attacker = makeAddr("attacker");
+    address internal victim   = makeAddr("victim");
+    address internal clean    = makeAddr("clean");
+
+    function _ceilBurn(uint256 assets) internal view returns (uint256) {
+        return (assets * RAY - 1) / spUsdc.nowChi() + 1;
+    }
+
+    /**********************************************************************************************/
+    /*** (a) The try/catch fallback: what can and cannot trigger it                             ***/
+    /**********************************************************************************************/
+
+    // A recipient that is a contract reverting on every call cannot make `withdraw`/`redeem`
+    // revert for its own reasons: neither USDC (no hooks) nor spUSDC (`_pushAsset` is a plain
+    // transfer) ever calls the recipient. Both queues pay it directly, the fallback never runs,
+    // `claimableAssets` stays 0. Also `_mint` to it (deposit path) works.
+    function test_fallback_contractRecipientCannotTriggerFallback() public {
+        RevertingRecipient sink = new RevertingRecipient();
+        _deposit(alice, 1_000e6);
+        uint256 shares = vault.balanceOf(alice);
+
+        vm.prank(alice);
+        vault.requestRedeem(shares / 2, address(sink));
+        _processRedeems(type(uint256).max, 10);
+        assertEq(usdc.balanceOf(address(sink)), vault.convertToAssets(shares / 2));
+        assertEq(usdc.balanceOf(address(sink)), 499_999_998);
+        assertEq(vault.claimableAssets(address(sink)), 0);
+        assertEq(vault.totalClaimable(), 0);
+        assertEq(usdc.balanceOf(address(vault)), 0);
+
+        _setCapacity(vault.totalSupply());
+        _fund(alice, 100e6);
+        vm.prank(alice);
+        uint256 dId = vault.requestDeposit(100e6, address(sink), 0);     // queued, mints to sink later
+        (, , uint256 q) = _depositRequest(dId);
+        vm.prank(alice);
+        vault.requestDepositCancellation(dId, address(sink), q / 2);    // half refunded to sink
+        _processCancelledDeposits(type(uint256).max, 10);
+        assertEq(usdc.balanceOf(address(sink)), 499_999_998 + spUsdc.convertToAssets(q / 2));
+        assertEq(vault.claimableAssets(address(sink)), 0);
+        _setCapacity(type(uint128).max);
+        _processDeposits(type(uint256).max, 10);
+        assertEq(vault.balanceOf(address(sink)), vault.convertToShares(spUsdc.convertToAssets(q - q / 2)));
+        assertGt(vault.balanceOf(address(sink)), 0);
+    }
+
+    // The only revert the fallback is meant for is a recipient-specific one (the blacklist). A
+    // USDC-wide failure (Circle pause, simulated by reverting every `transfer`) is not: the try
+    // fails, the fallback withdraw-to-vault fails too, the revert propagates with USDC's reason
+    // and the whole batch is undone, both queues. Nothing is parked, nothing is credited.
+    function test_fallback_usdcWideRevert_isNotRecipientSpecific_batchReverts() public {
+        _fillCapacityExactly(carol, 1_000e6);
+        _deposit(alice, 1_000e6);                                    // queued
+        uint256 dId = _depositQueueLength() - 1;
+        _cancelTo(alice, dId, alice);
+        uint256 cShares = vault.balanceOf(carol);
+        _requestRedeem(carol, cShares / 2);
+        _requestRedeem(carol, cShares / 4);
+
+        vm.mockCallRevert(address(usdc), abi.encodeWithSelector(usdc.transfer.selector), "FiatToken: paused");
+
+        vm.prank(operator);
+        vm.expectRevert("FiatToken: paused");
+        vault.processPendingRedeems(type(uint256).max, 10);
+        vm.prank(operator);
+        vm.expectRevert("FiatToken: paused");
+        vault.processPendingDepositCancellations(type(uint256).max, 10);
+        vm.prank(operator);
+        vm.expectRevert("FiatToken: paused");
+        vault.processPendingRedeems(1, 1);                           // even a 1-share fill
+
+        assertEq(vault.firstPendingRedeemId(), 0);
+        assertEq(vault.firstPendingDepositCancellationId(), 0);
+        assertEq(vault.pendingRedeemShares(), cShares / 2 + cShares / 4);
+        assertEq(vault.claimableAssets(carol), 0);
+        assertEq(vault.claimableAssets(alice), 0);
+        assertEq(vault.totalClaimable(), 0);
+        assertEq(usdc.balanceOf(address(vault)), 0);
+
+        vm.clearMockedCalls();
+        _processRedeems(type(uint256).max, 10);
+        _processCancelledDeposits(type(uint256).max, 10);
+        assertEq(usdc.balanceOf(carol), vault.convertToAssets(cShares / 2) + vault.convertToAssets(cShares / 4));
+        assertEq(usdc.balanceOf(alice), 999_999_999);
+    }
+
+    // A liquidity shortfall of exactly the fill amount is impossible by construction: the fill is
+    // bounded per entry by `convertToShares(maxWithdraw(vault))` (:953) and `convertToAssets`
+    // floors (:958), so `assets_ <= maxWithdraw <= liquidity`. Exact boundary: with spUSDC
+    // liquidity equal to the owed amount the double floor clamps the fill ONE SHARE SHORT
+    // (R5-10 dust: `convertToShares(convertToAssets(s)) == s - 1` here), a partial fill, paid
+    // directly, nothing credited; the full fill needs 1 wei of liquidity more than owed.
+    function test_fallback_exactLiquidityBoundary_neverCredits_R5_10_oneShareShort() public {
+        _deposit(alice, 1_000e6);
+        uint256 shares = vault.balanceOf(alice);
+        _requestRedeem(alice, shares);
+        uint256 owed = vault.convertToAssets(shares);
+        assertEq(owed, 999_999_998);
+        assertEq(vault.convertToShares(owed), shares - 1);              // the double floor
+
+        uint256 snap = vm.snapshotState();
+        _drainSpUsdcLiquidity(usdc.balanceOf(address(spUsdc)) - owed);
+        assertEq(vault.availableLiquidAssets(), owed);
+        _processRedeems(type(uint256).max, 1);
+        assertEq(usdc.balanceOf(alice), vault.convertToAssets(shares - 1));
+        assertEq(usdc.balanceOf(alice), 999_999_997);
+        assertEq(vault.pendingRedeemShares(), 1);                       // 1 share (1 wei) waits
+        assertEq(vault.claimableAssets(alice), 0);
+        assertEq(vault.firstPendingRedeemId(), 0);
+        assertEq(usdc.balanceOf(address(spUsdc)), 1);                   // 1 wei of liquidity unused
+
+        vm.revertToState(snap);
+        _drainSpUsdcLiquidity(usdc.balanceOf(address(spUsdc)) - (owed + 1));
+        _processRedeems(type(uint256).max, 1);
+        assertEq(usdc.balanceOf(alice), owed);                          // full fill, direct
+        assertEq(vault.pendingRedeemShares(), 0);
+        assertEq(vault.claimableAssets(alice), 0);
+        assertEq(usdc.balanceOf(address(spUsdc)), 1);
+    }
+
+    // Fuzzed: for any spUSDC liquidity, any vault backing (after `take`) and any entry sizes, a
+    // clean recipient is never credited to `claimableAssets` and the batch never reverts. The
+    // fallback only ever fires for the blacklisted recipient in the mix.
+    function testFuzz_fallback_onlyBlacklistedRecipientIsCredited(
+        uint256 a1, uint256 a2, uint256 a3, uint256 drain, uint256 cut
+    ) public {
+        a1 = bound(a1, 1e6, 1_000_000e6);
+        a2 = bound(a2, 1e6, 1_000_000e6);
+        a3 = bound(a3, 1e6, 1_000_000e6);
+        _deposit(alice, a1);
+        _deposit(bob, a2);
+        _deposit(carol, a3);
+        _requestRedeem(alice, vault.balanceOf(alice));
+        uint256 bShares = vault.balanceOf(bob);
+        vm.prank(bob);
+        vault.requestRedeem(bShares, victim);                        // victim gets blacklisted
+        _requestRedeem(carol, vault.balanceOf(carol));
+        _blacklist(victim);
+
+        drain = bound(drain, 0, usdc.balanceOf(address(spUsdc)));
+        cut   = bound(cut, 0, _vaultSpUsdc());
+        if (drain != 0) _drainSpUsdcLiquidity(drain);
+        if (cut != 0)   _take(cut);
+
+        vm.prank(operator);
+        (bool ok, ) = address(vault).call(
+            abi.encodeCall(vault.processPendingRedeems, (type(uint256).max, 10))
+        );
+        assertTrue(ok, "batch reverted");
+        assertEq(vault.claimableAssets(alice), 0);
+        assertEq(vault.claimableAssets(carol), 0);
+        assertEq(vault.claimableAssets(bob), 0);
+        assertEq(vault.totalClaimable(), vault.claimableAssets(victim));
+        assertEq(usdc.balanceOf(address(vault)), vault.claimableAssets(victim));
+    }
+
+    // Gas: the `try` (:1001) gets 63/64 of the remaining gas. Can an operator-sized gas limit
+    // make the try run out of gas while the catch path (:1011-1013, a second withdraw plus two
+    // SSTOREs) still succeeds, parking a clean recipient's USDC in the vault? Scanned every gas
+    // limit from 30k to 600k in 1k steps on `processPendingRedeems{gas: g}(max, 1)`: each call
+    // either reverts (OOG) or pays the recipient directly; `claimableAssets` is never credited
+    // for a clean recipient. Reason: if 63/64 R < G_try then R / 64 < G_try / 63 < G_catch.
+    function test_fallback_gasScan_noParkingForCleanRecipient() public {
+        _deposit(alice, 1_000e6);
+        uint256 shares = vault.balanceOf(alice);
+        _requestRedeem(alice, shares);
+        uint256 owed = vault.convertToAssets(shares);
+        bytes memory data = abi.encodeCall(vault.processPendingRedeems, (type(uint256).max, 1));
+
+        uint256 snap = vm.snapshotState();
+        uint256 successes;
+        uint256 firstSuccess;
+        for (uint256 g = 30_000; g <= 600_000; g += 1_000) {
+            vm.revertToState(snap);
+            vm.prank(operator);
+            (bool ok, ) = address(vault).call{gas: g}(data);
+            if (ok) {
+                if (successes == 0) firstSuccess = g;
+                ++successes;
+                assertEq(usdc.balanceOf(alice), owed, "not paid directly");
+                assertEq(vault.claimableAssets(alice), 0, "clean recipient parked");
+                assertEq(usdc.balanceOf(address(vault)), 0);
+            } else {
+                assertEq(usdc.balanceOf(alice), 0);
+                assertEq(vault.claimableAssets(alice), 0);
+                assertEq(vault.pendingRedeemShares(), shares);
+            }
+        }
+        emit log_named_uint("smallest gas limit that fills (1k granularity)", firstSuccess);
+        assertGt(successes, 0);
+        assertLt(firstSuccess, 300_000);
+    }
+
+    // Same scan with the recipient blacklisted: every successful call credits exactly `owed`,
+    // never more, never pays USDC out, and the OOG calls leave nothing behind.
+    function test_fallback_gasScan_blacklistedRecipientCreditedExactlyOrReverted() public {
+        _deposit(alice, 1_000e6);
+        uint256 shares = vault.balanceOf(alice);
+        _requestRedeem(alice, shares);
+        uint256 owed = vault.convertToAssets(shares);
+        _blacklist(alice);
+        bytes memory data = abi.encodeCall(vault.processPendingRedeems, (type(uint256).max, 1));
+
+        uint256 snap = vm.snapshotState();
+        uint256 successes;
+        for (uint256 g = 30_000; g <= 600_000; g += 1_000) {
+            vm.revertToState(snap);
+            vm.prank(operator);
+            (bool ok, ) = address(vault).call{gas: g}(data);
+            if (ok) {
+                ++successes;
+                assertEq(vault.claimableAssets(alice), owed);
+                assertEq(usdc.balanceOf(address(vault)), owed);
+                assertEq(vault.totalClaimable(), owed);
+            } else {
+                assertEq(vault.claimableAssets(alice), 0);
+                assertEq(usdc.balanceOf(address(vault)), 0);
+            }
+        }
+        assertGt(successes, 0);
+    }
+
+    /**********************************************************************************************/
+    /*** (b) Partial cancels                                                                    ***/
+    /**********************************************************************************************/
+
+    // Bounds and bookkeeping of `requestDepositCancellation(id, recipient, savingsShares)`
+    // (:405-446): below `minDepositCancellation` -> `BelowMinDepositCancellation`, above the
+    // entry -> `SavingsSharesTooHigh`, exact -> entry deleted, less -> entry decremented; each
+    // slice is its own cancel entry carrying the owner; pending counters move exactly; event
+    // shape `(depositRequestId, cancelRequestId, recipient, sharesCancelled)`.
+    function test_cancel_partial_boundsAndAccounting() public {
+        _setMinDepositCancellation(10);
+        _fillCapacityExactly(carol, 1_000e6);
+        uint256 id = _deposit(alice, 100e6);
+        (, , uint256 q) = _depositRequest(id);
+        assertEq(q, 95_453_269);
+
+        vm.startPrank(alice);
+        vm.expectRevert(ISparkPrimeVault.BelowMinDepositCancellation.selector);
+        vault.requestDepositCancellation(id, alice, 9);
+        vm.expectRevert(ISparkPrimeVault.SavingsSharesTooHigh.selector);
+        vault.requestDepositCancellation(id, alice, q + 1);
+        vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
+        vault.requestDepositCancellation(id, address(0), 10);
+
+        vm.expectEmit(address(vault));
+        emit DepositCancellationRequest(id, 0, bob, 10);
+        uint256 c0 = vault.requestDepositCancellation(id, bob, 10);      // slice 1 to bob
+        vm.expectEmit(address(vault));
+        emit DepositCancellationRequest(id, 1, alice, 1_000);
+        uint256 c1 = vault.requestDepositCancellation(id, alice, 1_000); // slice 2 to alice
+        vm.stopPrank();
+
+        assertEq(c0, 0);
+        assertEq(c1, 1);
+        (address o, , uint256 left) = _depositRequest(id);
+        assertEq(o, alice);
+        assertEq(left, q - 1_010);
+        assertEq(vault.pendingDepositSavingsShares(), q - 1_010);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 1_010);
+        (address o0, address r0, uint256 s0) = _cancelledDepositRequest(c0);
+        assertEq(o0, alice);                                              // owner carries over
+        assertEq(r0, bob);
+        assertEq(s0, 10);
+        assertEq(vault.firstPendingDepositId(), id);                      // still live: no walk
+
+        // The exact remainder deletes the entry and the self-skip advances the head.
+        vm.prank(alice);
+        vault.requestDepositCancellation(id, alice, q - 1_010);
+        (address o2, address r2, uint256 s2) = _rawDeposit(id);
+        assertEq(o2, address(0));
+        assertEq(r2, address(0));
+        assertEq(s2, 0);
+        assertEq(vault.firstPendingDepositId(), id + 1);
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), q);
+
+        // A closed entry cannot be cancelled again, by anyone.
+        vm.prank(alice);
+        vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
+        vault.requestDepositCancellation(id, alice, 10);
+
+        _processCancelledDeposits(type(uint256).max, 10);
+        assertEq(usdc.balanceOf(bob), spUsdc.convertToAssets(10));
+        assertEq(usdc.balanceOf(bob), 10);
+        assertEq(usdc.balanceOf(alice), spUsdc.convertToAssets(1_000) + spUsdc.convertToAssets(q - 1_010));
+        assertEq(usdc.balanceOf(alice), 99_999_988);                      // 100e6 - 10 - two floors
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
+    }
+
+    // Cancel-then-refill ordering: a partially cancelled entry keeps its place and its remainder
+    // is filled at the live indexes; cancelling the remainder AFTER a partial fill works and the
+    // head moves on. Refund = `spUSDC.redeem` of the slices, mint = `convertToShares` of the
+    // rest: nothing is double counted, `pendingDepositSavingsShares` ends at 0.
+    function test_cancel_sliceThenRefill_thenCancelRemainderAfterPartialFill() public {
+        _fillCapacityExactly(carol, 1_000e6);
+        uint256 id  = _deposit(alice, 100e6);
+        uint256 id2 = _deposit(bob, 50e6);
+        (, , uint256 q)  = _depositRequest(id);
+        (, , uint256 q2) = _depositRequest(id2);
+
+        // Slice a third out, then the planner fills what is left of alice and all of bob.
+        vm.prank(alice);
+        vault.requestDepositCancellation(id, alice, q / 3);
+        _setCapacity(type(uint128).max);
+        _processDeposits(type(uint256).max, 10);
+        assertEq(vault.balanceOf(alice), vault.convertToShares(spUsdc.convertToAssets(q - q / 3)));
+        assertEq(vault.balanceOf(bob),   vault.convertToShares(spUsdc.convertToAssets(q2)));
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(vault.firstPendingDepositId(), id2 + 1);
+        _processCancelledDeposits(type(uint256).max, 10);
+        assertEq(usdc.balanceOf(alice), spUsdc.convertToAssets(q / 3));
+
+        // Partial fill first, then cancel the remainder: head advances, refund exact.
+        _setCapacity(vault.totalSupply());
+        uint256 id3 = _deposit(victim, 100e6);
+        (, , uint256 q3) = _depositRequest(id3);
+        _setCapacity(type(uint128).max);
+        _processDeposits(q3 / 2, 10);                                     // budget stops mid-entry
+        (, , uint256 left3) = _depositRequest(id3);
+        assertEq(left3, q3 - q3 / 2);
+        assertEq(vault.firstPendingDepositId(), id3);
+        assertEq(vault.balanceOf(victim), vault.convertToShares(spUsdc.convertToAssets(q3 / 2)));
+        vm.prank(victim);
+        vm.expectRevert(ISparkPrimeVault.SavingsSharesTooHigh.selector);
+        vault.requestDepositCancellation(id3, victim, q3);                // the filled part is gone
+        vm.prank(victim);
+        vault.requestDepositCancellation(id3, victim, q3 - q3 / 2);
+        assertEq(vault.firstPendingDepositId(), id3 + 1);
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        _processCancelledDeposits(type(uint256).max, 10);
+        assertEq(usdc.balanceOf(victim), spUsdc.convertToAssets(q3 - q3 / 2));
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
+    }
+
+    // Griefing the cancellation queue with minimum-sized slices: one deposit of N shares split
+    // into N cancels of `minDepositCancellation` each. Every slice is a full `spUSDC.redeem` for
+    // the planner (~37k warm). Measured per slice; `minDepositCancellation` in spUSDC shares is
+    // the only dial (at 1e6 shares a 1M-USDC deposit yields at most ~955 slices).
+    function test_cancel_minSlices_griefCancelQueue_gasPerSlice() public {
+        _fillCapacityExactly(carol, 1_000e6);
+        _fund(attacker, 1_000e6);
+        vm.prank(attacker);
+        uint256 id = vault.requestDeposit(1_000e6, attacker, 0);
+
+        vm.startPrank(attacker);
+        uint256 g0 = gasleft();
+        vault.requestDepositCancellation(id, attacker, 1);
+        uint256 perSlice = g0 - gasleft();
+        for (uint256 i; i < 499; ++i) vault.requestDepositCancellation(id, attacker, 1);
+        vm.stopPrank();
+        assertEq(_cancelledDepositQueueLength(), 500);
+        assertEq(vault.firstPendingDepositId(), 1);                       // entry still live
+
+        uint256 vId = _deposit(victim, 100e6);
+        uint256 vc  = _cancelTo(victim, vId, victim);
+        assertEq(vc, 500);
+
+        vm.prank(operator);
+        uint256 g1 = gasleft();
+        vault.processPendingDepositCancellations(type(uint256).max, 500);
+        uint256 plannerGas = g1 - gasleft();
+        assertEq(vault.firstPendingDepositCancellationId(), 500);
+        assertEq(usdc.balanceOf(attacker), 500);                          // 1 wei per 1-share slice
+        assertEq(usdc.balanceOf(victim), 0);
+        _processCancelledDeposits(type(uint256).max, 1);
+        assertEq(usdc.balanceOf(victim), 99_999_999);
+
+        uint256 perEntry = plannerGas / 500;
+        emit log_named_uint("attacker gas per 1-share cancel slice", perSlice);
+        emit log_named_uint("planner gas per 1-share cancelled entry", perEntry);
+        emit log_named_uint("slices settleable per 30M block", 30_000_000 / perEntry);
+        assertLt(perEntry, 60_000);
+        assertGt(30_000_000 / perEntry, 500);
+
+        // With a realistic minimum the same deposit cannot be split below it.
+        _setMinDepositCancellation(1e6);
+        vm.prank(attacker);
+        vm.expectRevert(ISparkPrimeVault.BelowMinDepositCancellation.selector);
+        vault.requestDepositCancellation(id, attacker, 1e6 - 1);
+    }
+
+    // Partial-cancel accounting, fuzzed: random slices (>= min) out of one entry, the planner
+    // settles some and fills the rest; refunds + mint never exceed the original deposit and the
+    // three counters end consistent.
+    function testFuzz_cancel_slicesAccounting(uint256 seed, uint256 amt, uint256 k) public {
+        amt = bound(amt, 1e6, 1_000_000e6);
+        k   = bound(k, 1, 6);
+        _fillCapacityExactly(carol, 1_000e6);
+        uint256 id = _deposit(alice, amt);
+        (, , uint256 q) = _depositRequest(id);
+        uint256 cancelled;
+        for (uint256 i; i < k; ++i) {
+            (, , uint256 left) = _depositRequest(id);
+            if (left == 0) break;
+            uint256 slice = 1 + uint256(keccak256(abi.encode(seed, i))) % left;
+            vm.prank(alice);
+            vault.requestDepositCancellation(id, alice, slice);
+            cancelled += slice;
+            if (slice == left) break;
+        }
+        assertEq(vault.pendingCancelledDepositSavingsShares(), cancelled);
+        assertEq(vault.pendingDepositSavingsShares(), q - cancelled);
+        _processCancelledDeposits(type(uint256).max, 10);
+        _setCapacity(type(uint128).max);
+        _processDeposits(type(uint256).max, 10);
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
+        uint256 refund = usdc.balanceOf(alice);
+        uint256 minted = vault.assetsOf(alice);
+        assertLe(refund + minted, amt, "value created");
+        assertGe(refund + minted + k + 3, amt, "value lost beyond rounding");
+    }
+
+    /**********************************************************************************************/
+    /*** (c) LOSS_MANAGER as a hot wallet (C-3 re-rated)                                       ***/
+    /**********************************************************************************************/
+
+    // C-3 on c512609: `adjustTotalAssets` (:262-283) is now a hot-wallet role. A compromised
+    // LOSS_MANAGER key plus a pause (own PAUSER key, or any legitimate pause) writes every
+    // holder to 0 in one call (`chi = RAY / totalSupply`, :277), and can also over-credit
+    // without bound below `uint192.max` (:280). No admin, no timelock, no floor; the UNPAUSER
+    // is not needed for the damage. Exact numbers for 1M + 100k.
+    function test_BUG_C3_lossManagerHotWallet_pauserCollusionWipesAllHolders() public {
+        _deposit(alice, 1_000_000e6);
+        _deposit(bob, 100_000e6);
+        uint256 backing = spUsdc.convertToAssets(_vaultSpUsdc());
+        assertEq(vault.assetsOf(alice), 999_999_999_998);
+        assertEq(vault.assetsOf(bob),    99_999_999_998);
+
+        // Without a pause the key is powerless.
+        vm.prank(lossManager);
+        vm.expectRevert(ISparkPrimeVault.IsNotPaused.selector);
+        vault.adjustTotalAssets(-1);
+
+        // PAUSER + LOSS_MANAGER (two hot keys, or one compromised ops box holding both).
+        _pause();
+        int256 ta = int256(vault.totalAssets());
+        _adjustTotalAssets(-(ta - 1));
+        assertEq(vault.assetsOf(alice), 0);
+        assertEq(vault.assetsOf(bob), 0);
+        assertEq(vault.totalAssets(), 0);
+        assertApproxEqAbs(spUsdc.convertToAssets(_vaultSpUsdc()), backing, 1);   // backing untouched: all equity
+
+        // The same key can hand the equity to anyone who deposits next: after the unpause a 1
+        // USDC deposit is minted at the dust chi and owns ~all the backing.
+        _unpause();
+        _deposit(attacker, 1e6);
+        assertGt(vault.balanceOf(attacker), vault.balanceOf(alice) * 1_000_000);
+        _requestRedeem(attacker, vault.balanceOf(attacker));
+        _processRedeems(type(uint256).max, 1);
+        assertLe(usdc.balanceOf(attacker), 1e6 + 2);               // chi is dust: the attacker gets ~1 USDC back
+        // ...but a +gain by the same key before the unpause re-prices the whole supply:
+    }
+
+    // Variant: loss then gain inside one pause: the key rewrites who owns the backing. Alice
+    // (1M) and bob (100k) are wiped, the attacker's queued 1 USDC... cannot be minted while
+    // paused (`processPendingDeposits` is `whenNotPaused`), so the cleanest extraction is the
+    // over-credit: +1M "gain" with nothing behind it, then the attacker's own redeem is paid
+    // first from the backing. Exact: the attacker's 100k becomes 190_909 USDC of payout.
+    function test_BUG_C3_lossManagerHotWallet_overCreditThenFrontOfQueue() public {
+        _deposit(alice, 1_000_000e6);
+        _deposit(attacker, 100_000e6);
+        uint256 backing = spUsdc.convertToAssets(_vaultSpUsdc());
+
+        _requestRedeem(attacker, vault.balanceOf(attacker));          // first in the queue
+        _pause();
+        _adjustTotalAssets(1_000_000e6);                               // unbacked gain
+        _unpause();
+        _processRedeems(type(uint256).max, 1);
+
+        uint256 paid = usdc.balanceOf(attacker);
+        emit log_named_uint("attacker paid after a 1M unbacked gain on 1.1M TVL", paid);
+        assertEq(paid, 190_909_090_907);                               // 100k * 2.1M / 1.1M
+        assertLt(backing - paid, 1_000_000e6);                         // alice is short by the difference
+        _requestRedeem(alice, vault.balanceOf(alice));
+        _processRedeems(type(uint256).max, 1);
+        assertEq(usdc.balanceOf(alice), 909_090_909_089);              // backing - paid, two floors
+        assertApproxEqAbs(usdc.balanceOf(alice), backing - paid, 2);
+        assertGt(vault.pendingRedeemShares(), 0);                      // unpayable remainder
+        assertEq(vault.convertToAssets(vault.pendingRedeemShares()), 1_000_000_000_000);   // the whole fake gain
+    }
+
+    /**********************************************************************************************/
+    /*** (d) OPERATOR as adversary                                                              ***/
+    /**********************************************************************************************/
+
+    // Ordering between the three queues and capacity games cannot move value to the operator:
+    // every payout is `convertToAssets` at the fill, every mint `convertToShares`, FIFO is
+    // enforced by the head. The operator's own deposit cannot jump a queue by raising capacity
+    // (it queues behind the open entries) and starving the queues earns him nothing. Exact.
+    function test_operator_orderingAndCapacity_cannotExtractValue() public {
+        _fillCapacityExactly(alice, 1_000_000e6);
+        uint256 vId = _deposit(victim, 100_000e6);                     // queued
+        (, , uint256 vQ) = _depositRequest(vId);
+
+        // Operator raises capacity and deposits: his entry queues behind the victim.
+        _setCapacity(type(uint128).max);
+        _fund(operator, 100_000e6);
+        vm.prank(operator);
+        uint256 oId = vault.requestDeposit(100_000e6, operator, 0);
+        assertEq(vault.balanceOf(operator), 0);
+        assertEq(oId, vId + 1);
+
+        // He can only fill FIFO: processing 1 request fills the victim, not him.
+        _processDeposits(type(uint256).max, 1);
+        assertEq(vault.balanceOf(victim), vault.convertToShares(spUsdc.convertToAssets(vQ)));
+        assertEq(vault.balanceOf(operator), 0);
+        _processDeposits(type(uint256).max, 1);
+        uint256 oShares = vault.balanceOf(operator);
+        assertApproxEqAbs(vault.assetsOf(operator), 100_000e6, 2);
+        assertLe(vault.assetsOf(operator), 100_000e6);
+
+        // Capacity sandwich on his own exit: pin capacity, redeem himself first, re-enter.
+        // Payout is his own `convertToAssets` and nothing more.
+        _requestRedeem(victim, vault.balanceOf(victim));               // victim ahead in the queue
+        uint256 oRed = _requestRedeem(operator, oShares);
+        _processRedeems(type(uint256).max, 1);                         // pays the victim first
+        assertEq(usdc.balanceOf(operator), 0);
+        _processRedeems(type(uint256).max, 1);
+        assertEq(usdc.balanceOf(operator), vault.convertToAssets(oShares));
+        assertLe(usdc.balanceOf(operator), 100_000e6);
+        oRed;
+    }
+
+    // The one lever the operator has is `setVSR` within the admin bounds (:308-315): with his
+    // own deposit in the vault he over-credits himself along with everyone else and exits
+    // first. Profit on 1M own capital at MAX_VSR for 1 day: 1_900.84 USDC, paid out of the
+    // other holders' backing; at a 10% admin cap 261.16 USDC. C-9 / R5-13 re-rated for the
+    // operator key.
+    function test_BUG_C9_operatorSetsMaxVsr_frontOfQueueProfit() public {
+        _deposit(alice, 1_000_000e6);
+        _fund(operator, 1_000_000e6);
+        vm.prank(operator);
+        vault.requestDeposit(1_000_000e6, operator, 0);
+        uint256 oShares = vault.balanceOf(operator);
+        uint256 backing = spUsdc.convertToAssets(_vaultSpUsdc());
+
+        _setPrimeVsr(MAX_VSR);
+        _warpAndDrip(1 days);
+        _setPrimeVsr(RAY);
+
+        vm.prank(operator);
+        vault.requestRedeem(oShares, operator);
+        _processRedeems(type(uint256).max, 1);
+        uint256 paid = usdc.balanceOf(operator);
+        emit log_named_uint("operator paid after 1 day at MAX_VSR on 1M", paid);
+        assertEq(paid, 1_001_900_837_676);                             // 1M + 1_900.84 less rounding
+        assertEq(paid - 1_000_000e6, 1_900_837_676);
+
+        // Alice is short by exactly that amount when she exits.
+        _requestRedeem(alice, vault.balanceOf(alice));
+        _processRedeems(type(uint256).max, 1);
+        assertEq(usdc.balanceOf(alice), 998_099_162_320);              // backing - paid - 2 floors
+        assertApproxEqAbs(usdc.balanceOf(alice), backing - paid, 2);
+        // Unpayable: alice's own over-credit (1_900.84) plus what the operator took (1_900.84).
+        assertEq(vault.convertToAssets(vault.pendingRedeemShares()), 3_801_675_355);
+        assertLe(_vaultSpUsdc(), 1);
+
+        // Bounded by the admin: at a 10% cap the same move yields 261.16 USDC/day.
+        vm.prank(admin);
+        vault.setVSRBounds(RAY, TEN_PCT_VSR);
+        vm.prank(operator);
+        vm.expectRevert(ISparkPrimeVault.VSRTooHigh.selector);
+        vault.setVSR(MAX_VSR);
+    }
+
+    // `setCapacity` is unbounded (R5-8 / V2-7, open), now on the operator key: a capacity of
+    // `type(uint256).max` makes `convertToAssets(availableCapacity())` (:864) overflow, so every
+    // instant deposit and every planner call panics 0x11 until the capacity is lowered. Exact
+    // threshold `totalSupply + type(uint256).max / nowChi()`.
+    function test_BUG_R5_8_operatorSetCapacityUnbounded_overflowBricksDeposits() public {
+        _deposit(alice, 1_000e6);
+        uint256 chi   = vault.nowChi();
+        uint256 limit = vault.totalSupply() + type(uint256).max / chi;
+
+        _setCapacity(limit);                                           // largest working capacity
+        _deposit(bob, 1e6);
+        assertGt(vault.balanceOf(bob), 0);
+
+        limit = vault.totalSupply() + type(uint256).max / chi;         // supply grew with bob
+        _setCapacity(limit + 1);
+        _fund(carol, 1e6);
+        vm.prank(carol);
+        vm.expectRevert(abi.encodeWithSelector(PANIC_SEL, 0x11));
+        vault.requestDeposit(1e6, carol, 0);
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(PANIC_SEL, 0x11));
+        vault.processPendingDeposits(1, 1);
+        // Cancels run the same walk (:445): they are bricked too.
+        _setCapacity(vault.totalSupply());
+        uint256 dId = _deposit(carol, 1e6);
+        _setCapacity(type(uint256).max);
+        vm.prank(carol);
+        vm.expectRevert(abi.encodeWithSelector(PANIC_SEL, 0x11));
+        vault.requestDepositCancellation(dId, carol, 1);
+        // Redeems and claims are unaffected; the operator (or a new one) repairs it.
+        _requestRedeem(bob, vault.balanceOf(bob));
+        _processRedeems(type(uint256).max, 1);
+        _setCapacity(vault.totalSupply() + type(uint256).max / chi);   // threshold moves with supply
+        vm.prank(carol);
+        vault.requestDepositCancellation(dId, carol, 1);
+    }
+
+    // R5-6 / V2-8 (open): the last DEFAULT_ADMIN can renounce, leaving no admin at all: no
+    // upgrade, no bounds, no role grants; the hot wallets keep their powers forever.
+    function test_BUG_R5_6_lastAdminRenounce_leavesNoAdmin() public {
+        assertEq(vault.getRoleMemberCount(DEFAULT_ADMIN_ROLE), 1);
+        vm.prank(admin);
+        vault.renounceRole(DEFAULT_ADMIN_ROLE, admin);
+        assertEq(vault.getRoleMemberCount(DEFAULT_ADMIN_ROLE), 0);
+        vm.prank(admin);
+        vm.expectRevert(_unauthorized(admin, DEFAULT_ADMIN_ROLE));
+        vault.grantRole(DEFAULT_ADMIN_ROLE, admin);
+        vm.prank(admin);
+        vm.expectRevert(_unauthorized(admin, DEFAULT_ADMIN_ROLE));
+        vault.setVSRBounds(RAY, RAY);
+        // Operator and loss manager still work.
+        _setCapacity(1);
+        assertEq(vault.maxCapacity(), 1);
+        _setCapacity(type(uint128).max);
+        _deposit(alice, 1e6);
+        _pause();
+        _adjustTotalAssets(-1);
+        _unpause();
+    }
+
+    /**********************************************************************************************/
+    /*** (e) ERC20: transferFrom ordering                                                       ***/
+    /**********************************************************************************************/
+
+    // `transferFrom` (:565-587) now calls `_transfer` before the allowance check, so the balance
+    // requirement is tested first. The only observable difference is the revert reason when
+    // BOTH are insufficient (`insufficient-balance`, previously `insufficient-allowance`); no
+    // state is written on any failing path, and the allowance is decremented after the move.
+    function test_transferFrom_balanceCheckedBeforeAllowance() public {
+        _deposit(alice, 100e6);
+        uint256 bal = vault.balanceOf(alice);
+
+        vm.prank(alice);
+        vault.approve(bob, 1);
+        vm.prank(bob);
+        vm.expectRevert("SparkPrimeVault/insufficient-balance");        // both insufficient
+        vault.transferFrom(alice, bob, bal + 1);
+        vm.prank(bob);
+        vm.expectRevert("SparkPrimeVault/insufficient-allowance");      // balance ok, allowance not
+        vault.transferFrom(alice, bob, 2);
+        assertEq(vault.balanceOf(alice), bal);
+        assertEq(vault.balanceOf(bob), 0);
+        assertEq(vault.allowance(alice, bob), 1);
+
+        // Self-spend with no allowance and more than the balance: balance error, not allowance.
+        vm.prank(alice);
+        vm.expectRevert("SparkPrimeVault/insufficient-balance");
+        vault.transferFrom(alice, bob, bal + 1);
+
+        vm.prank(bob);
+        vault.transferFrom(alice, bob, 1);
+        assertEq(vault.allowance(alice, bob), 0);
+        assertEq(vault.balanceOf(bob), 1);
+    }
+
+    /**********************************************************************************************/
+    /*** (f) Ordering games, fuzzed                                                             ***/
+    /**********************************************************************************************/
+
+    // When the vault is fully backed, any interleaving and chunking of the three planner calls
+    // by the operator leaves every user within one floor per partial (two for a deposit fill:
+    // spUSDC assets then spPRIME shares) of the index-determined amount, and the operator's own
+    // balances unchanged. Run with FOUNDRY_FUZZ_RUNS=20000.
+    function testFuzz_operatorOrdering_payoutsIndexDetermined(bytes32 seed, uint256 steps) public {
+        steps = bound(steps, 3, 12);
+        _fillCapacityExactly(alice, 1_000e6);
+        uint256 aShares = vault.balanceOf(alice);
+        uint256 d1 = _deposit(bob, 300e6);
+        uint256 d2 = _deposit(carol, 200e6);
+        (, , uint256 bQ) = _depositRequest(d1);
+        _cancelTo(carol, d2, carol);
+        _requestRedeem(alice, aShares / 2);
+        _setCapacity(type(uint128).max);
+
+        uint256 expAlice = vault.convertToAssets(aShares / 2);
+        uint256 expBob   = vault.convertToShares(spUsdc.convertToAssets(bQ));
+        uint256 expCarol = 199_999_999;
+        uint256 opUsdc = usdc.balanceOf(operator);
+        uint256 opSp   = spUsdc.balanceOf(operator);
+
+        uint256 partials;
+        for (uint256 i; i < steps; ++i) {
+            uint256 r  = uint256(keccak256(abi.encode(seed, i)));
+            uint256 op = r % 3;
+            bool chunk = (r >> 8) % 2 == 0;
+            uint256 budget = chunk ? 1 + (r >> 16) % 1_000_000_000 : type(uint256).max;
+            if (chunk) ++partials;
+            if (op == 0)      _processDeposits(budget, 1 + (r >> 48) % 3);
+            else if (op == 1) _processRedeems(budget, 1 + (r >> 48) % 3);
+            else              _processCancelledDeposits(budget, 1 + (r >> 48) % 3);
+        }
+        _processDeposits(type(uint256).max, 10);
+        _processRedeems(type(uint256).max, 10);
+        _processCancelledDeposits(type(uint256).max, 10);
+
+        assertLe(usdc.balanceOf(alice), expAlice);
+        assertGe(usdc.balanceOf(alice) + partials + 1, expAlice);
+        assertLe(vault.balanceOf(bob), expBob);
+        assertGe(vault.balanceOf(bob) + 2 * partials + 2, expBob);   // a deposit partial floors twice
+        assertLe(usdc.balanceOf(carol), expCarol);
+        assertGe(usdc.balanceOf(carol) + partials + 1, expCarol);
+        assertEq(usdc.balanceOf(operator), opUsdc);
+        assertEq(spUsdc.balanceOf(operator), opSp);
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(vault.pendingRedeemShares(), 0);
+        assertEq(vault.pendingCancelledDepositSavingsShares(), 0);
+    }
+
+    // Under shortage (after `take`), the operator's ordering decides WHO is paid first (F-2) but
+    // never HOW MUCH in total: USDC paid out + claimable credited never exceeds the backing the
+    // vault holds plus what was refunded, for any order and chunking. Run with FOUNDRY_FUZZ_RUNS=20000.
+    function testFuzz_operatorOrdering_underShortage_totalPayoutBoundedByBacking(
+        bytes32 seed, uint256 cut, uint256 steps
+    ) public {
+        steps = bound(steps, 2, 10);
+        _fillCapacityExactly(alice, 1_000e6);
+        uint256 aShares = vault.balanceOf(alice);
+        uint256 d2 = _deposit(carol, 500e6);
+        _cancelTo(carol, d2, carol);
+        _requestRedeem(alice, aShares);
+        cut = bound(cut, 0, _vaultSpUsdc());
+        if (cut != 0) _take(cut);
+        uint256 backingAssets = spUsdc.convertToAssets(_vaultSpUsdc());
+
+        for (uint256 i; i < steps; ++i) {
+            uint256 r  = uint256(keccak256(abi.encode(seed, i)));
+            uint256 budget = (r >> 8) % 2 == 0 ? 1 + (r >> 16) % 1_000_000_000 : type(uint256).max;
+            if (r % 2 == 0) _processRedeems(budget, 1);
+            else            _processCancelledDeposits(budget, 1);
+        }
+        uint256 out = usdc.balanceOf(alice) + usdc.balanceOf(carol) + vault.totalClaimable();
+        assertLe(out, backingAssets + 1, "paid more than the backing");
+        assertLe(out + spUsdc.convertToAssets(_vaultSpUsdc()), backingAssets + 1, "value created");
+        assertGe(out + spUsdc.convertToAssets(_vaultSpUsdc()) + steps + 2, backingAssets, "lost beyond rounding");
+        assertLe(usdc.balanceOf(alice), vault.convertToAssets(aShares));
+        assertLe(usdc.balanceOf(carol), 499_999_999);
+    }
+
+}
