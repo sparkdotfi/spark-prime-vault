@@ -136,7 +136,8 @@ contract AdminHandler is HandlerBase {
 
         uint256 totalAssets_ = vault.totalAssets();
 
-        if (!gain_ && totalAssets_ < 2) return;
+        // A gain needs a positive range to draw from, a loss must leave at least one wei.
+        if (totalAssets_ < 2) return;
 
         magnitude_ = gain_
             ? _bound(magnitude_, 1, totalAssets_)
