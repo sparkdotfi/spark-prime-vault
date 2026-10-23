@@ -1677,4 +1677,215 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
         _assertRedeemRequest(9, ali, ali, 1_000_000e6 - 2);
     }
 
+    function _getMaxPartialRedeem(uint256 requestAmount, uint256 maxShares, uint256 sharesRedeemed)
+        internal view returns (uint256 redeemShares, uint256 redeemAmount, bool isPartial)
+    {
+        uint256 requestShares = spPrime.convertToShares(requestAmount);
+
+        redeemShares = ((sharesRedeemed + requestShares) > maxShares) ? maxShares - sharesRedeemed : requestShares;
+        redeemAmount = spPrime.convertToAssets(redeemShares);
+        isPartial    = redeemShares < requestShares;
+    }
+
+    function testFuzz_processPendingRedeems(uint256 maxShareValue, uint256 maxRequests) external {
+        _setupMockCallReverts();
+
+        maxShareValue = _bound(maxShareValue, 0, 2 * vaultState.redeemRequests.pendingShareValue);
+        maxRequests   = _bound(maxRequests,   0, 2 * vaultState.redeemRequests.length);
+
+        uint256 maxShares = spPrime.convertToShares(maxShareValue);
+
+        vm.startPrank(operator);
+        spPrime.processPendingRedeems(maxShares, maxRequests);
+        vm.stopPrank();
+
+        // Redeems are also capped by the vault's liquid assets, which only limits the last request.
+        uint256 liquidShares = spPrime.convertToShares(vaultState.availableLiquidAssets);
+
+        if (maxShares > liquidShares) maxShares = liquidShares;
+
+        uint256 sharesRedeemed;
+        uint256 assetsRedeemed;
+        uint256 totalClaimable;
+
+        for (uint256 i = 0; i < maxRequests; ++i) {
+            if (i == 0) {
+                ( uint256 redeemShares, uint256 redeemAmount, bool isPartial ) =
+                    _getMaxPartialRedeem(100_000e6, maxShares, sharesRedeemed);
+
+                sharesRedeemed += redeemShares;
+                assetsRedeemed += redeemAmount;
+
+                if (isPartial) {
+                    aliBalances.assets += redeemAmount;
+                    break;
+                }
+
+                aliBalances.claimableAssets += redeemAmount;
+                totalClaimable              += redeemAmount;
+            }
+
+            if (i == 1) {
+                ( uint256 redeemShares, uint256 redeemAmount, bool isPartial ) =
+                    _getMaxPartialRedeem(200_000e6, maxShares, sharesRedeemed);
+
+                bobBalances.assets += redeemAmount;
+                sharesRedeemed     += redeemShares;
+                assetsRedeemed     += redeemAmount;
+
+                if (isPartial) break;
+            }
+
+            if (i == 2) {
+                ( uint256 redeemShares, uint256 redeemAmount, bool isPartial ) =
+                    _getMaxPartialRedeem(300_000e6, maxShares, sharesRedeemed);
+
+                camBalances.assets += redeemAmount;
+                sharesRedeemed     += redeemShares;
+                assetsRedeemed     += redeemAmount;
+
+                if (isPartial) break;
+            }
+
+            if (i == 3) {
+                ( uint256 redeemShares, uint256 redeemAmount, bool isPartial ) =
+                    _getMaxPartialRedeem(400_000e6, maxShares, sharesRedeemed);
+
+                sharesRedeemed += redeemShares;
+                assetsRedeemed += redeemAmount;
+
+                if (isPartial) {
+                    danBalances.assets += redeemAmount;
+                    break;
+                }
+
+                danBalances.claimableAssets += redeemAmount;
+                totalClaimable              += redeemAmount;
+            }
+
+            if (i == 4) {
+                ( uint256 redeemShares, uint256 redeemAmount, bool isPartial ) =
+                    _getMaxPartialRedeem(500_000e6, maxShares, sharesRedeemed);
+
+                sharesRedeemed += redeemShares;
+                assetsRedeemed += redeemAmount;
+
+                if (isPartial) {
+                    bobBalances.assets += redeemAmount;
+                    break;
+                }
+
+                bobBalances.claimableAssets += redeemAmount;
+                totalClaimable              += redeemAmount;
+            }
+
+            if (i == 5) {
+                ( uint256 redeemShares, uint256 redeemAmount, bool isPartial ) =
+                    _getMaxPartialRedeem(600_000e6, maxShares, sharesRedeemed);
+
+                camBalances.assets += redeemAmount;
+                sharesRedeemed     += redeemShares;
+                assetsRedeemed     += redeemAmount;
+
+                if (isPartial) break;
+            }
+
+            if (i == 6) {
+                ( uint256 redeemShares, uint256 redeemAmount, bool isPartial ) =
+                    _getMaxPartialRedeem(700_000e6, maxShares, sharesRedeemed);
+
+                sharesRedeemed += redeemShares;
+                assetsRedeemed += redeemAmount;
+
+                if (isPartial) {
+                    aliBalances.assets += redeemAmount;
+                    break;
+                }
+
+                aliBalances.claimableAssets += redeemAmount;
+                totalClaimable              += redeemAmount;
+            }
+
+            if (i == 7) {
+                ( uint256 redeemShares, uint256 redeemAmount, bool isPartial ) =
+                    _getMaxPartialRedeem(800_000e6, maxShares, sharesRedeemed);
+
+                sharesRedeemed += redeemShares;
+                assetsRedeemed += redeemAmount;
+
+                if (isPartial) {
+                    danBalances.assets += redeemAmount;
+                    break;
+                }
+
+                danBalances.claimableAssets += redeemAmount;
+                totalClaimable              += redeemAmount;
+            }
+
+            if (i == 8) {
+                ( uint256 redeemShares, uint256 redeemAmount, bool isPartial ) =
+                    _getMaxPartialRedeem(900_000e6, maxShares, sharesRedeemed);
+
+                camBalances.assets += redeemAmount;
+                sharesRedeemed     += redeemShares;
+                assetsRedeemed     += redeemAmount;
+
+                if (isPartial) break;
+            }
+
+            if (i == 9) {
+                ( , uint256 redeemAmount, ) = _getMaxPartialRedeem(1_000_000e6, maxShares, sharesRedeemed);
+
+                aliBalances.assets += redeemAmount;
+                assetsRedeemed     += redeemAmount;
+
+                break; // Last redeem request can never be entirely fulfilled.
+            }
+
+            --vaultState.redeemRequests.length;
+            ++vaultState.redeemRequests.firstPendingId;
+        }
+
+        vaultState.totalClaimable         += totalClaimable;
+        vaultState.availableCapacityValue += assetsRedeemed;
+        vaultBalances.assets              += totalClaimable;
+
+        if (vaultState.totalAssets < assetsRedeemed) {
+            vaultState.totalAssets = 0;
+        } else {
+            vaultState.totalAssets -= assetsRedeemed;
+        }
+
+        if (vaultState.availableLiquidAssets < assetsRedeemed) {
+            vaultState.availableLiquidAssets = 0;
+        } else {
+            vaultState.availableLiquidAssets -= assetsRedeemed;
+        }
+
+        if (vaultState.redeemRequests.pendingShareValue < assetsRedeemed) {
+            vaultState.redeemRequests.pendingShareValue = 0;
+        } else {
+            vaultState.redeemRequests.pendingShareValue -= assetsRedeemed;
+        }
+
+        if (vaultBalances.shareValue < assetsRedeemed) {
+            vaultBalances.shareValue = 0;
+        } else {
+            vaultBalances.shareValue -= assetsRedeemed;
+        }
+
+        if (vaultBalances.savingsShareValue < assetsRedeemed) {
+            vaultBalances.savingsShareValue = 0;
+        } else {
+            vaultBalances.savingsShareValue -= assetsRedeemed;
+        }
+
+        _assertVaultState(10);
+        _assertAccountBalances(aliBalances,   10);
+        _assertAccountBalances(bobBalances,   10);
+        _assertAccountBalances(camBalances,   10);
+        _assertAccountBalances(danBalances,   10);
+        _assertAccountBalances(vaultBalances, 10);
+    }
+
 }
