@@ -725,6 +725,95 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _assertDepositRequest(9, ali,        ali,        1_000_000e6 - 1);
     }
 
+    function _getMaxDepositableAmount(uint256 requestAmount, uint256 maxSavingsShareValue, uint256 assetsDeposited) internal pure returns (uint256) {
+        return assetsDeposited + requestAmount > maxSavingsShareValue
+            ? maxSavingsShareValue - assetsDeposited
+            : requestAmount;
+    }
+
+    function testFuzz_processPendingDeposits(uint256 maxSavingsShareValue, uint256 maxRequests) external {
+        maxSavingsShareValue = _bound(maxSavingsShareValue, 0, 2 * vaultState.depositRequests.pendingShareValue);
+        maxRequests          = _bound(maxRequests,          0, 2 * vaultState.depositRequests.length);
+
+        vm.startPrank(operator);
+        spPrime.processPendingDeposits(spUSDC.convertToShares(maxSavingsShareValue), maxRequests);
+        vm.stopPrank();
+
+        uint256 assetsDeposited;
+
+        for (uint256 i = 0; i < maxRequests; ++i) {
+            if (i == 0) {
+                uint256 depositAmount = _getMaxDepositableAmount(400_000e6, maxSavingsShareValue, 0);
+
+                aliBalances.shareValue += depositAmount;
+                assetsDeposited        += depositAmount;
+
+                if (depositAmount < 400_000e6) break;
+            }
+
+            if (i == 1) {
+                uint256 depositAmount = _getMaxDepositableAmount(500_000e6, maxSavingsShareValue, assetsDeposited);
+
+                bobBalances.shareValue += depositAmount;
+                assetsDeposited        += depositAmount;
+
+                if (depositAmount < 500_000e6) break;
+            }
+
+            if (i == 3) {
+                uint256 depositAmount = _getMaxDepositableAmount(700_000e6, maxSavingsShareValue, assetsDeposited);
+
+                aliBalances.shareValue += depositAmount;
+                assetsDeposited        += depositAmount;
+
+                if (depositAmount < 700_000e6) break;
+            }
+
+            if (i == 4) {
+                uint256 depositAmount = _getMaxDepositableAmount(800_000e6, maxSavingsShareValue, assetsDeposited);
+
+                bobBalances.shareValue += depositAmount;
+                assetsDeposited        += depositAmount;
+
+                if (depositAmount < 800_000e6) break;
+            }
+
+            if (i == 6) {
+                uint256 depositAmount = _getMaxDepositableAmount(200_000e6, maxSavingsShareValue, assetsDeposited);
+
+                aliBalances.shareValue += depositAmount;
+                assetsDeposited        += depositAmount;
+
+                break; // Last deposit request can never be entirely fulfilled.
+            }
+
+            --vaultState.depositRequests.length;
+            ++vaultState.depositRequests.firstPendingId;
+
+            if (vaultState.depositRequests.length == 0) break;
+        }
+
+        vaultState.totalAssets += assetsDeposited;
+
+        if (vaultState.availableCapacityValue < assetsDeposited) {
+            vaultState.availableCapacityValue = 0;
+        } else {
+            vaultState.availableCapacityValue -= assetsDeposited;
+        }
+
+        if (vaultState.depositRequests.pendingShareValue < assetsDeposited) {
+            vaultState.depositRequests.pendingShareValue = 0;
+        } else {
+            vaultState.depositRequests.pendingShareValue -= assetsDeposited;
+        }
+
+        _assertVaultState(10);
+        _assertAccountBalances(aliBalances,   10);
+        _assertAccountBalances(bobBalances,   10);
+        _assertAccountBalances(camBalances,   10);
+        _assertAccountBalances(vaultBalances, 10);
+    }
+
 }
 
 contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
