@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
-import { console } from "../lib/forge-std/src/console.sol";
-
 import { IERC20 } from "../lib/oz/contracts/token/ERC20/IERC20.sol";
 
 import { ISparkPrimeVault } from "../src/ISparkPrimeVault.sol";
@@ -727,14 +725,15 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _assertDepositRequest(9, ali,        ali,        1_000_000e6 - 1);
     }
 
-    function _getMaxPartialAmount(uint256 requestAmount, uint256 maxSavingsShareValue, uint256 assetsDeposited) internal pure returns (uint256) {
-        return ((assetsDeposited + requestAmount) > maxSavingsShareValue) ? maxSavingsShareValue - assetsDeposited : requestAmount;
+    function _getMaxDepositableAmount(uint256 requestAmount, uint256 maxSavingsShareValue, uint256 assetsDeposited) internal pure returns (uint256) {
+        return assetsDeposited + requestAmount > maxSavingsShareValue
+            ? maxSavingsShareValue - assetsDeposited
+            : requestAmount;
     }
 
     function testFuzz_processPendingDeposits(uint256 maxSavingsShareValue, uint256 maxRequests) external {
         maxSavingsShareValue = _bound(maxSavingsShareValue, 0, 2 * vaultState.depositRequests.pendingShareValue);
-
-        maxRequests = _bound(maxRequests, 0, 2 * vaultState.depositRequests.length);
+        maxRequests          = _bound(maxRequests,          0, 2 * vaultState.depositRequests.length);
 
         vm.startPrank(operator);
         spPrime.processPendingDeposits(spUSDC.convertToShares(maxSavingsShareValue), maxRequests);
@@ -744,7 +743,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
 
         for (uint256 i = 0; i < maxRequests; ++i) {
             if (i == 0) {
-                uint256 depositAmount = _getMaxPartialAmount(400_000e6, maxSavingsShareValue, assetsDeposited);
+                uint256 depositAmount = _getMaxDepositableAmount(400_000e6, maxSavingsShareValue, 0);
 
                 aliBalances.shareValue += depositAmount;
                 assetsDeposited        += depositAmount;
@@ -753,7 +752,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
             }
 
             if (i == 1) {
-                uint256 depositAmount = _getMaxPartialAmount(500_000e6, maxSavingsShareValue, assetsDeposited);
+                uint256 depositAmount = _getMaxDepositableAmount(500_000e6, maxSavingsShareValue, assetsDeposited);
 
                 bobBalances.shareValue += depositAmount;
                 assetsDeposited        += depositAmount;
@@ -762,7 +761,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
             }
 
             if (i == 3) {
-                uint256 depositAmount = _getMaxPartialAmount(700_000e6, maxSavingsShareValue, assetsDeposited);
+                uint256 depositAmount = _getMaxDepositableAmount(700_000e6, maxSavingsShareValue, assetsDeposited);
 
                 aliBalances.shareValue += depositAmount;
                 assetsDeposited        += depositAmount;
@@ -771,7 +770,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
             }
 
             if (i == 4) {
-                uint256 depositAmount = _getMaxPartialAmount(800_000e6, maxSavingsShareValue, assetsDeposited);
+                uint256 depositAmount = _getMaxDepositableAmount(800_000e6, maxSavingsShareValue, assetsDeposited);
 
                 bobBalances.shareValue += depositAmount;
                 assetsDeposited        += depositAmount;
@@ -780,7 +779,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
             }
 
             if (i == 6) {
-                uint256 depositAmount = _getMaxPartialAmount(200_000e6, maxSavingsShareValue, assetsDeposited);
+                uint256 depositAmount = _getMaxDepositableAmount(200_000e6, maxSavingsShareValue, assetsDeposited);
 
                 aliBalances.shareValue += depositAmount;
                 assetsDeposited        += depositAmount;
