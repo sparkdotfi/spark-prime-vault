@@ -1535,7 +1535,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         }
     }
 
-    function _getMaxPartialWithdrawal(uint256 requestAmount, uint256 maxSavingsShares, uint256 savingsSharesWithdrawn)
+    function _getMaxWithdrawalableAmount(uint256 requestAmount, uint256 maxSavingsShares, uint256 savingsSharesWithdrawn)
         internal view returns (uint256 withdrawShares, uint256 withdrawAmount, bool isPartial)
     {
         uint256 requestShares = spUSDC.convertToShares(requestAmount);
@@ -1553,9 +1553,8 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
 
         uint256 maxSavingsShares = spUSDC.convertToShares(maxSavingsShareValue);
 
-        vm.startPrank(operator);
+        vm.prank(operator);
         spPrime.processPendingDepositCancellations(maxSavingsShares, maxRequests);
-        vm.stopPrank();
 
         uint256 savingsSharesWithdrawn;
         uint256 assetsWithdrawn;
@@ -1564,7 +1563,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         for (uint256 i = 0; i < maxRequests; ++i) {
             if (i == 0) {
                 ( uint256 withdrawShares, uint256 withdrawAmount, bool isPartial ) =
-                    _getMaxPartialWithdrawal(100_000e6, maxSavingsShares, savingsSharesWithdrawn);
+                    _getMaxWithdrawalableAmount(100_000e6, maxSavingsShares, savingsSharesWithdrawn);
 
                 savingsSharesWithdrawn += withdrawShares;
                 assetsWithdrawn        += withdrawAmount;
@@ -1580,7 +1579,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
 
             if (i == 1) {
                 ( uint256 withdrawShares, uint256 withdrawAmount, bool isPartial ) =
-                    _getMaxPartialWithdrawal(200_000e6, maxSavingsShares, savingsSharesWithdrawn);
+                    _getMaxWithdrawalableAmount(200_000e6, maxSavingsShares, savingsSharesWithdrawn);
 
                 bobBalances.assets     += withdrawAmount;
                 savingsSharesWithdrawn += withdrawShares;
@@ -1591,7 +1590,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
 
             if (i == 2) {
                 ( uint256 withdrawShares, uint256 withdrawAmount, bool isPartial ) =
-                    _getMaxPartialWithdrawal(300_000e6, maxSavingsShares, savingsSharesWithdrawn);
+                    _getMaxWithdrawalableAmount(300_000e6, maxSavingsShares, savingsSharesWithdrawn);
 
                 camBalances.assets     += withdrawAmount;
                 savingsSharesWithdrawn += withdrawShares;
@@ -1602,7 +1601,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
 
             if (i == 3) {
                 ( uint256 withdrawShares, uint256 withdrawAmount, bool isPartial ) =
-                    _getMaxPartialWithdrawal(400_000e6, maxSavingsShares, savingsSharesWithdrawn);
+                    _getMaxWithdrawalableAmount(400_000e6, maxSavingsShares, savingsSharesWithdrawn);
 
                 savingsSharesWithdrawn += withdrawShares;
                 assetsWithdrawn        += withdrawAmount;
@@ -1618,7 +1617,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
 
             if (i == 4) {
                 ( uint256 withdrawShares, uint256 withdrawAmount, bool isPartial ) =
-                    _getMaxPartialWithdrawal(500_000e6, maxSavingsShares, savingsSharesWithdrawn);
+                    _getMaxWithdrawalableAmount(500_000e6, maxSavingsShares, savingsSharesWithdrawn);
 
                 savingsSharesWithdrawn += withdrawShares;
                 assetsWithdrawn        += withdrawAmount;
@@ -1634,7 +1633,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
 
             if (i == 5) {
                 ( uint256 withdrawShares, uint256 withdrawAmount, bool isPartial ) =
-                    _getMaxPartialWithdrawal(600_000e6, maxSavingsShares, savingsSharesWithdrawn);
+                    _getMaxWithdrawalableAmount(600_000e6, maxSavingsShares, savingsSharesWithdrawn);
 
                 camBalances.assets     += withdrawAmount;
                 savingsSharesWithdrawn += withdrawShares;
@@ -1645,7 +1644,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
 
             if (i == 6) {
                 ( uint256 withdrawShares, uint256 withdrawAmount, bool isPartial ) =
-                    _getMaxPartialWithdrawal(700_000e6, maxSavingsShares, savingsSharesWithdrawn);
+                    _getMaxWithdrawalableAmount(700_000e6, maxSavingsShares, savingsSharesWithdrawn);
 
                 savingsSharesWithdrawn += withdrawShares;
                 assetsWithdrawn        += withdrawAmount;
@@ -1661,7 +1660,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
 
             if (i == 7) {
                 ( uint256 withdrawShares, uint256 withdrawAmount, bool isPartial ) =
-                    _getMaxPartialWithdrawal(800_000e6, maxSavingsShares, savingsSharesWithdrawn);
+                    _getMaxWithdrawalableAmount(800_000e6, maxSavingsShares, savingsSharesWithdrawn);
 
                 savingsSharesWithdrawn += withdrawShares;
                 assetsWithdrawn        += withdrawAmount;
@@ -1677,7 +1676,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
 
             if (i == 8) {
                 ( uint256 withdrawShares, uint256 withdrawAmount, bool isPartial ) =
-                    _getMaxPartialWithdrawal(900_000e6, maxSavingsShares, savingsSharesWithdrawn);
+                    _getMaxWithdrawalableAmount(900_000e6, maxSavingsShares, savingsSharesWithdrawn);
 
                 camBalances.assets     += withdrawAmount;
                 savingsSharesWithdrawn += withdrawShares;
@@ -1688,7 +1687,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
 
             if (i == 9) {
                 ( uint256 withdrawShares, uint256 withdrawAmount, bool isPartial ) =
-                    _getMaxPartialWithdrawal(1_000_000e6, maxSavingsShares, savingsSharesWithdrawn);
+                    _getMaxWithdrawalableAmount(1_000_000e6, maxSavingsShares, savingsSharesWithdrawn);
 
                 aliBalances.assets     += withdrawAmount;
                 savingsSharesWithdrawn += withdrawShares;
