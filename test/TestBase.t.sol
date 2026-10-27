@@ -24,6 +24,8 @@ interface ISparkVaultLike {
 
     function redeem(uint256 shares, address to, address from) external returns (uint256);
 
+    function setVsr(uint256 newVsr) external;
+
     function transfer(address to, uint256 amount) external returns (bool);
 
     function withdraw(uint256 assets, address to, address from) external returns (uint256);
@@ -78,6 +80,9 @@ abstract contract TestBase is Test {
     uint256 internal constant ONE_PCT_VSR  = 1.000000000315522921573372069e27;
     uint256 internal constant FOUR_PCT_VSR = 1.000000001243680656318820312e27;
     uint256 internal constant FIVE_PCT_VSR = 1.000000001547125957863212448e27;
+
+    uint256 internal constant DAILY_1BP_VSR = 1.000000001157349541564501380e27;  // 1.0001 per day
+    uint256 internal constant DAILY_2BP_VSR = 1.000000002314583366871550052e27;  // 1.0002 per day
 
     address internal admin           = makeAddr("admin");
     address internal lossManager     = makeAddr("lossManager");
@@ -204,6 +209,16 @@ abstract contract TestBase is Test {
     function _setCapacity(uint256 capacity) internal {
         vm.prank(operator);
         spPrime.setCapacity(capacity);
+    }
+
+    function _setVSR(uint256 vsr) internal {
+        vm.prank(operator);
+        spPrime.setVSR(vsr);
+    }
+
+    function _setSavingsVSR(uint256 vsr) internal {
+        vm.prank(Ethereum.ALM_PROXY_FREEZABLE);
+        spUSDC.setVsr(vsr);
     }
 
     function _setMaxRedeemFeeRate(uint256 maxRedeemFeeRate) internal {
