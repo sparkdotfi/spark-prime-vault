@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
+import { IERC20 } from "../lib/oz/contracts/token/ERC20/IERC20.sol";
+
 import { TestBase } from "./TestBase.t.sol";
 
 import { ISparkPrimeVault } from "../src/ISparkPrimeVault.sol";
@@ -29,6 +31,70 @@ contract ClaimTests is TestBase {
 
     function test_claim_nothingToClaim() external {
         vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
+        spPrime.claim(user);
+    }
+
+    function test_claim_transferAmountExceedsBalanceBoundary() external {
+        _setCapacity(0);
+        _requestDeposit(user, 1_000_000e6);
+        _requestDepositCancellation(user, 0, spUSDC.convertToShares(1_000_000e6));
+
+        // Redeeming directly to the recipient fails, so assets are kept in the vault as claimable
+        vm.mockCallRevert(
+            address(spUSDC),
+            abi.encodeWithSelector(
+                IERC4626Like.redeem.selector,
+                spUSDC.convertToShares(1_000_000e6),
+                user,
+                address(spPrime)
+            ),
+            ""
+        );
+
+        _processPendingDepositCancellations(1);
+
+        // spPrime has 1 less than claimable amount
+        deal(address(usdc), address(spPrime), 1_000_000e6 - 2);
+
+        vm.expectRevert("ERC20: transfer amount exceeds balance");
+        spPrime.claim(user);
+
+        // spPrime has the full claimable amount
+        deal(address(usdc), address(spPrime), 1_000_000e6 - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.Claim(user, 1_000_000e6 - 1);
+
+        spPrime.claim(user);
+    }
+
+    function test_claim_transferFails() external {
+        _setCapacity(0);
+        _requestDeposit(user, 1_000_000e6);
+        _requestDepositCancellation(user, 0, spUSDC.convertToShares(1_000_000e6));
+
+        // Redeeming directly to the recipient fails, so assets are kept in the vault as claimable
+        vm.mockCallRevert(
+            address(spUSDC),
+            abi.encodeWithSelector(
+                IERC4626Like.redeem.selector,
+                spUSDC.convertToShares(1_000_000e6),
+                user,
+                address(spPrime)
+            ),
+            ""
+        );
+
+        _processPendingDepositCancellations(1);
+
+        // Recipient is still unable to receive the asset (e.g. blacklisted)
+        vm.mockCallRevert(
+            address(usdc),
+            abi.encodeWithSelector(IERC20.transfer.selector, user, 1_000_000e6 - 1),
+            ""
+        );
+
+        vm.expectRevert(bytes(""));
         spPrime.claim(user);
     }
 
