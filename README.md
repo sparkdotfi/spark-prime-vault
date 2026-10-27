@@ -46,8 +46,9 @@ Redemptions are always asynchronous (there is no instant fill).
 
 ### 5. Handling Failing Redemptions/Withdrawals & Claims
 
-- Assets are paid out to recipients by the savings vault directly. If the the redemption or withdrawal of savings shares to a recipient fails, the assets are instead redeemed/withdrawn to the vault and credited to `claimableAssets[recipient]`, so a failing request cannot block the queue. Emits `ClaimableAssetsIncreased`.
+- Assets are paid out to recipients by the savings vault directly. If the redemption or withdrawal of savings shares to a recipient fails, the assets are instead redeemed/withdrawn to the vault and credited to `claimableAssets[recipient]`, so a failing request cannot block the queue. Emits `ClaimableAssetsIncreased`.
 - `claim(recipient)` is permissionless and always sends the assets to `recipient`; it reverts while transferring the assets to the recipient fails.
+- If the fallback redemption/withdrawal to the vault also fails (e.g. the savings vault is reverted for some reason or the vault itself cannot receive), the whole `process*` call reverts.
 
 ### 6. Liquidity
 

@@ -327,7 +327,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         external
         override
         onlyRole(OPERATOR_ROLE)
-        whenNotPaused
     {
         _processPendingDepositCancellations(maxSavingsShares_, maxRequests_);
     }
@@ -408,7 +407,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         address recipient_,
         uint256 savingsShares_
     )
-        whenNotPaused
         external
         override
         returns (uint256 newRequestId_)
