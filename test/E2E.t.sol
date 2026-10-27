@@ -14,6 +14,9 @@ contract E2ETests is TestBase {
     function setUp() public override {
         super.setUp();
 
+        _setVSR(DAILY_2BP_VSR);
+        _setSavingsVSR(DAILY_1BP_VSR);
+
         vm.label(user, "user");
         vm.label(ali,  "ali");
         vm.label(bob,  "bob");
@@ -73,59 +76,59 @@ contract E2ETests is TestBase {
         _assertAccountBalances(vaultBalances);
         _assertAccountBalances(takerBalances);
 
-        // 2. Warp 1% of a year, queued spUSDC earns yield while waiting, no drip so rho and chi are unchanged
+        // 2. Warp 1 day, queued spUSDC earns 1bp while waiting, no drip so rho and chi are unchanged
 
-        skip(365 days / 100);
+        skip(1 days);
 
-        vaultState.availableLiquidAssets = 1_000_373.027404e6;
+        vaultState.availableLiquidAssets = 1_000_100e6 - 1;
 
-        vaultState.depositRequests.pendingShareValue = 1_000_373.027404e6;
+        vaultState.depositRequests.pendingShareValue = 1_000_100e6 - 1;
 
-        vaultBalances.savingsShareValue = 1_000_373.027404e6;
+        vaultBalances.savingsShareValue = 1_000_100e6 - 1;
 
-        _assertDepositRequest(0, user, user, 1_000_373.027404e6);
+        _assertDepositRequest(0, user, user, 1_000_100e6 - 1);
 
         _assertVaultState();
         _assertAccountBalances(userBalances);
         _assertAccountBalances(vaultBalances);
         _assertAccountBalances(takerBalances);
 
-        // 3. User gets filled once capacity is raised, at the current spUSDC value and chi of 1.05^(1/100)
+        // 3. User gets filled once capacity is raised, at the current spUSDC value and chi of 1.0002
 
         _setCapacity(VAULT_CAPACITY);
 
         _processPendingDeposits();
 
         vaultState.rho = vm.getBlockTimestamp();
-        vaultState.chi = 1.000488020685060001359567214e27;
+        vaultState.chi = 1.000199999999999999999965892e27;
 
-        vaultState.totalAssets            = 1_000_373.027403e6;
-        vaultState.availableCapacityValue = 99_048_429.041102e6;
+        vaultState.totalAssets            = 1_000_100e6 - 2;
+        vaultState.availableCapacityValue = 99_019_900e6 + 1;  // (100m - 999_900.019995) * 1.0002
 
         vaultState.depositRequests.pendingShareValue = 0;
         vaultState.depositRequests.length            = 0;
         vaultState.depositRequests.firstPendingId    = 1;
 
-        userBalances.shareValue = 1_000_373.027403e6;
+        userBalances.shareValue = 1_000_100e6 - 2;
 
-        assertEq(spPrime.balanceOf(user), 999_885_062_810);  // 1_000_373.027403e6 / 1.000488
+        assertEq(spPrime.balanceOf(user), 999_900.019995e6);  // (1_000_100e6 - 1) / 1.0002
 
         _assertVaultState();
         _assertAccountBalances(userBalances);
         _assertAccountBalances(vaultBalances);
         _assertAccountBalances(takerBalances);
 
-        // 4. Warp 1% of a year, spPrime grows at 5% APY while spUSDC grows at 3.8% APY
+        // 4. Warp 1 day, spPrime grows 2bp while spUSDC grows 1bp
 
-        skip(365 days / 100);
+        skip(1 days);
 
-        vaultState.totalAssets            = 1_000_861.230133e6;
-        vaultState.availableCapacityValue = 99_096_766.723297e6;
-        vaultState.availableLiquidAssets  = 1_000_746.193959e6;
+        vaultState.totalAssets            = 1_000_300.02e6 - 2;
+        vaultState.availableCapacityValue = 99_039_703.98e6 + 1;
+        vaultState.availableLiquidAssets  = 1_000_200.01e6 - 1;
 
-        userBalances.shareValue = 1_000_861.230133e6;
+        userBalances.shareValue = 1_000_300.02e6 - 2;
 
-        vaultBalances.savingsShareValue = 1_000_746.193959e6;
+        vaultBalances.savingsShareValue = 1_000_200.01e6 - 1;
 
         _assertVaultState();
         _assertAccountBalances(userBalances);
@@ -138,75 +141,75 @@ contract E2ETests is TestBase {
 
         _take(takenSavingsShares);
 
-        vaultState.availableLiquidAssets = 500_373.096979e6;
+        vaultState.availableLiquidAssets = 500_100.005e6 - 1;
 
-        vaultBalances.savingsShareValue = 500_373.096979e6;
+        vaultBalances.savingsShareValue = 500_100.005e6 - 1;
 
-        takerBalances.savingsShareValue = 500_373.096979e6;
-
-        _assertVaultState();
-        _assertAccountBalances(userBalances);
-        _assertAccountBalances(vaultBalances);
-        _assertAccountBalances(takerBalances);
-
-        // 6. Warp 1% of a year
-
-        skip(365 days / 100);
-
-        vaultState.totalAssets            = 1_001_349.671116e6;
-        vaultState.availableCapacityValue = 99_145_127.99528e6;
-        vaultState.availableLiquidAssets  = 500_559.749857e6;
-
-        userBalances.shareValue = 1_001_349.671116e6;
-
-        vaultBalances.savingsShareValue = 500_559.749857e6;
-
-        takerBalances.savingsShareValue = 500_559.749857e6;
+        takerBalances.savingsShareValue = 500_100.005e6 - 1;
 
         _assertVaultState();
         _assertAccountBalances(userBalances);
         _assertAccountBalances(vaultBalances);
         _assertAccountBalances(takerBalances);
 
-        // 7. User requests redeem of 250k shares, worth 250.4k USD at chi of 1.05^(3/100)
+        // 6. Warp 1 day
+
+        skip(1 days);
+
+        vaultState.totalAssets            = 1_000_500.08e6 + 2;
+        vaultState.availableCapacityValue = 99_059_511.9208e6 - 3;
+        vaultState.availableLiquidAssets  = 500_150.015e6;
+
+        userBalances.shareValue = 1_000_500.08e6 + 2;
+
+        vaultBalances.savingsShareValue = 500_150.015e6;
+
+        takerBalances.savingsShareValue = 500_150.015e6;
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+        _assertAccountBalances(takerBalances);
+
+        // 7. User requests redeem of 250k shares, worth 250,150.03 USD at chi of 1.0002^3
 
         _requestRedeem(user, 250_000e6);  // Redeem Request 0
 
         vaultState.rho = vm.getBlockTimestamp();
-        vaultState.chi = 1.001464776663976194073004157e27;
+        vaultState.chi = 1.000600120007999999999897636e27;
 
-        vaultState.redeemRequests.pendingShareValue = 250_366.194165e6;
+        vaultState.redeemRequests.pendingShareValue = 250_150.03e6 + 1;
         vaultState.redeemRequests.length            = 1;
 
-        userBalances.shareValue = 750_983.47695e6;
+        userBalances.shareValue = 750_350.05e6;
 
-        vaultBalances.shareValue = 250_366.194165e6;
+        vaultBalances.shareValue = 250_150.03e6 + 1;
 
-        _assertRedeemRequest(0, user, user, 250_366.194165e6);
+        _assertRedeemRequest(0, user, user, 250_150.03e6 + 1);
 
         _assertVaultState();
         _assertAccountBalances(userBalances);
         _assertAccountBalances(vaultBalances);
         _assertAccountBalances(takerBalances);
 
-        // 8. Warp 1% of a year, the queued redeem keeps earning at the vault rate
+        // 8. Warp 1 day, the queued redeem keeps earning at the vault rate
 
-        skip(365 days / 100);
+        skip(1 days);
 
-        vaultState.totalAssets            = 1_001_838.350469e6;
-        vaultState.availableCapacityValue = 99_193_512.868565e6;
-        vaultState.availableLiquidAssets  = 500_746.472361e6;
+        vaultState.totalAssets            = 1_000_700.180018e6;
+        vaultState.availableCapacityValue = 99_079_323.823181e6;
+        vaultState.availableLiquidAssets  = 500_200.03e6 + 1;
 
-        vaultState.redeemRequests.pendingShareValue = 250_488.378047e6;
+        vaultState.redeemRequests.pendingShareValue = 250_200.060008e6;
 
-        userBalances.shareValue = 751_349.972421e6;
+        userBalances.shareValue = 750_500.12001e6;
 
-        vaultBalances.shareValue        = 250_488.378047e6;
-        vaultBalances.savingsShareValue = 500_746.472361e6;
+        vaultBalances.shareValue        = 250_200.060008e6;
+        vaultBalances.savingsShareValue = 500_200.03e6 + 1;
 
-        takerBalances.savingsShareValue = 500_746.472361e6;
+        takerBalances.savingsShareValue = 500_200.03e6 + 1;
 
-        _assertRedeemRequest(0, user, user, 250_488.378047e6);
+        _assertRedeemRequest(0, user, user, 250_200.060008e6);
 
         _assertVaultState();
         _assertAccountBalances(userBalances);
@@ -218,20 +221,20 @@ contract E2ETests is TestBase {
         _processPendingRedeems();
 
         vaultState.rho = vm.getBlockTimestamp();
-        vaultState.chi = 1.001953512190347208998217872e27;
+        vaultState.chi = 1.000800240032001599999863487e27;
 
-        vaultState.totalAssets            = 751_349.972421e6;
-        vaultState.availableCapacityValue = 99_444_001.246613e6;
-        vaultState.availableLiquidAssets  = 250_258.094314e6;
+        vaultState.totalAssets            = 750_500.12001e6;
+        vaultState.availableCapacityValue = 99_329_523.883189e6;
+        vaultState.availableLiquidAssets  = 249_999.969993e6;
 
         vaultState.redeemRequests.pendingShareValue = 0;
         vaultState.redeemRequests.length            = 0;
         vaultState.redeemRequests.firstPendingId    = 1;
 
-        userBalances.assets = 250_488.378047e6;
+        userBalances.assets = 250_200.060008e6;
 
         vaultBalances.shareValue        = 0;
-        vaultBalances.savingsShareValue = 250_258.094314e6;
+        vaultBalances.savingsShareValue = 249_999.969993e6;
 
         _assertVaultState();
         _assertAccountBalances(userBalances);
