@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
+import { console } from "../lib/forge-std/src/console.sol";
+
 import { IERC20 } from "../lib/oz/contracts/token/ERC20/IERC20.sol";
 
 import { ISparkPrimeVault } from "../src/ISparkPrimeVault.sol";
@@ -784,7 +786,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
                 aliBalances.shareValue += depositAmount;
                 assetsDeposited        += depositAmount;
 
-                break; // Last deposit request can never be entirely fulfilled.
+                break;  // Last deposit request can never be entirely fulfilled.
             }
 
             --vaultState.depositRequests.length;
@@ -2259,176 +2261,207 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
     }
 
     function _getMaxRedeemableAmount(uint256 requestAmount, uint256 maxShares, uint256 sharesRedeemed)
-        internal view returns (uint256 redeemShares, uint256 redeemAmount, bool isPartial)
+        internal view returns (uint256)
     {
         uint256 requestShares = spPrime.convertToShares(requestAmount);
 
-        redeemShares = ((sharesRedeemed + requestShares) > maxShares) ? maxShares - sharesRedeemed : requestShares;
-        redeemAmount = spPrime.convertToAssets(redeemShares);
-        isPartial    = redeemShares < requestShares;
+        return (sharesRedeemed + requestShares) > maxShares
+            ? maxShares - sharesRedeemed
+            : requestShares;
+    }
+
+    function _fuzzyMockWithdrawRevert(uint256 withdrawAmount, address recipient) internal {
+        if (withdrawAmount == 0) return;
+
+        vm.mockCallRevert(
+            address(spUSDC),
+            abi.encodeWithSelector(ISparkVaultLike.withdraw.selector, withdrawAmount - 1, recipient, address(spPrime)),
+            ""
+        );
+
+        vm.mockCallRevert(
+            address(spUSDC),
+            abi.encodeWithSelector(ISparkVaultLike.withdraw.selector, withdrawAmount, recipient, address(spPrime)),
+            ""
+        );
+
+        vm.mockCallRevert(
+            address(spUSDC),
+            abi.encodeWithSelector(ISparkVaultLike.withdraw.selector, withdrawAmount + 1, recipient, address(spPrime)),
+            ""
+        );
     }
 
     function testFuzz_processPendingRedeems(uint256 maxShareValue, uint256 maxRequests) external {
-        _setupMockCallReverts();
-
         maxShareValue = _bound(maxShareValue, 0, 2 * vaultState.redeemRequests.pendingShareValue);
         maxRequests   = _bound(maxRequests,   0, 2 * vaultState.redeemRequests.length);
 
         uint256 maxShares = spPrime.convertToShares(maxShareValue);
 
-        vm.prank(operator);
-        spPrime.processPendingRedeems(maxShares, maxRequests);
-
         // Redeems are also capped by the vault's liquid assets, which only limits the last request.
         uint256 liquidShares = spPrime.convertToShares(vaultState.availableLiquidAssets);
 
-        if (maxShares > liquidShares) maxShares = liquidShares;
+        if (maxShares > liquidShares) {
+            maxShares = liquidShares;
+        }
 
         uint256 sharesRedeemed;
-        uint256 assetsRedeemed;
-        uint256 totalClaimable;
 
         for (uint256 i = 0; i < maxRequests; ++i) {
+            console.log("\n------");
+            console.log("maxRequests   ", i, maxRequests);
+            console.log("maxShares     ", maxShares);
+            console.log("sharesRedeemed", sharesRedeemed);
+
             if (i == 0) {
-                ( uint256 redeemShares, uint256 redeemAmount, bool isPartial ) =
-                    _getMaxRedeemableAmount(100_000e6, maxShares, sharesRedeemed);
+                uint256 redeemShares = _getMaxRedeemableAmount(100_000e6, maxShares, sharesRedeemed);
+                uint256 redeemAmount = spPrime.convertToAssets(redeemShares);
 
-                sharesRedeemed += redeemShares;
-                assetsRedeemed += redeemAmount;
-
-                if (isPartial) {
-                    aliBalances.assets += redeemAmount;
-                    break;
-                }
-
+                sharesRedeemed              += redeemShares;
+                vaultState.totalClaimable   += redeemAmount;
+                vaultBalances.assets        += redeemAmount;
                 aliBalances.claimableAssets += redeemAmount;
-                totalClaimable              += redeemAmount;
+
+                console.log("Redeemed for ali (F)", redeemShares, redeemAmount);
+
+                _fuzzyMockWithdrawRevert(redeemAmount, ali);
+
+                if (redeemShares < spPrime.convertToShares(100_000e6)) break;
             }
 
             if (i == 1) {
-                ( uint256 redeemShares, uint256 redeemAmount, bool isPartial ) =
-                    _getMaxRedeemableAmount(200_000e6, maxShares, sharesRedeemed);
+                uint256 redeemShares = _getMaxRedeemableAmount(200_000e6, maxShares, sharesRedeemed);
+                uint256 redeemAmount = spPrime.convertToAssets(redeemShares);
 
-                bobBalances.assets += redeemAmount;
                 sharesRedeemed     += redeemShares;
-                assetsRedeemed     += redeemAmount;
+                bobBalances.assets += redeemAmount;
 
-                if (isPartial) break;
+                console.log("Redeemed for bob (G)", redeemShares, redeemAmount);
+
+                if (redeemShares < spPrime.convertToShares(200_000e6)) break;
             }
 
             if (i == 2) {
-                ( uint256 redeemShares, uint256 redeemAmount, bool isPartial ) =
-                    _getMaxRedeemableAmount(300_000e6, maxShares, sharesRedeemed);
+                uint256 redeemShares =  _getMaxRedeemableAmount(300_000e6, maxShares, sharesRedeemed);
+                uint256 redeemAmount = spPrime.convertToAssets(redeemShares);
 
-                camBalances.assets += redeemAmount;
                 sharesRedeemed     += redeemShares;
-                assetsRedeemed     += redeemAmount;
+                camBalances.assets += redeemAmount;
 
-                if (isPartial) break;
+                console.log("Redeemed for cam (G)", redeemShares, redeemAmount);
+
+                if (redeemShares < spPrime.convertToShares(300_000e6)) break;
             }
 
             if (i == 3) {
-                ( uint256 redeemShares, uint256 redeemAmount, bool isPartial ) =
-                    _getMaxRedeemableAmount(400_000e6, maxShares, sharesRedeemed);
+                uint256 redeemShares = _getMaxRedeemableAmount(400_000e6, maxShares, sharesRedeemed);
+                uint256 redeemAmount = spPrime.convertToAssets(redeemShares);
 
-                sharesRedeemed += redeemShares;
-                assetsRedeemed += redeemAmount;
-
-                if (isPartial) {
-                    danBalances.assets += redeemAmount;
-                    break;
-                }
-
+                sharesRedeemed              += redeemShares;
+                vaultState.totalClaimable   += redeemAmount;
+                vaultBalances.assets        += redeemAmount;
                 danBalances.claimableAssets += redeemAmount;
-                totalClaimable              += redeemAmount;
+
+                console.log("Redeemed for dan (F)", redeemShares, redeemAmount);
+
+                _fuzzyMockWithdrawRevert(redeemAmount, dan);
+
+                if (redeemShares < spPrime.convertToShares(400_000e6)) break;
             }
 
             if (i == 4) {
-                ( uint256 redeemShares, uint256 redeemAmount, bool isPartial ) =
-                    _getMaxRedeemableAmount(500_000e6, maxShares, sharesRedeemed);
+                uint256 redeemShares = _getMaxRedeemableAmount(500_000e6, maxShares, sharesRedeemed);
+                uint256 redeemAmount = spPrime.convertToAssets(redeemShares);
 
-                sharesRedeemed += redeemShares;
-                assetsRedeemed += redeemAmount;
-
-                if (isPartial) {
-                    bobBalances.assets += redeemAmount;
-                    break;
-                }
-
+                sharesRedeemed              += redeemShares;
+                vaultState.totalClaimable   += redeemAmount;
+                vaultBalances.assets        += redeemAmount;
                 bobBalances.claimableAssets += redeemAmount;
-                totalClaimable              += redeemAmount;
+
+                console.log("Redeemed for bob (F)", redeemShares, redeemAmount);
+
+                _fuzzyMockWithdrawRevert(redeemAmount, bob);
+
+                if (redeemShares < spPrime.convertToShares(500_000e6)) break;
             }
 
             if (i == 5) {
-                ( uint256 redeemShares, uint256 redeemAmount, bool isPartial ) =
-                    _getMaxRedeemableAmount(600_000e6, maxShares, sharesRedeemed);
+                uint256 redeemShares = _getMaxRedeemableAmount(600_000e6, maxShares, sharesRedeemed);
+                uint256 redeemAmount = spPrime.convertToAssets(redeemShares);
 
-                camBalances.assets += redeemAmount;
                 sharesRedeemed     += redeemShares;
-                assetsRedeemed     += redeemAmount;
+                camBalances.assets += redeemAmount;
 
-                if (isPartial) break;
+                console.log("Redeemed for cam (G)", redeemShares, redeemAmount);
+
+                if (redeemShares < spPrime.convertToShares(600_000e6)) break;
             }
 
             if (i == 6) {
-                ( uint256 redeemShares, uint256 redeemAmount, bool isPartial ) =
-                    _getMaxRedeemableAmount(700_000e6, maxShares, sharesRedeemed);
+                uint256 redeemShares = _getMaxRedeemableAmount(700_000e6, maxShares, sharesRedeemed);
+                uint256 redeemAmount = spPrime.convertToAssets(redeemShares);
 
-                sharesRedeemed += redeemShares;
-                assetsRedeemed += redeemAmount;
-
-                if (isPartial) {
-                    aliBalances.assets += redeemAmount;
-                    break;
-                }
-
+                sharesRedeemed              += redeemShares;
+                vaultState.totalClaimable   += redeemAmount;
+                vaultBalances.assets        += redeemAmount;
                 aliBalances.claimableAssets += redeemAmount;
-                totalClaimable              += redeemAmount;
+
+                console.log("Redeemed for ali (F)", redeemShares, redeemAmount);
+
+                _fuzzyMockWithdrawRevert(redeemAmount, ali);
+
+                if (redeemShares < spPrime.convertToShares(700_000e6)) break;
             }
 
             if (i == 7) {
-                ( uint256 redeemShares, uint256 redeemAmount, bool isPartial ) =
-                    _getMaxRedeemableAmount(800_000e6, maxShares, sharesRedeemed);
+                uint256 redeemShares = _getMaxRedeemableAmount(800_000e6, maxShares, sharesRedeemed);
+                uint256 redeemAmount = spPrime.convertToAssets(redeemShares);
 
-                sharesRedeemed += redeemShares;
-                assetsRedeemed += redeemAmount;
-
-                if (isPartial) {
-                    danBalances.assets += redeemAmount;
-                    break;
-                }
-
+                sharesRedeemed              += redeemShares;
+                vaultState.totalClaimable   += redeemAmount;
+                vaultBalances.assets        += redeemAmount;
                 danBalances.claimableAssets += redeemAmount;
-                totalClaimable              += redeemAmount;
+
+                console.log("Redeemed for dan (F)", redeemShares, redeemAmount);
+
+                _fuzzyMockWithdrawRevert(redeemAmount, dan);
+
+                if (redeemShares < spPrime.convertToShares(800_000e6)) break;
             }
 
             if (i == 8) {
-                ( uint256 redeemShares, uint256 redeemAmount, bool isPartial ) =
-                    _getMaxRedeemableAmount(900_000e6, maxShares, sharesRedeemed);
+                uint256 redeemShares = _getMaxRedeemableAmount(900_000e6, maxShares, sharesRedeemed);
+                uint256 redeemAmount = spPrime.convertToAssets(redeemShares);
 
-                camBalances.assets += redeemAmount;
                 sharesRedeemed     += redeemShares;
-                assetsRedeemed     += redeemAmount;
+                camBalances.assets += redeemAmount;
 
-                if (isPartial) break;
+                console.log("Redeemed for cam (G)", redeemShares, redeemAmount);
+
+                if (redeemShares < spPrime.convertToShares(900_000e6)) break;
             }
 
             if (i == 9) {
-                ( , uint256 redeemAmount, ) = _getMaxRedeemableAmount(1_000_000e6, maxShares, sharesRedeemed);
+                uint256 redeemShares = _getMaxRedeemableAmount(1_000_000e6, maxShares, sharesRedeemed);
+                uint256 redeemAmount = spPrime.convertToAssets(redeemShares);
 
+                sharesRedeemed     += redeemShares;
                 aliBalances.assets += redeemAmount;
-                assetsRedeemed     += redeemAmount;
 
-                break; // Last redeem request can never be entirely fulfilled.
+                console.log("Redeemed for ali (G)", redeemShares, redeemAmount);
+
+                break;  // Last redeem request can never be entirely fulfilled.
             }
 
             --vaultState.redeemRequests.length;
             ++vaultState.redeemRequests.firstPendingId;
+
+            if (vaultState.redeemRequests.length == 0) break;
         }
 
-        vaultState.totalClaimable         += totalClaimable;
+        uint256 assetsRedeemed = spPrime.convertToAssets(sharesRedeemed);
+
         vaultState.availableCapacityValue += assetsRedeemed;
-        vaultBalances.assets              += totalClaimable;
 
         if (vaultState.totalAssets < assetsRedeemed) {
             vaultState.totalAssets = 0;
@@ -2459,6 +2492,9 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
         } else {
             vaultBalances.savingsShareValue -= assetsRedeemed;
         }
+
+        vm.prank(operator);
+        spPrime.processPendingRedeems(maxShares, maxRequests);
 
         _assertVaultState(10);
         _assertAccountBalances(aliBalances,   10);

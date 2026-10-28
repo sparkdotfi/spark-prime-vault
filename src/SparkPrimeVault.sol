@@ -122,18 +122,18 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     string public override name;
     string public override symbol;
 
-    uint64  public override rho;    // Time of last drip              [unix epoch time]
-    uint192 public override chi;    // The Rate Accumulator           [ray]
-    uint256 public override vsr;    // The Vault Savings Rate         [ray]
-    uint256 public override minVSR; // The minimum Vault Savings Rate [ray]
-    uint256 public override maxVSR; // The maximum Vault Savings Rate [ray]
+    uint64  public override rho;     // Time of last drip              [unix epoch time]
+    uint192 public override chi;     // The Rate Accumulator           [ray]
+    uint256 public override vsr;     // The Vault Savings Rate         [ray]
+    uint256 public override minVSR;  // The minimum Vault Savings Rate [ray]
+    uint256 public override maxVSR;  // The maximum Vault Savings Rate [ray]
 
-    uint256 public override maxCapacity;            // Max totalSupply
-    uint256 public override minDeposit;             // [savings asset units]
-    uint256 public override minDepositCancellation; // [savings shares units]
-    uint256 public override minRedeem;              // [shares units]
-    uint256 public override redeemFeeRate;          // Fee rate burned in redeem requests [wad]
-    uint256 public override maxRedeemFeeRate;       // [wad]
+    uint256 public override maxCapacity;             // Max totalSupply
+    uint256 public override minDeposit;              // [savings asset units]
+    uint256 public override minDepositCancellation;  // [savings shares units]
+    uint256 public override minRedeem;               // [shares units]
+    uint256 public override redeemFeeRate;           // Fee rate burned in redeem requests [wad]
+    uint256 public override maxRedeemFeeRate;        // [wad]
 
     uint256 public override totalSupply;
 
@@ -165,7 +165,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /**********************************************************************************************/
 
     constructor() {
-        _disableInitializers(); // Avoid initializing in the context of the implementation
+        _disableInitializers();  // Avoid initializing in the context of the implementation
     }
 
     // NOTE: Neither UUPSUpgradeable nor AccessControlEnumerableUpgradeable require init functions
