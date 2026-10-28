@@ -2273,21 +2273,11 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
     function _fuzzyMockWithdrawRevert(uint256 withdrawAmount, address recipient) internal {
         if (withdrawAmount == 0) return;
 
-        vm.mockCallRevert(
-            address(spUSDC),
-            abi.encodeWithSelector(ISparkVaultLike.withdraw.selector, withdrawAmount - 1, recipient, address(spPrime)),
-            ""
-        );
-
+        // Mock only the exact amount: a +/- 1 window would also match other requests of the same
+        // recipient (e.g. bob's full 200k request vs a 200k partial fill of his 500k request).
         vm.mockCallRevert(
             address(spUSDC),
             abi.encodeWithSelector(ISparkVaultLike.withdraw.selector, withdrawAmount, recipient, address(spPrime)),
-            ""
-        );
-
-        vm.mockCallRevert(
-            address(spUSDC),
-            abi.encodeWithSelector(ISparkVaultLike.withdraw.selector, withdrawAmount + 1, recipient, address(spPrime)),
             ""
         );
     }
