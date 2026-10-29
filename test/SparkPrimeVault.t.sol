@@ -548,6 +548,9 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
     // Success tests
 
     function test_processPendingDeposits_infiniteMaxSavingsShares_infiniteMaxRequests() external {
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ProcessPendingDeposits(operator, type(uint256).max, type(uint256).max);
+
         // Deposit Request 3
 
         vm.expectEmit(address(spPrime));
@@ -618,6 +621,11 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
     }
 
     function test_processPendingDeposits_infiniteMaxSavingsShares_limitedMaxRequests() external {
+        uint256 maxRequests = 3;
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ProcessPendingDeposits(operator, type(uint256).max, maxRequests);
+
         // Deposit Request 3
 
         vm.expectEmit(address(spPrime));
@@ -636,7 +644,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
 
         // First 3 cancelled deposits were already skipped, so this fills 2 deposits, then skips 1 cancelled deposit.
         vm.prank(operator);
-        spPrime.processPendingDeposits(type(uint256).max, 3);
+        spPrime.processPendingDeposits(type(uint256).max, maxRequests);
 
         uint256 assetsDeposited = 400_000e6 + 500_000e6;  // Only first 2 uncancelled deposits
 
@@ -668,6 +676,11 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
     }
 
     function test_processPendingDeposits_limitedMaxSavingsShares_infiniteMaxRequests() external {
+        uint256 maxSavingsShares = spUSDC.convertToShares(1_200_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ProcessPendingDeposits(operator, maxSavingsShares, type(uint256).max);
+
         // Deposit Request 3
 
         vm.expectEmit(address(spPrime));
@@ -692,9 +705,8 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.Deposit(6, ali, ali, spUSDC.convertToShares(300_000e6) + 1, 300_000e6, spPrime.convertToShares(300_000e6));
 
-        vm.startPrank(operator);
-        spPrime.processPendingDeposits(spUSDC.convertToShares(1_200_000e6), type(uint256).max);
-        vm.stopPrank();
+        vm.prank(operator);
+        spPrime.processPendingDeposits(maxSavingsShares, type(uint256).max);
 
         uint256 assetsDeposited = 400_000e6 + 500_000e6 + 300_000e6;  // Only ~300k of the third uncancelled 700k deposit
 
@@ -815,6 +827,11 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
     }
 
     function test_processPendingDeposits_multipleCalls() external {
+        uint256 maxSavingsShares = spUSDC.convertToShares(1_200_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ProcessPendingDeposits(operator, maxSavingsShares, type(uint256).max);
+
         // Deposit Request 3
 
         vm.expectEmit(address(spPrime));
@@ -839,9 +856,8 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.Deposit(6, ali, ali, spUSDC.convertToShares(300_000e6) + 1, 300_000e6, spPrime.convertToShares(300_000e6));
 
-        vm.startPrank(operator);
-        spPrime.processPendingDeposits(spUSDC.convertToShares(1_200_000e6), type(uint256).max);
-        vm.stopPrank();
+        vm.prank(operator);
+        spPrime.processPendingDeposits(maxSavingsShares, type(uint256).max);
 
         uint256 assetsDeposited = 400_000e6 + 500_000e6 + 300_000e6;  // Only ~300k of the Request 6 700k deposit
 
@@ -1113,6 +1129,9 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
     function test_processPendingDepositCancellations_infiniteMaxSavingsShares_infiniteMaxRequests() external {
         _setupMockCallReverts();
 
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ProcessPendingDepositCancellations(operator, type(uint256).max, type(uint256).max);
+
         // Deposit Request 0
 
         vm.expectEmit(address(spPrime));
@@ -1219,6 +1238,11 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
     function test_processPendingDepositCancellations_infiniteMaxSavingsShares_limitedMaxRequests() external {
         _setupMockCallReverts();
 
+        uint256 maxRequests = 6;
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ProcessPendingDepositCancellations(operator, type(uint256).max, maxRequests);
+
         // Deposit Request 0
 
         vm.expectEmit(address(spPrime));
@@ -1259,7 +1283,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         emit ISparkPrimeVault.DepositCancellation(5, cam, cam, spUSDC.convertToShares(600_000e6), 600_000e6 - 1);
 
         vm.prank(operator);
-        spPrime.processPendingDepositCancellations(type(uint256).max, 6);
+        spPrime.processPendingDepositCancellations(type(uint256).max, maxRequests);
 
         uint256 assetsWithdrawn = 100_000e6 + 200_000e6 + 300_000e6 + 400_000e6 + 500_000e6 + 600_000e6;
         uint256 totalClaimable  = 100_000e6 + 400_000e6 + 500_000e6;
@@ -1304,6 +1328,11 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
     function test_processPendingDepositCancellations_limitedMaxSavingsShares_infiniteMaxRequests() external {
         _setupMockCallReverts();
 
+        uint256 maxSavingsShares = spUSDC.convertToShares(2_000_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ProcessPendingDepositCancellations(operator, maxSavingsShares, type(uint256).max);
+
         // Deposit Request 0
 
         vm.expectEmit(address(spPrime));
@@ -1343,9 +1372,8 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.DepositCancellation(5, cam, cam, spUSDC.convertToShares(500_000e6) + 2, 500_000e6 + 1);  // Only 500k of the 600k is processed
 
-        vm.startPrank(operator);
-        spPrime.processPendingDepositCancellations(spUSDC.convertToShares(2_000_000e6), type(uint256).max);
-        vm.stopPrank();
+        vm.prank(operator);
+        spPrime.processPendingDepositCancellations(maxSavingsShares, type(uint256).max);
 
         uint256 assetsWithdrawn = 100_000e6 + 200_000e6 + 300_000e6 + 400_000e6 + 500_000e6 + 500_000e6;  // Only 500k of the last request is processed
         uint256 totalClaimable  = 100_000e6 + 400_000e6 + 500_000e6;
@@ -1391,6 +1419,11 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
     function test_processPendingDepositCancellations_multipleCalls() external {
         _setupMockCallReverts();
 
+        uint256 maxSavingsShares = spUSDC.convertToShares(2_000_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ProcessPendingDepositCancellations(operator, maxSavingsShares, type(uint256).max);
+
         // Deposit Request 0
 
         vm.expectEmit(address(spPrime));
@@ -1430,9 +1463,8 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.DepositCancellation(5, cam, cam, spUSDC.convertToShares(500_000e6) + 2, 500_000e6 + 1);  // Only 500k of the 600k is processed
 
-        vm.startPrank(operator);
-        spPrime.processPendingDepositCancellations(spUSDC.convertToShares(2_000_000e6), type(uint256).max);
-        vm.stopPrank();
+        vm.prank(operator);
+        spPrime.processPendingDepositCancellations(maxSavingsShares, type(uint256).max);
 
         uint256 assetsWithdrawn = 100_000e6 + 200_000e6 + 300_000e6 + 400_000e6 + 500_000e6 + 500_000e6;  // Only 500k of the last request is processed
         uint256 totalClaimable  = 100_000e6 + 400_000e6 + 500_000e6;
@@ -1473,6 +1505,9 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         _assertDepositCancellationRequest(7, bob, dan, 800_000e6 - 1);
         _assertDepositCancellationRequest(8, cam, cam, 900_000e6 - 1);
         _assertDepositCancellationRequest(9, ali, ali, 1_000_000e6 - 1);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ProcessPendingDepositCancellations(operator, type(uint256).max, type(uint256).max);
 
         // Deposit Request 5 (Remainder)
 
@@ -1718,6 +1753,9 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
     function test_processPendingRedeems_infiniteMaxShares_infiniteMaxRequests() external {
         _setupMockCallReverts();
 
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ProcessPendingRedeems(operator, type(uint256).max, type(uint256).max);
+
         // Redeem Request 0
 
         vm.expectEmit(address(spPrime));
@@ -1860,6 +1898,11 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
     function test_processPendingRedeems_infiniteMaxShares_limitedMaxRequests() external {
         _setupMockCallReverts();
 
+        uint256 maxRequests = 6;
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ProcessPendingRedeems(operator, type(uint256).max, maxRequests);
+
         // Redeem Request 0
 
         vm.expectEmit(address(spPrime));
@@ -1918,7 +1961,7 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
         emit ISparkPrimeVault.Redeem(5, cam, cam, spPrime.convertToShares(600_000e6), spUSDC.convertToShares(600_000e6), 600_000e6 - 1);
 
         vm.prank(operator);
-        spPrime.processPendingRedeems(type(uint256).max, 6);
+        spPrime.processPendingRedeems(type(uint256).max, maxRequests);
 
         uint256 assetsRedeemed = 100_000e6 + 200_000e6 + 300_000e6 + 400_000e6 + 500_000e6 + 600_000e6;
         uint256 totalClaimable = 100_000e6 + 400_000e6 + 500_000e6;
@@ -1965,6 +2008,11 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
 
     function test_processPendingRedeems_limitedMaxShares_infiniteMaxRequests() external {
         _setupMockCallReverts();
+
+        uint256 maxShares = spPrime.convertToShares(2_000_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ProcessPendingRedeems(operator, maxShares, type(uint256).max);
 
         // Redeem Request 0
 
@@ -2023,9 +2071,8 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.Redeem(5, cam, cam, spPrime.convertToShares(500_000e6) + 1, spUSDC.convertToShares(500_000e6) + 1, 500_000e6);
 
-        vm.startPrank(operator);
-        spPrime.processPendingRedeems(spPrime.convertToShares(2_000_000e6), type(uint256).max);
-        vm.stopPrank();
+        vm.prank(operator);
+        spPrime.processPendingRedeems(maxShares, type(uint256).max);
 
         uint256 assetsRedeemed = 2_000_000e6;
         uint256 totalClaimable = 100_000e6 + 400_000e6 + 500_000e6;
@@ -2073,6 +2120,11 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
 
     function test_processPendingRedeems_multipleCalls() external {
         _setupMockCallReverts();
+
+        uint256 maxShares = spPrime.convertToShares(2_000_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ProcessPendingRedeems(operator, maxShares, type(uint256).max);
 
         // Redeem Request 0
 
@@ -2131,9 +2183,8 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.Redeem(5, cam, cam, spPrime.convertToShares(500_000e6) + 1, spUSDC.convertToShares(500_000e6) + 1, 500_000e6);  // Only 500k of the 600k is processed
 
-        vm.startPrank(operator);
-        spPrime.processPendingRedeems(spPrime.convertToShares(2_000_000e6), type(uint256).max);
-        vm.stopPrank();
+        vm.prank(operator);
+        spPrime.processPendingRedeems(maxShares, type(uint256).max);
 
         uint256 assetsRedeemed = 100_000e6 + 200_000e6 + 300_000e6 + 400_000e6 + 500_000e6 + 500_000e6;  // Only 500k of the last request is processed
         uint256 totalClaimable = 100_000e6 + 400_000e6 + 500_000e6;
@@ -2177,6 +2228,9 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
         _assertRedeemRequest(7, bob, dan, 800_000e6 - 1);
         _assertRedeemRequest(8, cam, cam, 900_000e6 - 1);
         _assertRedeemRequest(9, ali, ali, 1_000_000e6 - 2);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.ProcessPendingRedeems(operator, type(uint256).max, type(uint256).max);
 
         // Redeem Request 5 (Remainder)
 

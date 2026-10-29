@@ -35,7 +35,6 @@ contract ERC20Tests is TokenFuzzChecks {
 
         vm.startPrank(admin);
         spPrime.grantRole(OPERATOR_ROLE, operator);
-
         spPrime.setVSRBounds(1e27, spPrime.MAX_VSR());
         vm.stopPrank();
     }

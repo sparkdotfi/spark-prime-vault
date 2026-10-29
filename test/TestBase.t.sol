@@ -136,7 +136,6 @@ abstract contract TestBase is Test {
 
         vm.stopPrank();
 
-
         vm.startPrank(operator);
         spPrime.setCapacity(VAULT_CAPACITY);
         spPrime.setVSR(FIVE_PCT_VSR);
