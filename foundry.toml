@@ -6,6 +6,7 @@ solc_version = "0.8.34"
 evm_version = "osaka"
 optimizer = true
 optimizer_runs = 200
+gas_limit = 9223372036854775807  # DepositQueueGriefing builds ~8k requests in one test
 fs_permissions = [
     { access = "read", path = "test/tables" },
 ]

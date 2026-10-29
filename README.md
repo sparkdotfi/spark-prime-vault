@@ -64,6 +64,7 @@ Redemptions are always asynchronous (there is no instant fill).
 - Each queue tracks its head (`firstPendingDepositId`, `firstPendingDepositCancellationId`, `firstPendingRedeemId`); fully filled or cancelled entries are deleted and skipped.
 - Aggregate pending amounts are tracked in `pendingDepositSavingsShares`, `pendingCancelledDepositSavingsShares`, and `pendingRedeemShares`.
 - Pending requests can be inspected with `getPending{Deposit,DepositCancellation,Redeem}Request(requestId)` and `getPending...Requests()` (full pending list) or `getPending...Requests(startId, length)` (`length` entries from `startId`; an empty array if `length` is zero; reverts if `startId` is before the queue head or the range extends past the end of the queue).
+- Cancelled deposit entries stay in the array as zero-share tombstones that every walk skips. The automatic walks in `requestDeposit` (instant fill) and `requestDepositCancellation` (cleanup) are unbounded, so a long run of tombstones at the front of the queue makes those calls expensive and, past roughly 7,600 entries, revert out of gas until the operator clears the run with `processPendingDeposits(0, n)`. This is a known, measured and accepted griefing vector; see [docs/DEPOSIT_QUEUE_GRIEFING.md](docs/DEPOSIT_QUEUE_GRIEFING.md) for the mechanics, costs and operator runbook.
 
 ### 8. Pausing
 
