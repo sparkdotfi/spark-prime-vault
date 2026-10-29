@@ -1071,6 +1071,13 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         spPrime.processPendingDepositCancellations(type(uint256).max, type(uint256).max);
     }
 
+    function test_processPendingDepositCancellations_whilePaused() external {
+        _pause();
+
+        vm.prank(operator);
+        spPrime.processPendingDepositCancellations(type(uint256).max, type(uint256).max);
+    }
+
     function _setupMockCallReverts() internal {
         vm.mockCallRevert(
             address(spUSDC),

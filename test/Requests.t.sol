@@ -140,6 +140,13 @@ contract RequestDepositCancellationTests is TestBase {
 
     // Success tests
 
+    function test_requestDepositCancellation_whilePaused() external {
+        _pause();
+
+        vm.prank(user);
+        spPrime.requestDepositCancellation(depositRequestId, recipient, requestShares);
+    }
+
     function test_requestDepositCancellation_full() external {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.DepositCancellationRequest(depositRequestId, 0, recipient, requestShares);
