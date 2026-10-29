@@ -639,8 +639,8 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**
      * @notice Fills pending deposit cancellation requests in queue order, redeeming their savings
      *         shares for their recipients.
-     * @dev    This function can only be called by accounts with OPERATOR_ROLE while the vault is
-     *         not paused. Processing is limited by `maxSavingsShares_`, `maxRequests_`, and the
+     * @dev    This function can only be called by accounts with OPERATOR_ROLE, including while the
+     *         vault is paused. Processing is limited by `maxSavingsShares_`, `maxRequests_`, and the
      *         savings shares the vault can redeem. The last processed request may be partially
      *         filled. Assets that cannot be sent to a recipient are credited as claimable assets.
      * @param  maxSavingsShares_ The maximum amount of savings shares to process
@@ -682,7 +682,8 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**
      * @notice Pauses the vault.
      * @dev    This function can only be called by accounts with PAUSER_ROLE.
-     *         While paused, new requests and queue processing are disabled.
+     *         While paused, deposit and redeem requests and their processing are disabled. Deposit
+     *         cancellations can still be requested and processed.
      */
     function pause() external;
 
@@ -720,7 +721,7 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**
      * @notice Cancels `savingsShares_` of a deposit request and queues them to be redeemed for
      *         `recipient_`.
-     * @dev    Can only be called by the owner of the request while the vault is not paused.
+     * @dev    Can only be called by the owner of the request, including while the vault is paused.
      *         `savingsShares_` must be at least minDepositCancellation and at most the unfilled
      *         savings shares of the request. If all of them are cancelled the deposit request is
      *         removed, otherwise it keeps the rest and its position in the queue.
@@ -855,8 +856,8 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
 
     /**
      * @notice Returns `length_` deposit requests, starting from the request with ID `startId_`.
-     * @dev    Reverts if `length_` is zero, `startId_` is before the first pending request, or the
-     *         range extends past the end of the queue.
+     * @dev    Returns an empty array if `length_` is zero. Reverts if `startId_` is before the
+     *         first pending request or the range extends past the end of the queue.
      *         Includes fully cancelled requests, which have zero shares.
      * @param  startId_  The first request ID to return
      * @param  length_   The number of requests to return
@@ -893,8 +894,8 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**
      * @notice Returns `length_` deposit cancellation requests, starting from the request with ID
      *         `startId_`.
-     * @dev    Reverts if `length_` is zero, `startId_` is before the first pending request, or the
-     *         range extends past the end of the queue.
+     * @dev    Returns an empty array if `length_` is zero. Reverts if `startId_` is before the
+     *         first pending request or the range extends past the end of the queue.
      * @param  startId_  The first request ID to return
      * @param  length_   The number of requests to return
      * @return requests_ The deposit cancellation requests
@@ -925,8 +926,8 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
 
     /**
      * @notice Returns `length_` redeem requests, starting from the request with ID `startId_`.
-     * @dev    Reverts if `length_` is zero, `startId_` is before the first pending request, or the
-     *         range extends past the end of the queue.
+     * @dev    Returns an empty array if `length_` is zero. Reverts if `startId_` is before the
+     *         first pending request or the range extends past the end of the queue.
      * @param  startId_  The first request ID to return
      * @param  length_   The number of requests to return
      * @return requests_ The redeem requests
