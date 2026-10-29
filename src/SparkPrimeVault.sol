@@ -1096,30 +1096,30 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         bytes32        digest_,
         bytes   memory signature_
     ) internal view returns (bool) {
-        if (signature_.length == 65) {
-            bytes32 r_;
-            bytes32 s_;
-            uint8   v_;
+        if (signer_.code.length != 0) {
+            ( bool success_, bytes memory result_ ) = signer_.staticcall(
+                abi.encodeCall(IERC1271.isValidSignature, (digest_, signature_))
+            );
 
-            assembly {
-                r_ := mload(add(signature_, 0x20))
-                s_ := mload(add(signature_, 0x40))
-                v_ := byte(0, mload(add(signature_, 0x60)))
-            }
-
-            if (signer_ == ecrecover(digest_, v_, r_, s_)) return true;
+            return
+                success_ &&
+                result_.length >= 32 &&
+                abi.decode(result_, (bytes4)) == IERC1271.isValidSignature.selector;
         }
 
-        if (signer_.code.length == 0) return false;
+        if (signature_.length != 65) return false;
 
-        ( bool success_, bytes memory result_ ) = signer_.staticcall(
-            abi.encodeCall(IERC1271.isValidSignature, (digest_, signature_))
-        );
+        bytes32 r_;
+        bytes32 s_;
+        uint8   v_;
 
-        return
-            success_ &&
-            result_.length >= 32 &&
-            abi.decode(result_, (bytes4)) == IERC1271.isValidSignature.selector;
+        assembly {
+            r_ := mload(add(signature_, 0x20))
+            s_ := mload(add(signature_, 0x40))
+            v_ := byte(0, mload(add(signature_, 0x60)))
+        }
+
+        return signer_ == ecrecover(digest_, v_, r_, s_);
     }
 
     /**********************************************************************************************/

@@ -69,7 +69,10 @@ contract ERC20Tests is TokenFuzzChecks {
     }
 
     function test_permit() external {
-        checkBulkPermit(address(spPrime), "SparkPrimeVault");
+        uint256 privateKey1 = 0x112233445566;
+        uint256 privateKey2 = 0xAABBCCDDEEFF;
+
+        checkBulkPermit(address(spPrime), "SparkPrimeVault", privateKey1, privateKey2);
     }
 
     function testFuzz_permit(
