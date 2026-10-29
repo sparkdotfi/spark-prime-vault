@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
+import { IAccessControl } from "../lib/oz/contracts/access/IAccessControl.sol";
+
+import {
+    IAccessControlEnumerable
+} from "../lib/oz/contracts/access/extensions/IAccessControlEnumerable.sol";
+
+import { IERC165 } from "../lib/oz/contracts/utils/introspection/IERC165.sol";
+
 import { TestBase, ISparkVaultLike } from "./TestBase.t.sol";
 
 import { ISparkPrimeVault } from "../src/ISparkPrimeVault.sol";
@@ -715,6 +723,22 @@ contract PendingRedeemRequestTests is GettersTestBase {
         _requestRedeem(owner2, recipient2, spPrime.balanceOf(owner2));
 
         assertEq(spPrime.getPendingRedeemRequests(0, 3).length, 2);
+    }
+
+}
+
+contract SupportsInterfaceTests is GettersTestBase {
+
+    function test_supportsInterface_unsupportedInterface() external view {
+        assertEq(spPrime.supportsInterface(0x00000000), false);
+        assertEq(spPrime.supportsInterface(0xffffffff), false);
+    }
+
+    function test_supportsInterface() external view {
+        assertEq(spPrime.supportsInterface(type(IAccessControl).interfaceId),           true);
+        assertEq(spPrime.supportsInterface(type(IAccessControlEnumerable).interfaceId), true);
+        assertEq(spPrime.supportsInterface(type(IERC165).interfaceId),                  true);
+        assertEq(spPrime.supportsInterface(type(ISparkPrimeVault).interfaceId),         true);
     }
 
 }
