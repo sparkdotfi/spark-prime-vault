@@ -51,26 +51,45 @@ contract GetPendingDepositRequestTests is GettersTestBase {
         _processPendingDeposits(1);
 
         vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
-        spPrime.getPendingDepositRequest(0);
-
         spPrime.getPendingDepositRequest(1);
+
+        spPrime.getPendingDepositRequest(2);
     }
 
     function test_getPendingDepositRequest_idAfterQueueBoundary() external {
         _requestDeposit(owner1, recipient1, 1_000e6);
 
         vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
+        spPrime.getPendingDepositRequest(2);
+
+        spPrime.getPendingDepositRequest(1);
+    }
+
+    function test_getPendingDepositRequest_nullId() external {
+        _requestDeposit(owner1, recipient1, 1_000e6);
+
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
+        spPrime.getPendingDepositRequest(0);
+    }
+
+    function test_getPendingDepositRequest_cancelledId() external {
+        _requestDeposit(owner1, recipient1, 1_000e6);
+        _requestDeposit(owner2, recipient2, 2_000e6);
+
+        _requestDepositCancellation(owner1, 1, recipient1, spUSDC.convertToShares(1_000e6));
+
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         spPrime.getPendingDepositRequest(1);
 
-        spPrime.getPendingDepositRequest(0);
+        spPrime.getPendingDepositRequest(2);
     }
 
     function test_getPendingDepositRequest() external {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
 
-        _assertDepositRequest(0, owner1, recipient1, 1_000e6 - 1);
-        _assertDepositRequest(1, owner2, recipient2, 2_000e6 - 1);
+        _assertDepositRequest(1, owner1, recipient1, 1_000e6 - 1);
+        _assertDepositRequest(2, owner2, recipient2, 2_000e6 - 1);
     }
 
     function test_getPendingDepositRequest_partialFill() external {
@@ -79,7 +98,7 @@ contract GetPendingDepositRequestTests is GettersTestBase {
         _setCapacity(VAULT_CAPACITY);
         _processPendingDeposits(spUSDC.convertToShares(1_000e6) / 4, 1);
 
-        _assertDepositRequest(0, owner1, recipient1, 750e6 - 1);
+        _assertDepositRequest(1, owner1, recipient1, 750e6 - 1);
     }
 
     /**********************************************************************************************/
@@ -149,46 +168,63 @@ contract GetPendingDepositRequestTests is GettersTestBase {
         _requestDeposit(owner2, recipient2, 2_000e6);
         _requestDeposit(owner3, recipient3, 3_000e6);
 
-        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
+        _requestDepositCancellation(owner2, 2, recipient2, spUSDC.convertToShares(2_000e6));
 
+        // The cancelled request is unlinked, so it is not part of the walk.
         ISparkPrimeVault.Request[] memory requests = spPrime.getPendingDepositRequests();
 
-        assertEq(requests.length, 3);
+        assertEq(requests.length, 2);
 
         _assertDepositRequest(requests[0], owner1, recipient1, 1_000e6 - 1);
-        _assertEmptyRequest(requests[1]);
-        _assertDepositRequest(requests[2], owner3, recipient3, 3_000e6 - 1);
+        _assertDepositRequest(requests[1], owner3, recipient3, 3_000e6 - 1);
     }
 
     /**********************************************************************************************/
     /*** getPendingDepositRequests(startId, length)                                             ***/
     /**********************************************************************************************/
 
-    function test_getPendingDepositRequests_startIdTooSmallBoundary() external {
+    function test_getPendingDepositRequests_startIdNotLiveBoundary() external {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
 
         _setCapacity(VAULT_CAPACITY);
         _processPendingDeposits(type(uint256).max, 1);
 
-        vm.expectRevert(ISparkPrimeVault.StartIdTooSmall.selector);
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
+        spPrime.getPendingDepositRequests(1, 1);
+
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         spPrime.getPendingDepositRequests(0, 1);
 
-        spPrime.getPendingDepositRequests(1, 1);
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
+        spPrime.getPendingDepositRequests(3, 1);
+
+        spPrime.getPendingDepositRequests(2, 1);
     }
 
-    function test_getPendingDepositRequests_lengthTooLargeBoundary() external {
+    function test_getPendingDepositRequests_lengthPastTail() external {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
 
-        vm.expectRevert(ISparkPrimeVault.LengthTooLarge.selector);
-        spPrime.getPendingDepositRequests(0, 3);
+        // The walk stops at the tail instead of reverting.
+        ISparkPrimeVault.Request[] memory requests = spPrime.getPendingDepositRequests(1, 3);
 
-        spPrime.getPendingDepositRequests(0, 2);
+        assertEq(requests.length, 2);
+
+        _assertDepositRequest(requests[0], owner1, recipient1, 1_000e6 - 1);
+        _assertDepositRequest(requests[1], owner2, recipient2, 2_000e6 - 1);
+
+        requests = spPrime.getPendingDepositRequests(2, type(uint256).max);
+
+        assertEq(requests.length, 1);
+
+        _assertDepositRequest(requests[0], owner2, recipient2, 2_000e6 - 1);
     }
 
     function test_getPendingDepositRequests_zeroLength() external {
-        assertEq(spPrime.getPendingDepositRequests(0, 0).length, 0);
+        _requestDeposit(owner1, recipient1, 1_000e6);
+
+        assertEq(spPrime.getPendingDepositRequests(1, 0).length, 0);
     }
 
     function test_getPendingDepositRequests_range() external {
@@ -196,7 +232,7 @@ contract GetPendingDepositRequestTests is GettersTestBase {
         _requestDeposit(owner2, recipient2, 2_000e6);
         _requestDeposit(owner3, recipient3, 3_000e6);
 
-        ISparkPrimeVault.Request[] memory requests = spPrime.getPendingDepositRequests(0, 3);
+        ISparkPrimeVault.Request[] memory requests = spPrime.getPendingDepositRequests(1, 3);
 
         assertEq(requests.length, 3);
 
@@ -204,12 +240,45 @@ contract GetPendingDepositRequestTests is GettersTestBase {
         _assertDepositRequest(requests[1], owner2, recipient2, 2_000e6 - 1);
         _assertDepositRequest(requests[2], owner3, recipient3, 3_000e6 - 1);
 
-        requests = spPrime.getPendingDepositRequests(1, 2);
+        requests = spPrime.getPendingDepositRequests(2, 2);
 
         assertEq(requests.length, 2);
 
         _assertDepositRequest(requests[0], owner2, recipient2, 2_000e6 - 1);
         _assertDepositRequest(requests[1], owner3, recipient3, 3_000e6 - 1);
+    }
+
+    function test_getPendingDepositRequests_rangeSkipsCancelled() external {
+        _requestDeposit(owner1, recipient1, 1_000e6);
+        _requestDeposit(owner2, recipient2, 2_000e6);
+        _requestDeposit(owner3, recipient3, 3_000e6);
+
+        _requestDepositCancellation(owner2, 2, recipient2, spUSDC.convertToShares(2_000e6));
+
+        ISparkPrimeVault.Request[] memory requests = spPrime.getPendingDepositRequests(1, 2);
+
+        assertEq(requests.length, 2);
+
+        _assertDepositRequest(requests[0], owner1, recipient1, 1_000e6 - 1);
+        _assertDepositRequest(requests[1], owner3, recipient3, 3_000e6 - 1);
+    }
+
+    /**********************************************************************************************/
+    /*** getDepositNode                                                                         ***/
+    /**********************************************************************************************/
+
+    function test_getDepositNode() external {
+        _requestDeposit(owner1, recipient1, 1_000e6);
+        _requestDeposit(owner2, recipient2, 2_000e6);
+        _requestDeposit(owner3, recipient3, 3_000e6);
+
+        _assertDepositNode(0, address(0), address(0), 0,            0, 0);  // Null pointer
+        _assertDepositNode(1, owner1,     recipient1, 1_000e6 - 1, 0, 2);
+        _assertDepositNode(2, owner2,     recipient2, 2_000e6 - 1, 1, 3);
+        _assertDepositNode(3, owner3,     recipient3, 3_000e6 - 1, 2, 0);
+        _assertDepositNode(4, address(0), address(0), 0,            0, 0);  // Not assigned yet
+
+        _assertDepositQueue(1, 3, 3);
     }
 
 }
@@ -230,8 +299,8 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
-        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
+        _requestDepositCancellation(owner1, 1, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner2, 2, recipient2, spUSDC.convertToShares(2_000e6));
 
         _setCapacity(VAULT_CAPACITY);
         _processPendingDepositCancellations(type(uint256).max, 1);
@@ -244,7 +313,7 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
 
     function test_getPendingDepositCancellationRequest_idAfterQueueBoundary() external {
         _requestDeposit(owner1, recipient1, 1_000e6);
-        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner1, 1, recipient1, spUSDC.convertToShares(1_000e6));
 
         vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         spPrime.getPendingDepositCancellationRequest(1);
@@ -256,8 +325,8 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
-        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
+        _requestDepositCancellation(owner1, 1, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner2, 2, recipient2, spUSDC.convertToShares(2_000e6));
 
         _assertDepositCancellationRequest(0, owner1, recipient1, 1_000e6 - 1);
         _assertDepositCancellationRequest(1, owner2, recipient2, 2_000e6 - 1);
@@ -267,8 +336,8 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
-        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
+        _requestDepositCancellation(owner1, 1, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner2, 2, recipient2, spUSDC.convertToShares(2_000e6));
 
         _setCapacity(VAULT_CAPACITY);
 
@@ -293,9 +362,9 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDeposit(owner2, recipient2, 2_000e6);
         _requestDeposit(owner3, recipient3, 3_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
-        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
-        _requestDepositCancellation(owner3, 2, recipient3, spUSDC.convertToShares(3_000e6));
+        _requestDepositCancellation(owner1, 1, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner2, 2, recipient2, spUSDC.convertToShares(2_000e6));
+        _requestDepositCancellation(owner3, 3, recipient3, spUSDC.convertToShares(3_000e6));
 
         ISparkPrimeVault.Request[] memory requests = spPrime.getPendingDepositCancellationRequests();
 
@@ -311,9 +380,9 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDeposit(owner2, recipient2, 2_000e6);
         _requestDeposit(owner3, recipient3, 3_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
-        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
-        _requestDepositCancellation(owner3, 2, recipient3, spUSDC.convertToShares(3_000e6));
+        _requestDepositCancellation(owner1, 1, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner2, 2, recipient2, spUSDC.convertToShares(2_000e6));
+        _requestDepositCancellation(owner3, 3, recipient3, spUSDC.convertToShares(3_000e6));
 
         _setCapacity(VAULT_CAPACITY);
         _processPendingDepositCancellations(type(uint256).max, 2);
@@ -329,8 +398,8 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
-        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
+        _requestDepositCancellation(owner1, 1, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner2, 2, recipient2, spUSDC.convertToShares(2_000e6));
 
         _setCapacity(VAULT_CAPACITY);
         _processPendingDepositCancellations(type(uint256).max, 2);
@@ -342,8 +411,8 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
-        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
+        _requestDepositCancellation(owner1, 1, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner2, 2, recipient2, spUSDC.convertToShares(2_000e6));
 
         _setCapacity(VAULT_CAPACITY);
         _processPendingDepositCancellations(spUSDC.convertToShares(1_000e6) / 4, 1);
@@ -364,8 +433,8 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
-        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
+        _requestDepositCancellation(owner1, 1, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner2, 2, recipient2, spUSDC.convertToShares(2_000e6));
 
         _setCapacity(VAULT_CAPACITY);
         _processPendingDepositCancellations(type(uint256).max, 1);
@@ -380,8 +449,8 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
-        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
+        _requestDepositCancellation(owner1, 1, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner2, 2, recipient2, spUSDC.convertToShares(2_000e6));
 
         vm.expectRevert(ISparkPrimeVault.LengthTooLarge.selector);
         spPrime.getPendingDepositCancellationRequests(0, 3);
@@ -398,9 +467,9 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         _requestDeposit(owner2, recipient2, 2_000e6);
         _requestDeposit(owner3, recipient3, 3_000e6);
 
-        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
-        _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
-        _requestDepositCancellation(owner3, 2, recipient3, spUSDC.convertToShares(3_000e6));
+        _requestDepositCancellation(owner1, 1, recipient1, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(owner2, 2, recipient2, spUSDC.convertToShares(2_000e6));
+        _requestDepositCancellation(owner3, 3, recipient3, spUSDC.convertToShares(3_000e6));
 
         ISparkPrimeVault.Request[] memory requests
             = spPrime.getPendingDepositCancellationRequests(0, 3);

@@ -94,7 +94,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
     // Success tests
 
     function test_requestDeposit_partialFill() external {
-        _requestDeposit(user, 1_000_000e6);  // Deposit Request 0 (Filled instantly)
+        _requestDeposit(user, 1_000_000e6);  // Deposit Request 1 (Filled instantly)
 
         _setCapacity(spPrime.convertToShares(1_500_000e6));
 
@@ -106,7 +106,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         vaultState.depositRequests.pendingShareValue = 0;
         vaultState.depositRequests.length            = 0;
-        vaultState.depositRequests.firstPendingId    = 1;
+        vaultState.depositRequests.firstPendingId    = 0;
 
         AccountBalances memory userBalances = AccountBalances({
             account           : user,
@@ -140,20 +140,20 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         uint256 expectedSharesMinted          = spPrime.convertToShares(expectedConvertedAssets);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Referral(REFERRAL, 1, user, user, 800_000e6);
+        emit ISparkPrimeVault.Referral(REFERRAL, 2, user, user, 800_000e6);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.DepositRequest(1, user, user, 800_000e6, expectedSavingsSharesMinted);
+        emit ISparkPrimeVault.DepositRequest(2, user, user, 800_000e6, expectedSavingsSharesMinted);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Deposit(1, user, user, expectedSavingsSharesConsumed, expectedConvertedAssets, expectedSharesMinted);
+        emit ISparkPrimeVault.Deposit(2, user, user, expectedSavingsSharesConsumed, expectedConvertedAssets, expectedSharesMinted);
 
         vm.prank(user);
         uint256 requestId = spPrime.requestDeposit(800_000e6, user, REFERRAL);
 
-        assertEq(requestId, 1);
+        assertEq(requestId, 2);
 
-        _assertDepositRequest(1, user, user, 300_000e6);
+        _assertDepositRequest(2, user, user, 300_000e6);
 
         vaultState.totalAssets            += 500_000e6 - 1;
         vaultState.availableCapacityValue  = 2;
@@ -161,7 +161,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         vaultState.depositRequests.pendingShareValue += 300_000e6;
         vaultState.depositRequests.length             = 1;
-        vaultState.depositRequests.firstPendingId     = 1;
+        vaultState.depositRequests.firstPendingId     = 2;
 
         userBalances.shareValue += 500_000e6 - 1;
 
@@ -173,7 +173,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
     }
 
     function test_requestDeposit_queued() external {
-        _requestDeposit(user, 1_000_000e6);  // Deposit Request 0 (Filled instantly)
+        _requestDeposit(user, 1_000_000e6);  // Deposit Request 1 (Filled instantly)
 
         _setCapacity(spPrime.convertToShares(1_000_000e6));
 
@@ -185,7 +185,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         vaultState.depositRequests.pendingShareValue = 0;
         vaultState.depositRequests.length            = 0;
-        vaultState.depositRequests.firstPendingId    = 1;
+        vaultState.depositRequests.firstPendingId    = 0;
 
         AccountBalances memory userBalances = AccountBalances({
             account           : user,
@@ -216,23 +216,23 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         uint256 expectedSavingsSharesMinted = spUSDC.convertToShares(800_000e6);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Referral(REFERRAL, 1, user, user, 800_000e6);
+        emit ISparkPrimeVault.Referral(REFERRAL, 2, user, user, 800_000e6);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.DepositRequest(1, user, user, 800_000e6, expectedSavingsSharesMinted);
+        emit ISparkPrimeVault.DepositRequest(2, user, user, 800_000e6, expectedSavingsSharesMinted);
 
         vm.prank(user);
         uint256 requestId = spPrime.requestDeposit(800_000e6, user, REFERRAL);
 
-        assertEq(requestId, 1);
+        assertEq(requestId, 2);
 
-        _assertDepositRequest(1, user, user, 800_000e6 - 1);
+        _assertDepositRequest(2, user, user, 800_000e6 - 1);
 
         vaultState.availableLiquidAssets += 800_000e6;
 
         vaultState.depositRequests.pendingShareValue = 800_000e6 - 1;
         vaultState.depositRequests.length            = 1;
-        vaultState.depositRequests.firstPendingId    = 1;
+        vaultState.depositRequests.firstPendingId    = 2;
 
         vaultBalances.savingsShareValue += 800_000e6;
 
@@ -296,7 +296,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
     // Success tests
 
     function test_requestRedeem() external {
-        _requestDeposit(user, 1_000_000e6);  // Deposit Request 0 (Filled instantly)
+        _requestDeposit(user, 1_000_000e6);  // Deposit Request 1 (Filled instantly)
 
         vaultState.rho                    = vm.getBlockTimestamp();
         vaultState.chi                    = 1.049999999999999999961070145e27;
@@ -304,7 +304,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
         vaultState.availableCapacityValue = 104_000_000e6;  // Vault capacity value was 105m because of 5% change in chi prior to the first deposit
         vaultState.availableLiquidAssets  = 1_000_000e6 - 1;
 
-        vaultState.depositRequests.firstPendingId = 1;
+        vaultState.depositRequests.firstPendingId = 0;
 
         AccountBalances memory userBalances = AccountBalances({
             account           : user,
@@ -354,7 +354,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
         _setMaxRedeemFeeRate(0.01e18);  // 1%
         _setRedeemFeeRate(0.005e18);    // 0.5%
 
-        _requestDeposit(user, 1_000_000e6);  // Deposit Request 0 (Filled instantly)
+        _requestDeposit(user, 1_000_000e6);  // Deposit Request 1 (Filled instantly)
 
         vaultState.rho                    = vm.getBlockTimestamp();
         vaultState.chi                    = 1.049999999999999999961070145e27;
@@ -362,7 +362,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
         vaultState.availableCapacityValue = 104_000_000e6;  // Vault capacity value was 105m because of 5% change in chi prior to the first deposit
         vaultState.availableLiquidAssets  = 1_000_000e6 - 1;
 
-        vaultState.depositRequests.firstPendingId = 1;
+        vaultState.depositRequests.firstPendingId = 0;
 
         AccountBalances memory userBalances = AccountBalances({
             account           : user,
@@ -451,11 +451,11 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _requestDeposit(cam, 900_000e6);    // Will be cancelled
         _requestDeposit(ali, 1_000_000e6);  // Will be partially filled
 
-        _requestDepositCancellation(ali, 0, spUSDC.convertToShares(100_000e6));
-        _requestDepositCancellation(bob, 1, spUSDC.convertToShares(200_000e6));
-        _requestDepositCancellation(cam, 2, spUSDC.convertToShares(300_000e6));
-        _requestDepositCancellation(cam, 5, spUSDC.convertToShares(600_000e6));
-        _requestDepositCancellation(cam, 8, spUSDC.convertToShares(900_000e6));
+        _requestDepositCancellation(ali, 1, spUSDC.convertToShares(100_000e6));
+        _requestDepositCancellation(bob, 2, spUSDC.convertToShares(200_000e6));
+        _requestDepositCancellation(cam, 3, spUSDC.convertToShares(300_000e6));
+        _requestDepositCancellation(cam, 6, spUSDC.convertToShares(600_000e6));
+        _requestDepositCancellation(cam, 9, spUSDC.convertToShares(900_000e6));
 
         uint256 depositedAssets = 5_500_000e6;
 
@@ -475,8 +475,8 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         vaultState.availableLiquidAssets  = depositedAssets - 5;
 
         vaultState.depositRequests.pendingShareValue = pendingDepositAssets - 3;
-        vaultState.depositRequests.length            = 7;
-        vaultState.depositRequests.firstPendingId    = 3;
+        vaultState.depositRequests.length            = 5;
+        vaultState.depositRequests.firstPendingId    = 4;
 
         vaultState.depositCancellationRequests.pendingShareValue = pendingDepositCancellationAssets - 3;
         vaultState.depositCancellationRequests.length            = 5;
@@ -521,18 +521,25 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _assertAccountBalances(camBalances);
         _assertAccountBalances(vaultBalances);
 
-        for (uint256 i = 0; i < 3; i++) {
-            vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
-            spPrime.getPendingDepositRequest(i);
-        }
+        _assertDepositRequestsCancelled(0, 3);
 
-        _assertDepositRequest(3, ali,        ali,        400_000e6 - 1);
-        _assertDepositRequest(4, bob,        bob,        500_000e6 - 1);
-        _assertDepositRequest(5, address(0), address(0), 0);
-        _assertDepositRequest(6, ali,        ali,        700_000e6 - 1);
-        _assertDepositRequest(7, bob,        bob,        800_000e6 - 1);
-        _assertDepositRequest(8, address(0), address(0), 0);
-        _assertDepositRequest(9, ali,        ali,        1_000_000e6 - 1);
+        _assertDepositRequest(4,  ali, ali, 400_000e6 - 1);
+        _assertDepositRequest(5,  bob, bob, 500_000e6 - 1);
+        _assertDepositRequestCancelled(6);
+        _assertDepositRequest(7,  ali, ali, 700_000e6 - 1);
+        _assertDepositRequest(8,  bob, bob, 800_000e6 - 1);
+        _assertDepositRequestCancelled(9);
+        _assertDepositRequest(10, ali, ali, 1_000_000e6 - 1);
+    }
+
+    // Cancelled and filled requests are unlinked, so their IDs are no longer pending.
+    function _assertDepositRequestCancelled(uint256 requestId) internal {
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
+        spPrime.getPendingDepositRequest(requestId);
+    }
+
+    function _assertDepositRequestsCancelled(uint256 fromId, uint256 toId) internal {
+        for (uint256 i = fromId; i <= toId; i++) _assertDepositRequestCancelled(i);
     }
 
     // Failure tests
@@ -548,21 +555,21 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
     // Success tests
 
     function test_processPendingDeposits_infiniteMaxSavingsShares_infiniteMaxRequests() external {
-        // Deposit Request 3
+        // Deposit Request 5
 
         vm.expectEmit(address(spPrime));
         emit IERC20.Transfer(address(0), ali, spPrime.convertToShares(400_000e6) - 1);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Deposit(3, ali, ali, spUSDC.convertToShares(400_000e6), 400_000e6 - 1, spPrime.convertToShares(400_000e6) - 1);
+        emit ISparkPrimeVault.Deposit(4, ali, ali, spUSDC.convertToShares(400_000e6), 400_000e6 - 1, spPrime.convertToShares(400_000e6) - 1);
 
-        // Deposit Request 4
+        // Deposit Request 5
 
         vm.expectEmit(address(spPrime));
         emit IERC20.Transfer(address(0), bob, spPrime.convertToShares(500_000e6) - 1);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Deposit(4, bob, bob, spUSDC.convertToShares(500_000e6), 500_000e6 - 1, spPrime.convertToShares(500_000e6) - 1);
+        emit ISparkPrimeVault.Deposit(5, bob, bob, spUSDC.convertToShares(500_000e6), 500_000e6 - 1, spPrime.convertToShares(500_000e6) - 1);
 
         // Deposit Request 6
 
@@ -570,23 +577,23 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         emit IERC20.Transfer(address(0), ali, spPrime.convertToShares(700_000e6) - 1);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Deposit(6, ali, ali, spUSDC.convertToShares(700_000e6), 700_000e6 - 1, spPrime.convertToShares(700_000e6) - 1);
+        emit ISparkPrimeVault.Deposit(7, ali, ali, spUSDC.convertToShares(700_000e6), 700_000e6 - 1, spPrime.convertToShares(700_000e6) - 1);
 
-        // Deposit Request 7
+        // Deposit Request 8
 
         vm.expectEmit(address(spPrime));
         emit IERC20.Transfer(address(0), bob, spPrime.convertToShares(800_000e6) - 1);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Deposit(7, bob, bob, spUSDC.convertToShares(800_000e6), 800_000e6 - 1, spPrime.convertToShares(800_000e6) - 1);
+        emit ISparkPrimeVault.Deposit(8, bob, bob, spUSDC.convertToShares(800_000e6), 800_000e6 - 1, spPrime.convertToShares(800_000e6) - 1);
 
-        // Deposit Request 9 (Partial)
+        // Deposit Request 10 (Partial)
 
         vm.expectEmit(address(spPrime));
         emit IERC20.Transfer(address(0), ali, spPrime.convertToShares(200_000e6));
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Deposit(9, ali, ali, spUSDC.convertToShares(200_000e6) + 1, 200_000e6, spPrime.convertToShares(200_000e6));
+        emit ISparkPrimeVault.Deposit(10, ali, ali, spUSDC.convertToShares(200_000e6) + 1, 200_000e6, spPrime.convertToShares(200_000e6));
 
         vm.prank(operator);
         spPrime.processPendingDeposits(type(uint256).max, type(uint256).max);
@@ -598,7 +605,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
 
         vaultState.depositRequests.pendingShareValue -= assetsDeposited - 1;
         vaultState.depositRequests.length             = 1;
-        vaultState.depositRequests.firstPendingId     = 9;
+        vaultState.depositRequests.firstPendingId     = 10;
 
         aliBalances.shareValue += 400_000e6 + 700_000e6 + 200_000e6 - 4;
         bobBalances.shareValue += 500_000e6 + 800_000e6 - 4;
@@ -609,34 +616,31 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _assertAccountBalances(camBalances);
         _assertAccountBalances(vaultBalances);
 
-        for (uint256 i = 0; i < 9; i++) {
-            vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
-            spPrime.getPendingDepositRequest(i);
-        }
+        _assertDepositRequestsCancelled(0, 9);
 
-        _assertDepositRequest(9, ali, ali, 800_000e6 - 2);
+        _assertDepositRequest(10, ali, ali, 800_000e6 - 2);
     }
 
     function test_processPendingDeposits_infiniteMaxSavingsShares_limitedMaxRequests() external {
-        // Deposit Request 3
+        // Deposit Request 5
 
         vm.expectEmit(address(spPrime));
         emit IERC20.Transfer(address(0), ali, spPrime.convertToShares(400_000e6) - 1);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Deposit(3, ali, ali, spUSDC.convertToShares(400_000e6), 400_000e6 - 1, spPrime.convertToShares(400_000e6) - 1);
+        emit ISparkPrimeVault.Deposit(4, ali, ali, spUSDC.convertToShares(400_000e6), 400_000e6 - 1, spPrime.convertToShares(400_000e6) - 1);
 
-        // Deposit Request 4
+        // Deposit Request 5
 
         vm.expectEmit(address(spPrime));
         emit IERC20.Transfer(address(0), bob, spPrime.convertToShares(500_000e6) - 1);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Deposit(4, bob, bob, spUSDC.convertToShares(500_000e6), 500_000e6 - 1, spPrime.convertToShares(500_000e6) - 1);
+        emit ISparkPrimeVault.Deposit(5, bob, bob, spUSDC.convertToShares(500_000e6), 500_000e6 - 1, spPrime.convertToShares(500_000e6) - 1);
 
-        // First 3 cancelled deposits were already skipped, so this fills 2 deposits, then skips 1 cancelled deposit.
+        // Cancelled deposits are not in the queue, so a budget of 2 fills exactly 2 deposits.
         vm.prank(operator);
-        spPrime.processPendingDeposits(type(uint256).max, 3);
+        spPrime.processPendingDeposits(type(uint256).max, 2);
 
         uint256 assetsDeposited = 400_000e6 + 500_000e6;  // Only first 2 uncancelled deposits
 
@@ -644,8 +648,8 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         vaultState.availableCapacityValue -= assetsDeposited - 3;
 
         vaultState.depositRequests.pendingShareValue -= assetsDeposited - 1;
-        vaultState.depositRequests.length             = 4;
-        vaultState.depositRequests.firstPendingId     = 6;
+        vaultState.depositRequests.length             = 3;
+        vaultState.depositRequests.firstPendingId     = 7;
 
         aliBalances.shareValue += 400_000e6 - 2;
         bobBalances.shareValue += 500_000e6 - 2;
@@ -656,41 +660,38 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _assertAccountBalances(camBalances);
         _assertAccountBalances(vaultBalances);
 
-        for (uint256 i = 0; i < 6; i++) {
-            vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
-            spPrime.getPendingDepositRequest(i);
-        }
+        _assertDepositRequestsCancelled(0, 6);
 
-        _assertDepositRequest(6, ali,        ali,        700_000e6 - 1);
-        _assertDepositRequest(7, bob,        bob,        800_000e6 - 1);
-        _assertDepositRequest(8, address(0), address(0), 0);
-        _assertDepositRequest(9, ali,        ali,        1_000_000e6 - 1);
+        _assertDepositRequest(7,  ali, ali, 700_000e6 - 1);
+        _assertDepositRequest(8,  bob, bob, 800_000e6 - 1);
+        _assertDepositRequestCancelled(9);
+        _assertDepositRequest(10, ali, ali, 1_000_000e6 - 1);
     }
 
     function test_processPendingDeposits_limitedMaxSavingsShares_infiniteMaxRequests() external {
-        // Deposit Request 3
+        // Deposit Request 5
 
         vm.expectEmit(address(spPrime));
         emit IERC20.Transfer(address(0), ali, spPrime.convertToShares(400_000e6) - 1);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Deposit(3, ali, ali, spUSDC.convertToShares(400_000e6), 400_000e6 - 1, spPrime.convertToShares(400_000e6) - 1);
+        emit ISparkPrimeVault.Deposit(4, ali, ali, spUSDC.convertToShares(400_000e6), 400_000e6 - 1, spPrime.convertToShares(400_000e6) - 1);
 
-        // Deposit Request 4
+        // Deposit Request 5
 
         vm.expectEmit(address(spPrime));
         emit IERC20.Transfer(address(0), bob, spPrime.convertToShares(500_000e6) - 1);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Deposit(4, bob, bob, spUSDC.convertToShares(500_000e6), 500_000e6 - 1, spPrime.convertToShares(500_000e6) - 1);
+        emit ISparkPrimeVault.Deposit(5, bob, bob, spUSDC.convertToShares(500_000e6), 500_000e6 - 1, spPrime.convertToShares(500_000e6) - 1);
 
-        // Deposit Request 6 (Partial)
+        // Deposit Request 7 (Partial)
 
         vm.expectEmit(address(spPrime));
         emit IERC20.Transfer(address(0), ali, spPrime.convertToShares(300_000e6));
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Deposit(6, ali, ali, spUSDC.convertToShares(300_000e6) + 1, 300_000e6, spPrime.convertToShares(300_000e6));
+        emit ISparkPrimeVault.Deposit(7, ali, ali, spUSDC.convertToShares(300_000e6) + 1, 300_000e6, spPrime.convertToShares(300_000e6));
 
         vm.startPrank(operator);
         spPrime.processPendingDeposits(spUSDC.convertToShares(1_200_000e6), type(uint256).max);
@@ -702,8 +703,8 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         vaultState.availableCapacityValue -= assetsDeposited - 3;
 
         vaultState.depositRequests.pendingShareValue -= assetsDeposited - 1;
-        vaultState.depositRequests.length             = 4;
-        vaultState.depositRequests.firstPendingId     = 6;
+        vaultState.depositRequests.length             = 3;
+        vaultState.depositRequests.firstPendingId     = 7;
 
         aliBalances.shareValue += 400_000e6 + 300_000e6 - 2;
         bobBalances.shareValue += 500_000e6 - 2;
@@ -714,15 +715,12 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _assertAccountBalances(camBalances);
         _assertAccountBalances(vaultBalances);
 
-        for (uint256 i = 0; i < 6; i++) {
-            vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
-            spPrime.getPendingDepositRequest(i);
-        }
+        _assertDepositRequestsCancelled(0, 6);
 
-        _assertDepositRequest(6, ali,        ali,        400_000e6 - 2);  // Partial fill
-        _assertDepositRequest(7, bob,        bob,        800_000e6 - 1);
-        _assertDepositRequest(8, address(0), address(0), 0);
-        _assertDepositRequest(9, ali,        ali,        1_000_000e6 - 1);
+        _assertDepositRequest(7,  ali, ali, 400_000e6 - 2);  // Partial fill
+        _assertDepositRequest(8,  bob, bob, 800_000e6 - 1);
+        _assertDepositRequestCancelled(9);
+        _assertDepositRequest(10, ali, ali, 1_000_000e6 - 1);
     }
 
     function _getMaxDepositableAmount(uint256 requestAmount, uint256 maxSavingsShareValue, uint256 assetsDeposited) internal pure returns (uint256) {
@@ -740,6 +738,9 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         vm.stopPrank();
 
         uint256 assetsDeposited;
+
+        // Live request IDs in queue order; cancelled requests are not visited.
+        uint256[5] memory liveIds = [uint256(4), 5, 7, 8, 10];
 
         for (uint256 i = 0; i < maxRequests; ++i) {
             if (i == 0) {
@@ -760,7 +761,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
                 if (depositAmount < 500_000e6) break;
             }
 
-            if (i == 3) {
+            if (i == 2) {
                 uint256 depositAmount = _getMaxDepositableAmount(700_000e6, maxSavingsShareValue, assetsDeposited);
 
                 aliBalances.shareValue += depositAmount;
@@ -769,7 +770,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
                 if (depositAmount < 700_000e6) break;
             }
 
-            if (i == 4) {
+            if (i == 3) {
                 uint256 depositAmount = _getMaxDepositableAmount(800_000e6, maxSavingsShareValue, assetsDeposited);
 
                 bobBalances.shareValue += depositAmount;
@@ -778,7 +779,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
                 if (depositAmount < 800_000e6) break;
             }
 
-            if (i == 6) {
+            if (i == 4) {
                 uint256 depositAmount = _getMaxDepositableAmount(200_000e6, maxSavingsShareValue, assetsDeposited);
 
                 aliBalances.shareValue += depositAmount;
@@ -788,9 +789,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
             }
 
             --vaultState.depositRequests.length;
-            ++vaultState.depositRequests.firstPendingId;
-
-            if (vaultState.depositRequests.length == 0) break;
+            vaultState.depositRequests.firstPendingId = liveIds[i + 1];
         }
 
         vaultState.totalAssets += assetsDeposited;
@@ -815,42 +814,42 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
     }
 
     function test_processPendingDeposits_multipleCalls() external {
-        // Deposit Request 3
+        // Deposit Request 5
 
         vm.expectEmit(address(spPrime));
         emit IERC20.Transfer(address(0), ali, spPrime.convertToShares(400_000e6) - 1);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Deposit(3, ali, ali, spUSDC.convertToShares(400_000e6), 400_000e6 - 1, spPrime.convertToShares(400_000e6) - 1);
+        emit ISparkPrimeVault.Deposit(4, ali, ali, spUSDC.convertToShares(400_000e6), 400_000e6 - 1, spPrime.convertToShares(400_000e6) - 1);
 
-        // Deposit Request 4
+        // Deposit Request 5
 
         vm.expectEmit(address(spPrime));
         emit IERC20.Transfer(address(0), bob, spPrime.convertToShares(500_000e6) - 1);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Deposit(4, bob, bob, spUSDC.convertToShares(500_000e6), 500_000e6 - 1, spPrime.convertToShares(500_000e6) - 1);
+        emit ISparkPrimeVault.Deposit(5, bob, bob, spUSDC.convertToShares(500_000e6), 500_000e6 - 1, spPrime.convertToShares(500_000e6) - 1);
 
-        // Deposit Request 6 (Partial)
+        // Deposit Request 7 (Partial)
 
         vm.expectEmit(address(spPrime));
         emit IERC20.Transfer(address(0), ali, spPrime.convertToShares(300_000e6));
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Deposit(6, ali, ali, spUSDC.convertToShares(300_000e6) + 1, 300_000e6, spPrime.convertToShares(300_000e6));
+        emit ISparkPrimeVault.Deposit(7, ali, ali, spUSDC.convertToShares(300_000e6) + 1, 300_000e6, spPrime.convertToShares(300_000e6));
 
         vm.startPrank(operator);
         spPrime.processPendingDeposits(spUSDC.convertToShares(1_200_000e6), type(uint256).max);
         vm.stopPrank();
 
-        uint256 assetsDeposited = 400_000e6 + 500_000e6 + 300_000e6;  // Only ~300k of the Request 6 700k deposit
+        uint256 assetsDeposited = 400_000e6 + 500_000e6 + 300_000e6;  // Only ~300k of the Request 7 700k deposit
 
         vaultState.totalAssets            += assetsDeposited - 4;
         vaultState.availableCapacityValue -= assetsDeposited - 3;
 
         vaultState.depositRequests.pendingShareValue -= assetsDeposited - 1;
-        vaultState.depositRequests.length             = 4;
-        vaultState.depositRequests.firstPendingId     = 6;
+        vaultState.depositRequests.length             = 3;
+        vaultState.depositRequests.firstPendingId     = 7;
 
         aliBalances.shareValue += 400_000e6 + 300_000e6 - 2;
         bobBalances.shareValue += 500_000e6 - 2;
@@ -861,51 +860,48 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _assertAccountBalances(camBalances);
         _assertAccountBalances(vaultBalances);
 
-        for (uint256 i = 0; i < 6; i++) {
-            vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
-            spPrime.getPendingDepositRequest(i);
-        }
+        _assertDepositRequestsCancelled(0, 6);
 
-        _assertDepositRequest(6, ali,        ali,        400_000e6 - 2);  // Partial fill
-        _assertDepositRequest(7, bob,        bob,        800_000e6 - 1);
-        _assertDepositRequest(8, address(0), address(0), 0);
-        _assertDepositRequest(9, ali,        ali,        1_000_000e6 - 1);
+        _assertDepositRequest(7,  ali, ali, 400_000e6 - 2);  // Partial fill
+        _assertDepositRequest(8,  bob, bob, 800_000e6 - 1);
+        _assertDepositRequestCancelled(9);
+        _assertDepositRequest(10, ali, ali, 1_000_000e6 - 1);
 
-        // Deposit Request 6 (Remainder)
+        // Deposit Request 7 (Remainder)
 
         vm.expectEmit(address(spPrime));
         emit IERC20.Transfer(address(0), ali, spPrime.convertToShares(400_000e6) - 2);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Deposit(6, ali, ali, spUSDC.convertToShares(400_000e6) - 1, 400_000e6 - 2, spPrime.convertToShares(400_000e6) - 2);
+        emit ISparkPrimeVault.Deposit(7, ali, ali, spUSDC.convertToShares(400_000e6) - 1, 400_000e6 - 2, spPrime.convertToShares(400_000e6) - 2);
 
-        // Deposit Request 7
+        // Deposit Request 8
 
         vm.expectEmit(address(spPrime));
         emit IERC20.Transfer(address(0), bob, spPrime.convertToShares(800_000e6) - 1);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Deposit(7, bob, bob, spUSDC.convertToShares(800_000e6), 800_000e6 - 1, spPrime.convertToShares(800_000e6) - 1);
+        emit ISparkPrimeVault.Deposit(8, bob, bob, spUSDC.convertToShares(800_000e6), 800_000e6 - 1, spPrime.convertToShares(800_000e6) - 1);
 
-        // Deposit Request 9 (Partial)
+        // Deposit Request 10 (Partial)
 
         vm.expectEmit(address(spPrime));
         emit IERC20.Transfer(address(0), ali, spPrime.convertToShares(200_000e6) + 3);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Deposit(9, ali, ali, spUSDC.convertToShares(200_000e6) + 3, 200_000e6 + 3, spPrime.convertToShares(200_000e6) + 3);
+        emit ISparkPrimeVault.Deposit(10, ali, ali, spUSDC.convertToShares(200_000e6) + 3, 200_000e6 + 3, spPrime.convertToShares(200_000e6) + 3);
 
         vm.prank(operator);
         spPrime.processPendingDeposits(type(uint256).max, type(uint256).max);
 
-        assetsDeposited = 400_000e6 + 800_000e6 + 200_000e6;  // Remaining ~400k of request 6, then only ~200k of the last 1MM deposit
+        assetsDeposited = 400_000e6 + 800_000e6 + 200_000e6;  // Remaining ~400k of request 7, then only ~200k of the last 1MM deposit
 
         vaultState.totalAssets            += assetsDeposited - 1;
         vaultState.availableCapacityValue -= assetsDeposited - 2;
 
         vaultState.depositRequests.pendingShareValue -= assetsDeposited + 2;
         vaultState.depositRequests.length             = 1;
-        vaultState.depositRequests.firstPendingId     = 9;
+        vaultState.depositRequests.firstPendingId     = 10;
 
         aliBalances.shareValue += 400_000e6 + 200_000e6;
         bobBalances.shareValue += 800_000e6 - 2;
@@ -916,12 +912,9 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _assertAccountBalances(camBalances);
         _assertAccountBalances(vaultBalances);
 
-        for (uint256 i = 0; i < 9; i++) {
-            vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
-            spPrime.getPendingDepositRequest(i);
-        }
+        _assertDepositRequestsCancelled(0, 9);
 
-        _assertDepositRequest(9, ali, ali, 800_000e6 - 4);
+        _assertDepositRequest(10, ali, ali, 800_000e6 - 4);
     }
 
 }
@@ -960,16 +953,16 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         _requestDeposit(cam, 900_000e6);
         _requestDeposit(ali, 1_000_000e6);
 
-        _requestDepositCancellation(ali, 0, ali, spUSDC.convertToShares(100_000e6));  // Will fail
-        _requestDepositCancellation(bob, 1, bob, spUSDC.convertToShares(200_000e6));
-        _requestDepositCancellation(cam, 2, cam, spUSDC.convertToShares(300_000e6));
-        _requestDepositCancellation(ali, 3, dan, spUSDC.convertToShares(400_000e6));  // Will fail
-        _requestDepositCancellation(bob, 4, bob, spUSDC.convertToShares(500_000e6));  // Will fail
-        _requestDepositCancellation(cam, 5, cam, spUSDC.convertToShares(600_000e6));
-        _requestDepositCancellation(ali, 6, ali, spUSDC.convertToShares(700_000e6));  // Will fail
-        _requestDepositCancellation(bob, 7, dan, spUSDC.convertToShares(800_000e6));  // Will fail
-        _requestDepositCancellation(cam, 8, cam, spUSDC.convertToShares(900_000e6));
-        _requestDepositCancellation(ali, 9, ali, spUSDC.convertToShares(1_000_000e6));
+        _requestDepositCancellation(ali, 1, ali, spUSDC.convertToShares(100_000e6));  // Will fail
+        _requestDepositCancellation(bob, 2, bob, spUSDC.convertToShares(200_000e6));
+        _requestDepositCancellation(cam, 3, cam, spUSDC.convertToShares(300_000e6));
+        _requestDepositCancellation(ali, 4, dan, spUSDC.convertToShares(400_000e6));  // Will fail
+        _requestDepositCancellation(bob, 5, bob, spUSDC.convertToShares(500_000e6));  // Will fail
+        _requestDepositCancellation(cam, 6, cam, spUSDC.convertToShares(600_000e6));
+        _requestDepositCancellation(ali, 7, ali, spUSDC.convertToShares(700_000e6));  // Will fail
+        _requestDepositCancellation(bob, 8, dan, spUSDC.convertToShares(800_000e6));  // Will fail
+        _requestDepositCancellation(cam, 9, cam, spUSDC.convertToShares(900_000e6));
+        _requestDepositCancellation(ali, 10, ali, spUSDC.convertToShares(1_000_000e6));
 
         uint256 depositedAssets = 5_500_000e6;
 
@@ -982,7 +975,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
 
         vaultState.depositRequests.pendingShareValue = 0;
         vaultState.depositRequests.length            = 0;
-        vaultState.depositRequests.firstPendingId    = 10;
+        vaultState.depositRequests.firstPendingId    = 0;
 
         vaultState.depositCancellationRequests.pendingShareValue = depositedAssets - 5;
         vaultState.depositCancellationRequests.length            = 10;
@@ -1036,7 +1029,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         _assertAccountBalances(danBalances);
         _assertAccountBalances(vaultBalances);
 
-        for (uint256 i = 0; i < 10; i++) {
+        for (uint256 i = 0; i <= 10; i++) {
             vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
             spPrime.getPendingDepositRequest(i);
         }
@@ -1131,7 +1124,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.DepositCancellation(2, cam, cam, spUSDC.convertToShares(300_000e6), 300_000e6 - 1);
 
-        // Deposit Request 3
+        // Deposit Request 5
 
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.ClaimableAssetsIncreased(dan, 400_000e6 - 1);
@@ -1139,7 +1132,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.DepositCancellation(3, ali, dan, spUSDC.convertToShares(400_000e6), 400_000e6 - 1);
 
-        // Deposit Request 4
+        // Deposit Request 5
 
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.ClaimableAssetsIncreased(bob, 500_000e6 - 1);
@@ -1160,7 +1153,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.DepositCancellation(6, ali, ali, spUSDC.convertToShares(700_000e6), 700_000e6 - 1);
 
-        // Deposit Request 7
+        // Deposit Request 8
 
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.ClaimableAssetsIncreased(dan, 800_000e6 - 1);
@@ -1237,7 +1230,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.DepositCancellation(2, cam, cam, spUSDC.convertToShares(300_000e6), 300_000e6 - 1);
 
-        // Deposit Request 3
+        // Deposit Request 5
 
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.ClaimableAssetsIncreased(dan, 400_000e6 - 1);
@@ -1245,7 +1238,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.DepositCancellation(3, ali, dan, spUSDC.convertToShares(400_000e6), 400_000e6 - 1);
 
-        // Deposit Request 4
+        // Deposit Request 5
 
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.ClaimableAssetsIncreased(bob, 500_000e6 - 1);
@@ -1322,7 +1315,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.DepositCancellation(2, cam, cam, spUSDC.convertToShares(300_000e6), 300_000e6 - 1);
 
-        // Deposit Request 3
+        // Deposit Request 5
 
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.ClaimableAssetsIncreased(dan, 400_000e6 - 1);
@@ -1330,7 +1323,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.DepositCancellation(3, ali, dan, spUSDC.convertToShares(400_000e6), 400_000e6 - 1);
 
-        // Deposit Request 4
+        // Deposit Request 5
 
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.ClaimableAssetsIncreased(bob, 500_000e6 - 1);
@@ -1409,7 +1402,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.DepositCancellation(2, cam, cam, spUSDC.convertToShares(300_000e6), 300_000e6 - 1);
 
-        // Deposit Request 3
+        // Deposit Request 5
 
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.ClaimableAssetsIncreased(dan, 400_000e6 - 1);
@@ -1417,7 +1410,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.DepositCancellation(3, ali, dan, spUSDC.convertToShares(400_000e6), 400_000e6 - 1);
 
-        // Deposit Request 4
+        // Deposit Request 5
 
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.ClaimableAssetsIncreased(bob, 500_000e6 - 1);
@@ -1487,7 +1480,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.DepositCancellation(6, ali, ali, spUSDC.convertToShares(700_000e6), 700_000e6 - 1);
 
-        // Deposit Request 7
+        // Deposit Request 8
 
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.ClaimableAssetsIncreased(dan, 800_000e6 - 1);
@@ -1594,7 +1587,7 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
 
         vaultState.depositRequests.pendingShareValue = 0;
         vaultState.depositRequests.length            = 0;
-        vaultState.depositRequests.firstPendingId    = 3;
+        vaultState.depositRequests.firstPendingId    = 0;
 
         vaultState.redeemRequests.pendingShareValue = depositedAssets - 6;
         vaultState.redeemRequests.length            = 10;

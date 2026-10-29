@@ -44,8 +44,8 @@ abstract contract TestBase is Test {
 
     struct PendingRequestsState {
         uint256 pendingShareValue;  // USDC value of spUSDC shares (deposit queue) or spPrime shares (redeem queue)
-        uint256 length;             // Requests from firstPendingId to the end, cancelled included
-        uint256 firstPendingId;     // First unfilled request id
+        uint256 length;             // Deposit queue: live requests. Other queues: requests from firstPendingId to the end, cancelled included
+        uint256 firstPendingId;     // First unfilled request id, 0 when the deposit queue is empty
     }
 
     struct VaultState {
@@ -354,6 +354,12 @@ abstract contract TestBase is Test {
         );
 
         assertEq(
+            spPrime.pendingDepositRequestCount(),
+            vaultState.depositRequests.length,
+            "vaultState.depositRequests.count"
+        );
+
+        assertEq(
             spPrime.firstPendingDepositId(),
             vaultState.depositRequests.firstPendingId,
             "vaultState.depositRequests.firstPendingId"
@@ -613,23 +619,66 @@ abstract contract TestBase is Test {
         );
     }
 
-    function _assertEmptyRequest(ISparkPrimeVault.Request memory request) internal view {
+    function _assertDepositNode(
+        uint256 requestId,
+        address owner,
+        address recipient,
+        uint256 savingsShareValue,
+        uint256 prev,
+        uint256 next
+    )
+        internal view
+    {
+        ISparkPrimeVault.DepositNode memory node = spPrime.getDepositNode(requestId);
+
         assertEq(
-            request.owner,
-            address(0),
-            "request.owner not zero"
+            node.owner,
+            owner,
+            "depositNode.owner"
         );
 
         assertEq(
-            request.recipient,
-            address(0),
-            "request.recipient not zero"
+            node.recipient,
+            recipient,
+            "depositNode.recipient"
         );
 
         assertEq(
-            request.shares,
-            0,
-            "request.shares not zero"
+            spUSDC.convertToAssets(node.shares),
+            savingsShareValue,
+            "depositNode.savingsShareValue"
+        );
+
+        assertEq(
+            node.prev,
+            prev,
+            "depositNode.prev"
+        );
+
+        assertEq(
+            node.next,
+            next,
+            "depositNode.next"
+        );
+    }
+
+    function _assertDepositQueue(uint256 head, uint256 tail, uint256 count) internal view {
+        assertEq(
+            spPrime.firstPendingDepositId(),
+            head,
+            "depositQueue.head"
+        );
+
+        assertEq(
+            spPrime.lastDepositRequestId(),
+            tail,
+            "depositQueue.tail"
+        );
+
+        assertEq(
+            spPrime.pendingDepositRequestCount(),
+            count,
+            "depositQueue.count"
         );
     }
 

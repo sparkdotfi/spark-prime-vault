@@ -27,7 +27,7 @@ contract RequestDepositCancellationTests is TestBase {
 
         _setCapacity(0);
 
-        depositRequestId = _requestDeposit(user, 1_000_000e6);  // Deposit Request 0 (Queued)
+        depositRequestId = _requestDeposit(user, 1_000_000e6);  // Deposit Request 1 (Queued)
 
         ( , , requestShares ) = spPrime.getPendingDepositRequest(depositRequestId);
 
@@ -39,7 +39,7 @@ contract RequestDepositCancellationTests is TestBase {
 
         vaultState.depositRequests.pendingShareValue = 1_000_000e6 - 1;
         vaultState.depositRequests.length            = 1;
-        vaultState.depositRequests.firstPendingId    = 0;
+        vaultState.depositRequests.firstPendingId    = 1;
 
         userBalances = AccountBalances({
             account           : user,
@@ -90,10 +90,14 @@ contract RequestDepositCancellationTests is TestBase {
     function test_requestDepositCancellation_invalidRequestIdBoundary() external {
         vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vm.prank(user);
-        spPrime.requestDepositCancellation(1, recipient, requestShares);
+        spPrime.requestDepositCancellation(2, recipient, requestShares);
+
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
+        vm.prank(user);
+        spPrime.requestDepositCancellation(0, recipient, requestShares);  // 0 is the null pointer
 
         vm.prank(user);
-        spPrime.requestDepositCancellation(0, recipient, requestShares);
+        spPrime.requestDepositCancellation(1, recipient, requestShares);
     }
 
     function test_requestDepositCancellation_noRequest() external {
@@ -161,7 +165,7 @@ contract RequestDepositCancellationTests is TestBase {
 
         vaultState.depositRequests.pendingShareValue = 0;
         vaultState.depositRequests.length            = 0;
-        vaultState.depositRequests.firstPendingId    = 1;
+        vaultState.depositRequests.firstPendingId    = 0;
 
         vaultState.depositCancellationRequests.pendingShareValue = 1_000_000e6 - 1;
         vaultState.depositCancellationRequests.length            = 1;

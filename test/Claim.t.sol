@@ -37,7 +37,7 @@ contract ClaimTests is TestBase {
     function test_claim_transferAmountExceedsBalanceBoundary() external {
         _setCapacity(0);
         _requestDeposit(user, 1_000_000e6);
-        _requestDepositCancellation(user, 0, spUSDC.convertToShares(1_000_000e6));
+        _requestDepositCancellation(user, 1, spUSDC.convertToShares(1_000_000e6));
 
         // Redeeming directly to the recipient fails, so assets are kept in the vault as claimable
         vm.mockCallRevert(
@@ -71,7 +71,7 @@ contract ClaimTests is TestBase {
     function test_claim_transferFails() external {
         _setCapacity(0);
         _requestDeposit(user, 1_000_000e6);
-        _requestDepositCancellation(user, 0, spUSDC.convertToShares(1_000_000e6));
+        _requestDepositCancellation(user, 1, spUSDC.convertToShares(1_000_000e6));
 
         // Redeeming directly to the recipient fails, so assets are kept in the vault as claimable
         vm.mockCallRevert(
@@ -101,14 +101,14 @@ contract ClaimTests is TestBase {
     function test_claim_fromDepositCancellation() external {
         _setCapacity(0);
         _requestDeposit(user, 1_000_000e6);
-        _requestDepositCancellation(user, 0, spUSDC.convertToShares(1_000_000e6));
+        _requestDepositCancellation(user, 1, spUSDC.convertToShares(1_000_000e6));
 
         vaultState.availableCapacityValue  = 0;
         vaultState.availableLiquidAssets  += 1_000_000e6 - 1;
 
         vaultState.depositRequests.pendingShareValue = 0;
         vaultState.depositRequests.length            = 0;
-        vaultState.depositRequests.firstPendingId    = 1;
+        vaultState.depositRequests.firstPendingId    = 0;
 
         vaultState.depositCancellationRequests.pendingShareValue = 1_000_000e6 - 1;
         vaultState.depositCancellationRequests.length            = 1;
@@ -196,7 +196,7 @@ contract ClaimTests is TestBase {
 
         vaultState.depositRequests.pendingShareValue = 0;
         vaultState.depositRequests.length            = 0;
-        vaultState.depositRequests.firstPendingId    = 1;
+        vaultState.depositRequests.firstPendingId    = 0;
 
         vaultState.redeemRequests.pendingShareValue = 500_000e6;
         vaultState.redeemRequests.length            = 1;
