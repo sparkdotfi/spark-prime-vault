@@ -108,7 +108,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /*** Storage variables                                                                      ***/
     /**********************************************************************************************/
 
-    Request[] internal _depositRequests;
+    // The deposit queue is a doubly linked list over monotonically increasing request IDs, so
+    // that a cancelled request can be unlinked in O(1) instead of leaving an empty entry that
+    // every later walk has to skip. IDs start at 1 so that 0 can serve as the null pointer.
+    mapping (uint256 requestId => DepositNode node) internal _depositNodes;
+
     Request[] internal _depositCancellationRequests;
     Request[] internal _redeemRequests;
 
@@ -143,7 +147,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     uint256 public override pendingCancelledDepositSavingsShares;
     uint256 public override pendingRedeemShares;
 
-    uint256 public override firstPendingDepositId;              // First unfilled index of the deposit queue
+    uint256 public override firstPendingDepositId;              // Head of the deposit queue, 0 when empty
+    uint256 public override lastDepositRequestId;               // Tail of the deposit queue, 0 when empty
+    uint256 public override nextDepositRequestId;               // ID assigned to the next deposit request
+    uint256 public override pendingDepositRequestCount;         // Live nodes in the deposit queue
     uint256 public override firstPendingDepositCancellationId;  // First unfilled index of the cancelled deposit queue
     uint256 public override firstPendingRedeemId;               // First unfilled index of the redeem queue
 
@@ -201,6 +208,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
         minVSR = RAY;
         maxVSR = RAY;
+
+        nextDepositRequestId = 1;  // 0 is the null pointer of the deposit queue
 
         minDeposit             = minDeposit_;
         minDepositCancellation = minDepositCancellation_;
@@ -387,17 +396,16 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
         uint256 savingsShares_ = IERC4626Like(savings).deposit(assets_, address(this));
 
-        requestId_ = _depositRequests.length;
-
-        _depositRequests.push(Request(msg.sender, recipient_, savingsShares_));
+        requestId_ = _appendDepositNode(msg.sender, recipient_, savingsShares_);
 
         pendingDepositSavingsShares += savingsShares_;
 
         emit Referral(referral_, requestId_, msg.sender, recipient_, assets_);
         emit DepositRequest(requestId_, msg.sender, recipient_, assets_, savingsShares_);
 
-        // Fill this request, only while no nonzero requests are queued ahead.
-        if (pendingDepositSavingsShares == savingsShares_) {
+        // Fill this request, only while no requests are queued ahead, i.e. it became the head.
+        // The budgets are unbounded because the walk can only ever visit this one node.
+        if (firstPendingDepositId == requestId_) {
             _processPendingDeposits(type(uint256).max, type(uint256).max);
         }
     }
@@ -411,38 +419,36 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         override
         returns (uint256 newRequestId_)
     {
-        require(recipient_ != address(0),             ZeroRecipient());
-        require(recipient_ != address(this),          VaultIsRecipient());
-        require(requestId_ < _depositRequests.length, InvalidRequestId());
+        require(recipient_ != address(0),                                ZeroRecipient());
+        require(recipient_ != address(this),                             VaultIsRecipient());
+        require(requestId_ != 0 && requestId_ < nextDepositRequestId, InvalidRequestId());
 
-        Request memory depositRequest_ = _depositRequests[requestId_];
+        DepositNode storage depositNode_ = _depositNodes[requestId_];
 
-        require(depositRequest_.shares != 0,              NoRequest());
-        require(msg.sender == depositRequest_.owner,      NotRequestOwner());
+        uint256 depositShares_ = depositNode_.shares;
+
+        require(depositShares_ != 0,                      NoRequest());
+        require(msg.sender == depositNode_.owner,         NotRequestOwner());
         require(savingsShares_ >= minDepositCancellation, BelowMinDepositCancellation());
-        require(savingsShares_ <= depositRequest_.shares, SavingsSharesTooHigh());
+        require(savingsShares_ <= depositShares_,         SavingsSharesTooHigh());
 
         newRequestId_ = _depositCancellationRequests.length;
 
-        _depositCancellationRequests.push(
-            Request(depositRequest_.owner, recipient_, savingsShares_)
-        );
+        _depositCancellationRequests.push(Request(msg.sender, recipient_, savingsShares_));
 
         pendingDepositSavingsShares          -= savingsShares_;
         pendingCancelledDepositSavingsShares += savingsShares_;
 
-        if (depositRequest_.shares == savingsShares_) {
-            delete _depositRequests[requestId_];
+        if (depositShares_ == savingsShares_) {
+            // A full cancellation leaves nothing behind: the node is unlinked from its
+            // neighbours, so no later walk of the queue ever visits it. This is why the array
+            // version's trailing cleanup walk, which skipped empty entries at the head, is gone.
+            _unlinkDepositNode(requestId_);
         } else {
-            _depositRequests[requestId_].shares = depositRequest_.shares - savingsShares_;
+            depositNode_.shares = depositShares_ - savingsShares_;
         }
 
         emit DepositCancellationRequest(requestId_, newRequestId_, recipient_, savingsShares_);
-
-        // Clears all empty deposits that are at the front of the queue.
-        // Prevents depositing user from potential reverts on an atomic deposit due many processable
-        // cancelled deposit requests.
-        _processPendingDeposits(0, type(uint256).max);
     }
 
     function requestRedeem(uint256 shares_, address recipient_)
@@ -480,16 +486,16 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /**********************************************************************************************/
 
     function updateDepositRecipient(uint256 requestId_, address recipient_) external override {
-        require(recipient_ != address(0),             ZeroRecipient());
-        require(recipient_ != address(this),          VaultIsRecipient());
-        require(requestId_ < _depositRequests.length, InvalidRequestId());
+        require(recipient_ != address(0),                                ZeroRecipient());
+        require(recipient_ != address(this),                             VaultIsRecipient());
+        require(requestId_ != 0 && requestId_ < nextDepositRequestId, InvalidRequestId());
 
-        Request storage request_ = _depositRequests[requestId_];
+        DepositNode storage node_ = _depositNodes[requestId_];
 
-        require(request_.shares != 0,         NoRequest());
-        require(msg.sender == request_.owner, NotRequestOwner());
+        require(node_.shares != 0,         NoRequest());
+        require(msg.sender == node_.owner, NotRequestOwner());
 
-        emit DepositRecipientUpdated(requestId_, request_.recipient = recipient_);
+        emit DepositRecipientUpdated(requestId_, node_.recipient = recipient_);
     }
 
     function updateDepositCancellationRecipient(uint256 requestId_, address recipient_)
@@ -672,14 +678,12 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         override
         returns (address owner_, address recipient_, uint256 shares_)
     {
-        require(
-            requestId_ >= firstPendingDepositId && requestId_ < _depositRequests.length,
-            InvalidRequestId()
-        );
+        DepositNode storage node_ = _depositNodes[requestId_];
 
-        Request storage request_ = _depositRequests[requestId_];
+        // Only live nodes have shares: filled and fully cancelled nodes are deleted.
+        require(node_.shares != 0, InvalidRequestId());
 
-        return (request_.owner, request_.recipient, request_.shares);
+        return (node_.owner, node_.recipient, node_.shares);
     }
 
     function getPendingDepositRequests()
@@ -688,13 +692,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         override
         returns (Request[] memory requests_)
     {
-        uint256 pendingLength_ = _depositRequests.length;
-
-        requests_ = new Request[](pendingLength_ - firstPendingDepositId);
-
-        for (uint256 i_ = firstPendingDepositId; i_ < pendingLength_; ++i_) {
-            requests_[i_ - firstPendingDepositId] = _depositRequests[i_];
-        }
+        return _walkDepositQueue(firstPendingDepositId, pendingDepositRequestCount);
     }
 
     function getPendingDepositRequests(uint256 startId_, uint256 length_)
@@ -703,14 +701,18 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         override
         returns (Request[] memory requests_)
     {
-        require(startId_ >= firstPendingDepositId,              StartIdTooSmall());
-        require(length_  <= _depositRequests.length - startId_, LengthTooLarge());
+        require(_depositNodes[startId_].shares != 0, InvalidRequestId());
 
-        requests_ = new Request[](length_);
+        return _walkDepositQueue(startId_, length_);
+    }
 
-        for (uint256 i_ = startId_; i_ < startId_ + length_; ++i_) {
-            requests_[i_ - startId_] = _depositRequests[i_];
-        }
+    function getDepositNode(uint256 requestId_)
+        external
+        view
+        override
+        returns (DepositNode memory node_)
+    {
+        return _depositNodes[requestId_];
     }
 
     function getPendingDepositCancellationRequest(uint256 requestId_)
@@ -864,39 +866,111 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
             IERC4626Like(savings).convertToShares(convertToAssets(availableCapacity()))
         );
 
-        // Process the deposit queue up to the maximum number of requests or until there are no more
-        // remaining savings shares.
-        uint256 i_   = firstPendingDepositId;
-        uint256 end_ = i_ + _min(_depositRequests.length - i_, maxRequests_);
+        // Walk the deposit queue from the head up to the maximum number of requests or until
+        // there are no more remaining savings shares. Every node visited is live: cancelled nodes
+        // were unlinked when they were cancelled, so the walk never skips anything.
+        uint256 id_ = firstPendingDepositId;
 
-        for (; i_ < end_; ++i_) {
-            Request storage request_ = _depositRequests[i_];
+        for (uint256 count_; count_ < maxRequests_ && id_ != 0 && remaining_ != 0; ++count_) {
+            DepositNode storage node_ = _depositNodes[id_];
 
-            if (request_.shares == 0) continue;  // Cancelled
-
-            // Allow processing cancelled deposits while `remaining_ == 0`.
-            if (remaining_ == 0) break;
-
-            uint256 savingsShares_ = _min(request_.shares, remaining_);
+            uint256 savingsShares_ = _min(node_.shares, remaining_);
 
             // Convert processed savings shares into vault shares.
             uint256 assets_ = IERC4626Like(savings).convertToAssets(savingsShares_);
             uint256 shares_ = convertToShares(assets_);
 
             pendingDepositSavingsShares -= savingsShares_;
-            request_.shares             -= savingsShares_;
+            node_.shares                -= savingsShares_;
             remaining_                  -= savingsShares_;
 
-            _mint(request_.recipient, shares_);
+            _mint(node_.recipient, shares_);
 
-            emit Deposit(i_, request_.owner, request_.recipient, savingsShares_, assets_, shares_);
+            emit Deposit(id_, node_.owner, node_.recipient, savingsShares_, assets_, shares_);
 
-            if (request_.shares != 0) break;  // Partial fill, entry stays at the head
+            if (node_.shares != 0) break;  // Partial fill, node stays at the head
 
-            delete _depositRequests[i_];
+            uint256 next_ = node_.next;
+
+            _unlinkDepositNode(id_);  // Advances the head to `next_`
+
+            id_ = next_;
         }
+    }
 
-        firstPendingDepositId = i_;
+    /**
+     * @dev Appends a node at the tail of the deposit queue and returns its ID.
+     */
+    function _appendDepositNode(address owner_, address recipient_, uint256 shares_)
+        internal
+        returns (uint256 requestId_)
+    {
+        requestId_ = nextDepositRequestId++;
+
+        uint256 tail_ = lastDepositRequestId;
+
+        _depositNodes[requestId_] = DepositNode({
+            owner     : owner_,
+            recipient : recipient_,
+            shares    : shares_,
+            prev      : tail_,
+            next      : 0
+        });
+
+        if (tail_ == 0) firstPendingDepositId     = requestId_;  // Queue was empty
+        else            _depositNodes[tail_].next = requestId_;
+
+        lastDepositRequestId = requestId_;
+
+        ++pendingDepositRequestCount;
+    }
+
+    /**
+     * @dev Unlinks a live node from the deposit queue in O(1), fixing the neighbours' pointers and
+     *      the head and tail as needed, and deletes it.
+     */
+    function _unlinkDepositNode(uint256 requestId_) internal {
+        DepositNode storage node_ = _depositNodes[requestId_];
+
+        uint256 prev_ = node_.prev;
+        uint256 next_ = node_.next;
+
+        if (prev_ == 0) firstPendingDepositId     = next_;  // Node was the head
+        else            _depositNodes[prev_].next = next_;
+
+        if (next_ == 0) lastDepositRequestId      = prev_;  // Node was the tail
+        else            _depositNodes[next_].prev = prev_;
+
+        delete _depositNodes[requestId_];
+
+        --pendingDepositRequestCount;
+    }
+
+    /**
+     * @dev Returns up to `length_` requests of the deposit queue, walking `next` from `startId_`
+     *      and stopping early at the tail.
+     */
+    function _walkDepositQueue(uint256 startId_, uint256 length_)
+        internal
+        view
+        returns (Request[] memory requests_)
+    {
+        uint256 id_ = startId_;
+        uint256 count_;
+
+        for (; count_ < length_ && id_ != 0; ++count_) id_ = _depositNodes[id_].next;
+
+        requests_ = new Request[](count_);
+
+        id_ = startId_;
+
+        for (uint256 i_; i_ < count_; ++i_) {
+            DepositNode storage node_ = _depositNodes[id_];
+
+            requests_[i_] = Request(node_.owner, node_.recipient, node_.shares);
+
+            id_ = node_.next;
+        }
     }
 
     function _processPendingDepositCancellations(uint256 maxSavingsShares_, uint256 maxRequests_)

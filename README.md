@@ -25,7 +25,7 @@ Deposits are two-step: the user's assets go to the savings sleeve immediately, a
 
 - **Request**: `requestDeposit(assets, recipient, referral)` pulls `assets` from the caller, deposits them into the savings vault (`spUSDC`) and queues a request denominated in **savings shares**. Requires `assets >= minDeposit` and that `recipient` is neither the zero address nor the vault. Emits `Referral` (with the integrator's `referral` code) and `DepositRequest`.
 - **Instant Fill**: If the new request is the only pending deposit (nothing queued ahead of it) and capacity is available, it is processed within the same transaction.
-- **Queueing**: Otherwise the request waits in the FIFO `_depositRequests` queue. Queued depositors keep earning savings yield while waiting, since the vault holds their savings shares.
+- **Queueing**: Otherwise the request waits in the FIFO deposit queue, a doubly linked list of `DepositNode`s keyed by request ID (`firstPendingDepositId` is the head, `lastDepositRequestId` the tail, `pendingDepositRequestCount` the number of live requests). IDs start at 1 and are never reused; 0 is the null pointer. Queued depositors keep earning savings yield while waiting, since the vault holds their savings shares.
 - **Capacity**: Fills are bounded by `availableCapacity() = maxCapacity - totalSupply` (floored at 0), converted to savings shares.
 - **Processing**: `OPERATOR_ROLE` calls `processPendingDeposits(maxSavingsShares, maxRequests)`. Savings shares are converted to assets and then minted as `spPrime` to each request's `recipient` at the current `chi`. Requests can be **partially filled**; a partially filled request stays at the head of the queue.
 - **Updating the recipient**: The request `owner` can call `updateDepositRecipient(requestId, recipient)` to change who receives the minted shares.
@@ -33,8 +33,7 @@ Deposits are two-step: the user's assets go to the savings sleeve immediately, a
 ### 3. Deposit Cancellation & Cancellation Queue
 
 - **Request**: The request `owner` (only) calls `requestDepositCancellation(requestId, recipient, savingsShares)` on a still-pending deposit. `savingsShares` must be at least `minDepositCancellation` and at most the request's unfilled savings shares; they move to the FIFO `_depositCancellationRequests` queue.
-- **Partial cancellation**: If all unfilled savings shares are cancelled, the deposit request is removed. Otherwise it keeps the rest and its position in the deposit queue.
-- **Cleanup**: Each cancellation also clears fully cancelled entries at the front of the deposit queue, so they do not block the next instant fill.
+- **Partial cancellation**: If all unfilled savings shares are cancelled, the deposit request is unlinked from the queue in O(1), so later walks never visit it. Otherwise it keeps the rest and its position in the deposit queue.
 - **Processing**: `OPERATOR_ROLE` calls `processPendingDepositCancellations(maxSavingsShares, maxRequests)`, which redeems the savings shares for the underlying asset and sends it to the `recipient`. Bounded by what the savings vault can redeem (`maxRedeem`). Because the refund is made from the queued savings shares, it includes all savings yield accrued while queued. Partial fills are supported.
 - **Updating the recipient**: The `owner` can call `updateDepositCancellationRecipient(requestId, recipient)`.
 
@@ -61,9 +60,9 @@ Redemptions are always asynchronous (there is no instant fill).
 ### 7. Queue Mechanics
 
 - All three queues (deposit, deposit cancellation, redeem) are FIFO and are processed with `maxRequests` bounding the number of entries visited per call, so processing can be batched.
-- Each queue tracks its head (`firstPendingDepositId`, `firstPendingDepositCancellationId`, `firstPendingRedeemId`); fully filled or cancelled entries are deleted and skipped.
+- Each queue tracks its head (`firstPendingDepositId`, `firstPendingDepositCancellationId`, `firstPendingRedeemId`). The deposit queue is a linked list whose head is 0 when empty, and cancelled or filled nodes are unlinked. The cancellation and redeem queues are arrays whose fully filled entries are deleted and skipped.
 - Aggregate pending amounts are tracked in `pendingDepositSavingsShares`, `pendingCancelledDepositSavingsShares`, and `pendingRedeemShares`.
-- Pending requests can be inspected with `getPending{Deposit,DepositCancellation,Redeem}Request(requestId)` and `getPending...Requests()` (full pending list) or `getPending...Requests(startId, length)` (`length` entries from `startId`; an empty array if `length` is zero; reverts if `startId` is before the queue head or the range extends past the end of the queue).
+- Pending requests can be inspected with `getPending{Deposit,DepositCancellation,Redeem}Request(requestId)` and `getPending...Requests()` (full pending list) or `getPending...Requests(startId, length)`. For the cancellation and redeem queues the range is `length` entries from `startId` (an empty array if `length` is zero; reverts if `startId` is before the queue head or the range extends past the end of the queue). For the deposit queue `startId` must be a live request and the walk returns up to `length` requests, stopping at the tail; `getDepositNode(requestId)` returns a raw node with its `prev` and `next` links for pagination.
 
 ### 8. Pausing
 

@@ -28,6 +28,26 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
         uint256 shares;
     }
 
+    /**
+     * @notice A node of the deposit queue, a doubly linked list over request IDs.
+     * @dev    IDs start at 1 so that 0 is the null pointer: `prev` is 0 at the head and `next` is 0
+     *         at the tail. Filled and fully cancelled nodes are deleted, so a node is live if and
+     *         only if its `shares` are nonzero.
+     * @param  owner     The address that created the request and can update its recipient or
+     *                   cancel it.
+     * @param  recipient The address that receives the vault shares when the request is filled.
+     * @param  shares    The unfilled savings shares of the request [savings share units]
+     * @param  prev      The ID of the previous node in the queue, 0 at the head
+     * @param  next      The ID of the next node in the queue, 0 at the tail
+     */
+    struct DepositNode {
+        address owner;
+        address recipient;
+        uint256 shares;
+        uint256 prev;
+        uint256 next;
+    }
+
     /**********************************************************************************************/
     /*** Events                                                                                 ***/
     /**********************************************************************************************/
@@ -290,7 +310,8 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     error InsufficientShares();
 
     /// @notice Thrown when a request ID is past the end of the queue or, in the single-request
-    ///         getters, before the first pending request.
+    ///         getters, before the first pending request. For the deposit queue, thrown when the
+    ///         ID is 0, was never assigned or, in the getters, is not a live node.
     error InvalidRequestId();
 
     /// @notice Thrown when an action requires the vault to be paused.
@@ -480,8 +501,20 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /// @notice Returns the total vault shares in the redeem queue [share units].
     function pendingRedeemShares() external view returns (uint256);
 
-    /// @notice Returns the first unfilled request ID of the deposit queue.
+    /**
+     * @notice Returns the ID of the head of the deposit queue, the first unfilled deposit request,
+     *         or 0 when the queue is empty.
+     */
     function firstPendingDepositId() external view returns (uint256);
+
+    /// @notice Returns the ID of the tail of the deposit queue, or 0 when the queue is empty.
+    function lastDepositRequestId() external view returns (uint256);
+
+    /// @notice Returns the ID that the next deposit request will get. IDs start at 1.
+    function nextDepositRequestId() external view returns (uint256);
+
+    /// @notice Returns the number of unfilled deposit requests, i.e. live nodes in the queue.
+    function pendingDepositRequestCount() external view returns (uint256);
 
     /// @notice Returns the first unfilled request ID of the deposit cancellation queue.
     function firstPendingDepositCancellationId() external view returns (uint256);
@@ -836,7 +869,8 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
 
     /**
      * @notice Returns a pending deposit request.
-     * @dev    Reverts if `requestId_` is before the first pending request or does not exist.
+     * @dev    Reverts if `requestId_` is not a live node: never assigned, filled or fully
+     *         cancelled.
      * @param  requestId_ The ID of the deposit request
      * @return owner_     The owner of the request
      * @return recipient_ The address to receive the shares when the request is filled
@@ -848,25 +882,35 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
         returns (address owner_, address recipient_, uint256 shares_);
 
     /**
-     * @notice Returns the deposit requests from the first pending request to the end of the queue.
-     * @dev    Includes fully cancelled requests, which have zero shares.
+     * @notice Returns all pending deposit requests, walking the queue from the head to the tail.
+     * @dev    Never includes cancelled requests, which are unlinked when they are cancelled.
      * @return requests_ The deposit requests
      */
     function getPendingDepositRequests() external view returns (Request[] memory requests_);
 
     /**
-     * @notice Returns `length_` deposit requests, starting from the request with ID `startId_`.
-     * @dev    Returns an empty array if `length_` is zero. Reverts if `startId_` is before the
-     *         first pending request or the range extends past the end of the queue.
-     *         Includes fully cancelled requests, which have zero shares.
+     * @notice Returns up to `length_` pending deposit requests, walking the queue from the request
+     *         with ID `startId_`.
+     * @dev    Returns fewer than `length_` requests when the tail is reached first, and an empty
+     *         array if `length_` is zero. Reverts if `startId_` is not a live node. To paginate,
+     *         pass the ID of the last returned request's `next` node, available through
+     *         `getDepositNode`.
      * @param  startId_  The first request ID to return
-     * @param  length_   The number of requests to return
+     * @param  length_   The maximum number of requests to return
      * @return requests_ The deposit requests
      */
     function getPendingDepositRequests(uint256 startId_, uint256 length_)
         external
         view
         returns (Request[] memory requests_);
+
+    /**
+     * @notice Returns the raw node of the deposit queue with ID `requestId_`, including its links.
+     * @dev    Does not revert: a node that is not live is returned with all fields zero.
+     * @param  requestId_ The ID of the deposit request
+     * @return node_      The node
+     */
+    function getDepositNode(uint256 requestId_) external view returns (DepositNode memory node_);
 
     /**
      * @notice Returns a pending deposit cancellation request.
