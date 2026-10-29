@@ -819,6 +819,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /*** External view functions                                                                ***/
     /**********************************************************************************************/
 
+    function DOMAIN_SEPARATOR() external view override returns (bytes32) {
+        return _calculateDomainSeparator(block.chainid);
+    }
+
     function assetsOf(address owner_) external view override returns (uint256) {
         return convertToAssets(balanceOf[owner_]);
     }
@@ -839,10 +843,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         return (assets_ * RAY) / nowChi();
     }
 
-    function DOMAIN_SEPARATOR() external view override returns (bytes32) {
-        return _calculateDomainSeparator(block.chainid);
-    }
-
     function implementation() external view override returns (address) {
         return ERC1967Utils.getImplementation();
     }
@@ -852,6 +852,17 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
             block.timestamp > rho
                 ? uint192((_rpow(vsr, block.timestamp - rho) * chi) / RAY)
                 : chi;
+    }
+
+    function supportsInterface(bytes4 interfaceId_)
+        public
+        view
+        override(ISparkPrimeVault, AccessControlEnumerableUpgradeable)
+        returns (bool)
+    {
+        return
+            interfaceId_ == type(ISparkPrimeVault).interfaceId ||
+            super.supportsInterface(interfaceId_);
     }
 
     function totalAssets() public view override returns (uint256) {
