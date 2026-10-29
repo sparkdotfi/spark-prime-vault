@@ -1,6 +1,8 @@
 # Spark Prime Vault (`spPrime`)
 
-An upgradeable (UUPS), yield-accruing vault token backed by an underlying asset (e.g., USDC) and an ERC-4626 savings sleeve (e.g., `spUSDC`), featuring asynchronous FIFO queues for deposits, deposit cancellations, and redemptions in capacity- and liquidity-constrained environments.
+An upgradeable (UUPS), yield-accruing vault token denominated in an underlying asset (e.g., USDC) that holds its liquidity in an ERC-4626 savings sleeve (e.g., `spUSDC`), featuring asynchronous FIFO queues for deposits, deposit cancellations, and redemptions in capacity- and liquidity-constrained environments.
+
+`totalAssets()` (`totalSupply * chi`) is the value owed to share holders at the administered rate, not the assets held by the vault. The vault's savings share balance also backs pending deposits and cancellations, and `TAKER_ROLE` can move it out for external allocation, so it does not track `totalAssets()`.
 
 The vault token is a standard ERC-20 (with EIP-2612-style `permit`, supporting both EOA and ERC-1271 signatures) whose `decimals` match the underlying asset. Transfers to the zero address or to the vault itself are rejected.
 
@@ -11,9 +13,9 @@ The vault token is a standard ERC-20 (with EIP-2612-style `permit`, supporting b
 ### 1. Rate Accumulator (`chi` & `vsr`)
 
 - Yield accrues continuously via the Vault Savings Rate (`vsr`), a per-second compounding factor (ray).
-- `drip()` (public) compounds accumulated interest into the accumulator `chi`. It is also invoked by `setVSR`, `adjustTotalAssets`, `requestDeposit`, `requestRedeem`, and all `process*` functions.
+- `drip()` (public) compounds accumulated interest into the accumulator `chi`. It is also invoked by `setVSR`, `adjustTotalAssets`, `requestDeposit`, `requestDepositCancellation`, `requestRedeem`, and all `process*` functions.
 - Share-to-asset conversion: `assets = shares * nowChi() / RAY`, where `nowChi()` is the up-to-date `chi` without writing state.
-- Initialized with `chi = vsr = minVSR = maxVSR = RAY` (0% yield) until the admin sets bounds and the VSR setter sets a rate.
+- Initialized with `chi = vsr = minVSR = maxVSR = RAY` (0% yield) until the admin sets bounds and `OPERATOR_ROLE` sets a rate.
 - `vsr` must stay within `[minVSR, maxVSR]`. Bounds are configured by `DEFAULT_ADMIN_ROLE` with `minVSR >= RAY` and `maxVSR <= MAX_VSR` (100% APY).
 - **Gain/Loss Realization**: While paused, `LOSS_MANAGER_ROLE` can call `adjustTotalAssets(delta)` to settle the pending drip and rewrite `chi` so that `totalAssets` moves by `delta` (positive or negative). Pausing first blocks request/processing activity so nobody can front-run the adjustment. `delta` must be nonzero, the resulting total assets must be positive, and the resulting `chi` must be non-zero and fit in `uint192`. Requires a non-zero `totalSupply`.
 
@@ -30,7 +32,9 @@ Deposits are two-step: the user's assets go to the savings sleeve immediately, a
 
 ### 3. Deposit Cancellation & Cancellation Queue
 
-- **Request**: The request `owner` (only) calls `requestDepositCancellation(requestId, recipient)` on a still-pending deposit. The deposit request is removed from the deposit queue and its remaining savings shares move to the FIFO `_depositCancellationRequests` queue.
+- **Request**: The request `owner` (only) calls `requestDepositCancellation(requestId, recipient, savingsShares)` on a still-pending deposit. `savingsShares` must be at least `minDepositCancellation` and at most the request's unfilled savings shares; they move to the FIFO `_depositCancellationRequests` queue.
+- **Partial cancellation**: If all unfilled savings shares are cancelled, the deposit request is removed. Otherwise it keeps the rest and its position in the deposit queue.
+- **Cleanup**: Each cancellation also clears fully cancelled entries at the front of the deposit queue, so they do not block the next instant fill.
 - **Processing**: `OPERATOR_ROLE` calls `processPendingDepositCancellations(maxSavingsShares, maxRequests)`, which redeems the savings shares for the underlying asset and sends it to the `recipient`. Bounded by what the savings vault can redeem (`maxRedeem`). Because the refund is made from the queued savings shares, it includes all savings yield accrued while queued. Partial fills are supported.
 - **Updating the recipient**: The `owner` can call `updateDepositCancellationRecipient(requestId, recipient)`.
 
@@ -59,26 +63,40 @@ Redemptions are always asynchronous (there is no instant fill).
 - All three queues (deposit, deposit cancellation, redeem) are FIFO and are processed with `maxRequests` bounding the number of entries visited per call, so processing can be batched.
 - Each queue tracks its head (`firstPendingDepositId`, `firstPendingDepositCancellationId`, `firstPendingRedeemId`); fully filled or cancelled entries are deleted and skipped.
 - Aggregate pending amounts are tracked in `pendingDepositSavingsShares`, `pendingCancelledDepositSavingsShares`, and `pendingRedeemShares`.
-- Pending requests can be inspected with `getPending{Deposit,DepositCancellation,Redeem}Request(requestId)` and `getPending...Requests()` (full pending list or a `[startId, endId)` range).
+- Pending requests can be inspected with `getPending{Deposit,DepositCancellation,Redeem}Request(requestId)` and `getPending...Requests()` (full pending list) or `getPending...Requests(startId, length)` (`length` entries from `startId`; an empty array if `length` is zero; reverts if `startId` is before the queue head or the range extends past the end of the queue).
 
 ### 8. Pausing
 
 - `PAUSER_ROLE` can `pause`; `UNPAUSER_ROLE` can `unpause`.
-- While paused, `requestDeposit`, `requestDepositCancellation`, `requestRedeem`, and all `process*` functions revert. Recipient updates, `claim`, `take`, `drip`, and ERC-20 transfers/approvals remain available.
+- While paused, `requestDeposit`, `requestRedeem`, `processPendingDeposits`, and `processPendingRedeems` revert.
+- Deposit cancellations stay available so depositors can always exit: `requestDepositCancellation` and `processPendingDepositCancellations` work while paused. Recipient updates, `claim`, `take`, `drip`, and ERC-20 transfers/approvals also remain available.
+- `adjustTotalAssets` can only be called while paused.
+
+### 9. Savings Vault Assumptions
+
+The vault is designed for Spark Vault V2 savings vaults (e.g., `spUSDC`) and relies on the following:
+
+- **Deposits from the vault are accepted**: `requestDeposit` deposits into the savings vault with the vault as caller and receiver. It reverts if the vault holds the savings vault's `TAKER_ROLE` (Spark Vault V2 rejects deposits from takers) or if the deposit would exceed the savings vault's deposit cap.
+- **No fees**: `convertToShares`/`convertToAssets` are used for pricing, so deposits, redemptions, and withdrawals must not charge fees.
+- **Share price never falls**: savings shares are worth at least as many assets over time.
+- **`maxRedeem`/`maxWithdraw` are honoured**: amounts within these bounds can be redeemed or withdrawn in the same transaction.
+- **Synchronous payout**: `redeem` and `withdraw` deliver assets in the same call.
+- **Zero amounts succeed**: `withdraw`/`redeem` of zero (or of dust that converts to zero assets) do not revert, and the asset accepts zero-value transfers. Queue remainders can produce such calls.
 
 ---
 
 ## Configuration
 
-| Parameter          | Setter (role)                                 | Notes                                                     |
-| ------------------ | --------------------------------------------- | --------------------------------------------------------- |
-| `maxCapacity`      | `setCapacity` (`DEFAULT_ADMIN_ROLE`)          | Maximum `totalSupply` used to size deposit fills.         |
-| `minDeposit`       | `setMinDeposit` (`DEFAULT_ADMIN_ROLE`)        | Minimum assets per `requestDeposit`.                      |
-| `minRedeem`        | `setMinRedeem` (`DEFAULT_ADMIN_ROLE`)         | Minimum shares per `requestRedeem`.                       |
-| `minVSR`/`maxVSR`  | `setVSRBounds` (`DEFAULT_ADMIN_ROLE`)         | `RAY <= minVSR <= maxVSR <= MAX_VSR`.                     |
-| `vsr`              | `setVSR` (`OPERATOR_ROLE`)                    | Must be within `[minVSR, maxVSR]`; drips before updating. |
-| `maxRedeemFeeRate` | `setMaxRedeemFeeRate` (`DEFAULT_ADMIN_ROLE`)  | Wad; capped by the `MAX_REDEEM_FEE` constant (1%).        |
-| `redeemFeeRate`    | `setRedeemFeeRate` (`REDEEM_FEE_SETTER_ROLE`) | Wad; must be `<= maxRedeemFeeRate`.                       |
+| Parameter                | Setter (role)                                      | Notes                                                                  |
+| ------------------------ | -------------------------------------------------- | ---------------------------------------------------------------------- |
+| `maxCapacity`            | `setCapacity` (`OPERATOR_ROLE`)                    | Maximum `totalSupply` used to size deposit fills.                      |
+| `minDeposit`             | `setMinDeposit` (`DEFAULT_ADMIN_ROLE`)             | Minimum assets per `requestDeposit`. Nonzero.                          |
+| `minDepositCancellation` | `setMinDepositCancellation` (`DEFAULT_ADMIN_ROLE`) | Minimum savings shares per `requestDepositCancellation`. Nonzero.      |
+| `minRedeem`              | `setMinRedeem` (`DEFAULT_ADMIN_ROLE`)              | Minimum shares per `requestRedeem`   |
+| `minVSR`/`maxVSR`        | `setVSRBounds` (`DEFAULT_ADMIN_ROLE`)              | `RAY <= minVSR <= maxVSR <= MAX_VSR`.                                  |
+| `vsr`                    | `setVSR` (`OPERATOR_ROLE`)                         | Must be within `[minVSR, maxVSR]`; drips before updating.              |
+| `maxRedeemFeeRate`       | `setMaxRedeemFeeRate` (`DEFAULT_ADMIN_ROLE`)       | Wad; capped by the `MAX_REDEEM_FEE` constant (1%).                     |
+| `redeemFeeRate`          | `setRedeemFeeRate` (`REDEEM_FEE_SETTER_ROLE`)      | Wad; must be `<= maxRedeemFeeRate`.                                    |
 
 ---
 
@@ -86,10 +104,10 @@ Redemptions are always asynchronous (there is no instant fill).
 
 | Role                         | Permitted Actions                                                                                                            | Description                                                                                                                           |
 | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| **`DEFAULT_ADMIN_ROLE`**     | `setMaxRedeemFeeRate`, `setMinDeposit`, `setMinRedeem`, `setVSRBounds`, `_authorizeUpgrade`                                  | Governs vault parameters, caps, bounds, and contract upgrades.                                                                        |
-| **`LOSS_MANAGER_ROLE`**      | `adjustTotalAssets`                                                                                                          | Manually changes `totalAssets` (and by extension `chi`) to realize gains or losses.                                                   |
-| **`OPERATOR_ROLE`**          | `setCapacity`, `setVSR`                                                                                                      | Updates the compounding Vault Savings Rate within configured bounds (`[minVSR, maxVSR]`).                                             |
-| **`OPERATOR_ROLE`**          | `processPendingDeposits`, `processPendingDepositCancellations`, `processPendingRedeems`                                      | Settles the deposit, deposit-cancellation, and redeem queues (only while unpaused).                                                   |
+| **`DEFAULT_ADMIN_ROLE`**     | `setMaxRedeemFeeRate`, `setMinDeposit`, `setMinDepositCancellation`, `setMinRedeem`, `setVSRBounds`, `_authorizeUpgrade`     | Governs vault parameters, bounds, and contract upgrades.                                                                              |
+| **`LOSS_MANAGER_ROLE`**      | `adjustTotalAssets`                                                                                                          | Manually changes `totalAssets` (and by extension `chi`) to realize gains or losses (only while paused).                               |
+| **`OPERATOR_ROLE`**          | `setCapacity`, `setVSR`                                                                                                      | Sets the deposit capacity and the Vault Savings Rate within configured bounds (`[minVSR, maxVSR]`).                                   |
+| **`OPERATOR_ROLE`**          | `processPendingDeposits`, `processPendingDepositCancellations`, `processPendingRedeems`                                      | Settles the deposit, deposit-cancellation, and redeem queues (deposits and redeems only while unpaused).                              |
 | **`TAKER_ROLE`**             | `take`                                                                                                                       | Withdraws any savings shares held by the vault, including those backing pending deposits and cancellations, for portfolio allocation. |
 | **`REDEEM_FEE_SETTER_ROLE`** | `setRedeemFeeRate`                                                                                                           | Configures the redemption fee rate (≤ `maxRedeemFeeRate`).                                                                            |
 | **`PAUSER_ROLE`**            | `pause`                                                                                                                      | Emergency pause of requests and queue processing.                                                                                     |
