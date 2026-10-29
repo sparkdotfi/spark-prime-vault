@@ -172,7 +172,7 @@ contract RoleBasedTests is TestBase {
     function test_adjustTotalAssets_chiTooHighBoundary() external {
         _pause();
 
-        // Small supply so that `totalAssets * RAY / totalSupply` can exceed uint192.
+        // Small supply so that `totalAssets * RAY / totalSupply` can exceed uint256.max / RAY.
         uint256 supply = 1e8;
 
         stdstore.target(address(spPrime)).sig("totalSupply()").checked_write(supply);
@@ -181,17 +181,17 @@ contract RoleBasedTests is TestBase {
 
         assertEq(uint256(totalAssets), supply);  // chi == RAY
 
-        // Largest totalAssets for which chi still fits in uint192.
-        int256 maxTotalAssets = int256(type(uint192).max * supply / RAY);
+        // Largest totalAssets for which chi still does not exceed uint256.max / RAY.
+        int256 maxTotalAssets = int256(type(uint256).max / RAY * supply / RAY);
 
-        assertEq(uint256(maxTotalAssets), 627710173538668076383578942320766.64161e6);
+        assertEq(uint256(maxTotalAssets), 11579208923731619542357098.500868e6);
 
-        // chi = (maxTotalAssets + 1) * RAY / supply > uint192.max
+        // chi = (maxTotalAssets + 1) * RAY / supply > uint256.max / RAY
         vm.expectRevert(ISparkPrimeVault.ChiTooHigh.selector);
         vm.prank(lossManager);
         spPrime.adjustTotalAssets(maxTotalAssets + 1 - totalAssets);
 
-        // chi = maxTotalAssets * RAY / supply <= uint192.max
+        // chi = maxTotalAssets * RAY / supply <= uint256.max / RAY
         vm.prank(lossManager);
         spPrime.adjustTotalAssets(maxTotalAssets - totalAssets);
     }

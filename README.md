@@ -17,7 +17,7 @@ The vault token is a standard ERC-20 (with EIP-2612-style `permit`, supporting b
 - Share-to-asset conversion: `assets = shares * nowChi() / RAY`, where `nowChi()` is the up-to-date `chi` without writing state.
 - Initialized with `chi = vsr = minVSR = maxVSR = RAY` (0% yield) until the admin sets bounds and `OPERATOR_ROLE` sets a rate.
 - `vsr` must stay within `[minVSR, maxVSR]`. Bounds are configured by `DEFAULT_ADMIN_ROLE` with `minVSR >= RAY` and `maxVSR <= MAX_VSR` (100% APY).
-- **Gain/Loss Realization**: While paused, `LOSS_MANAGER_ROLE` can call `adjustTotalAssets(delta)` to settle the pending drip and rewrite `chi` so that `totalAssets` moves by `delta` (positive or negative). Pausing first blocks request/processing activity so nobody can front-run the adjustment. `delta` must be nonzero, the resulting total assets must be positive, and the resulting `chi` must be non-zero and fit in `uint192`. Requires a non-zero `totalSupply`.
+- **Gain/Loss Realization**: While paused, `LOSS_MANAGER_ROLE` can call `adjustTotalAssets(delta)` to settle the pending drip and rewrite `chi` so that `totalAssets` moves by `delta` (positive or negative). Pausing first blocks request/processing activity so nobody can front-run the adjustment. `delta` must be nonzero, the resulting total assets must be positive, and the resulting `chi` must be non-zero and at most `type(uint256).max / RAY`. Requires a non-zero `totalSupply`.
 
 ### 2. Deposits & Deposit Queue
 
