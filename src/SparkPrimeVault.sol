@@ -276,8 +276,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         // NOTE: Assuming totalSupply is not zero
         uint256 updatedChi_ = uint256(totalAssets_) * RAY / totalSupply;
 
-        require(updatedChi_ != 0,                 ChiTooLow());
-        require(updatedChi_ <= type(uint192).max, ChiTooHigh());
+        require(updatedChi_ != 0,                       ChiTooLow());
+        require(updatedChi_ <= type(uint256).max / RAY, ChiTooHigh());
 
         emit TotalAssetsAdjusted(chi = uint192(updatedChi_), deltaTotalAssets_);
     }

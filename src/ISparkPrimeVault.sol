@@ -277,7 +277,7 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /// @notice Thrown when the redeem amount is below the minimum redeem.
     error BelowMinRedeem();
 
-    /// @notice Thrown when a total assets adjustment would make chi exceed type(uint192).max.
+    /// @notice Thrown when a total assets adjustment would make chi exceed type(uint256).max / RAY.
     error ChiTooHigh();
 
     /// @notice Thrown when a total assets adjustment would make chi zero.
@@ -585,6 +585,7 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      *         is paused. Drips before computing the new chi as:
      *         chi = (totalAssets() + deltaTotalAssets_) * RAY / totalSupply
      *         `deltaTotalAssets_` must be nonzero and the resulting total assets must be positive.
+     *         The resulting chi must be non-zero and at most type(uint256).max / RAY.
      *         Reverts if totalSupply is zero.
      * @param  deltaTotalAssets_ The signed change in total assets [asset units]
      */
