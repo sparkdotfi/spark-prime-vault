@@ -332,6 +332,9 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /// @notice Thrown when the redeem amount is below the minimum redeem.
     error BelowMinRedeem();
 
+    /// @notice Thrown when the capacity is set above `type(uint128).max`.
+    error CapacityTooHigh();
+
     /**
      * @notice Thrown when a total assets adjustment would make `chi` exceed
      *         `type(uint256).max / RAY`.
@@ -675,6 +678,8 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @notice Sets the maximum capacity of the vault.
      * @dev    This function can only be called by accounts with `OPERATOR_ROLE`.
      *         Deposit requests are only filled while `totalSupply` is below this value.
+     *         `capacity_` must be at most `type(uint128).max`, so that converting the available
+     *         capacity to savings shares cannot overflow when processing deposits.
      * @param  capacity_ The new maximum capacity [share units]
      */
     function setCapacity(uint256 capacity_) external;
