@@ -1118,7 +1118,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
         return
             success_ &&
-            result_.length == 32 &&
+            result_.length >= 32 &&
             abi.decode(result_, (bytes4)) == IERC1271.isValidSignature.selector;
     }
 
