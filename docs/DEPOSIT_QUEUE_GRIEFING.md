@@ -221,7 +221,7 @@ Price it:
 
 | Option | Effect on vector A | Cost | Where |
 |---|---|---|---|
-| Keep as is, document (this PR) | none; operator clears | none | this document |
-| Admin-set bound on the automatic walks | cancellations never revert; instant fill becomes best-effort when a run is longer than the bound | one storage slot, one setter, small behaviour change | sibling PR |
-| Linked-list deposit queue | no tombstones to walk; cancellation unlinks in O(1) | two extra slots per request, larger diff, getters change | sibling PR |
+| Keep as is, document | none; operator clears | none | this document, PR #80 |
+| Admin-set bound on the automatic walks | cancellations never revert; instant fill becomes best-effort when a run is longer than the bound | one storage slot, one setter, small behaviour change | PR #81 |
+| Linked-list deposit queue | no tombstones to walk; cancellation unlinks in O(1) | two extra slots per request (+53k gas per `requestDeposit`, cancellations 7k to 22k cheaper), getters change | PR #82 (draft) |
 | Remove the automatic walks | vector disappears | every deposit needs operator processing | rejected |
