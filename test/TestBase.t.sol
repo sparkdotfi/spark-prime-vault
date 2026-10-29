@@ -71,6 +71,7 @@ abstract contract TestBase is Test {
     uint256 internal constant MINIMUM_DEPOSIT              = 100e6;
     uint256 internal constant MINIMUM_DEPOSIT_CANCELLATION = 100e6;
     uint256 internal constant MINIMUM_REDEEM               = 100e6;
+    uint256 internal constant MAX_AUTO_PROCESS_REQUESTS    = 50;
     uint256 internal constant VAULT_CAPACITY               = 100_000_000e6;
     uint256 internal constant RAY                          = 1e27;
     uint256 internal constant MAX_VSR                      = 1.000000021979553151239153027e27;  // 100% APY
@@ -117,7 +118,8 @@ abstract contract TestBase is Test {
                         admin,
                         MINIMUM_DEPOSIT,
                         MINIMUM_DEPOSIT_CANCELLATION,
-                        MINIMUM_REDEEM
+                        MINIMUM_REDEEM,
+                        MAX_AUTO_PROCESS_REQUESTS
                     )
                 )
             ))

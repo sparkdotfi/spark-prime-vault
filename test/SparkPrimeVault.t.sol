@@ -243,6 +243,220 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
 }
 
+contract BoundedAutoProcessingTests is SparkPrimeVaultTests {
+
+    // A run of fully cancelled deposit requests (tombstones) behind a live head. Anyone can grow
+    // it by repeatedly depositing and fully cancelling while the head is unfilled, since the
+    // cleanup in `requestDepositCancellation` stops at the first live entry. Once the head is
+    // filled the run sits at the front of the queue, and every automatic walk over it is bounded
+    // by `maxAutoProcessRequests` (50 in tests).
+
+    uint256 internal constant RUN_LENGTH = 120;
+
+    address internal attacker = makeAddr("attacker");
+    address internal head     = makeAddr("head");
+
+    uint256 internal headShares;
+    uint256 internal runShares;  // Savings shares of all cancelled entries of the run
+
+    function setUp() public override {
+        super.setUp();
+
+        vm.label(attacker, "attacker");
+        vm.label(head,     "head");
+
+        _setCapacity(0);
+
+        _requestDeposit(head, 1_000_000e6);  // Deposit Request 0 (Queued, live head)
+
+        ( , , headShares ) = spPrime.getPendingDepositRequest(0);
+
+        for (uint256 i = 1; i <= RUN_LENGTH; ++i) {
+            uint256 requestId = _requestDeposit(attacker, 200e6);  // Deposit Request i (Queued)
+
+            assertEq(requestId, i);
+
+            ( , , uint256 shares ) = spPrime.getPendingDepositRequest(requestId);
+
+            _requestDepositCancellation(attacker, requestId, shares);  // Fully cancelled (tombstone)
+
+            runShares += shares;
+        }
+
+        assertEq(spPrime.firstPendingDepositId(),                 0);
+        assertEq(spPrime.getPendingDepositRequests().length,      RUN_LENGTH + 1);
+        assertEq(spPrime.pendingDepositSavingsShares(),           headShares);
+        assertEq(spPrime.pendingCancelledDepositSavingsShares(),  runShares);
+        assertEq(spPrime.getPendingDepositCancellationRequests().length, RUN_LENGTH);
+    }
+
+    function _fillHead() internal {
+        _setCapacity(VAULT_CAPACITY);
+
+        _processPendingDeposits(type(uint256).max, 1);  // Fills the head only
+
+        assertEq(spPrime.firstPendingDepositId(), 1);
+        assertEq(spPrime.assetsOf(head),          1_000_000e6 - 2);
+    }
+
+    function test_requestDepositCancellation_boundedCleanup() external {
+        uint256 victimRequestId = _requestDeposit(user, 1_000_000e6);  // Deposit Request 121 (Queued)
+
+        assertEq(victimRequestId, RUN_LENGTH + 1);
+
+        ( , , uint256 victimShares ) = spPrime.getPendingDepositRequest(victimRequestId);
+
+        _fillHead();
+
+        assertEq(spPrime.firstPendingDepositId(),            1);
+        assertEq(spPrime.getPendingDepositRequests().length, RUN_LENGTH + 1);
+        assertEq(spPrime.pendingDepositSavingsShares(),      victimShares);
+
+        uint256 cancelShares = spUSDC.convertToShares(100_000e6);
+
+        // The cancellation succeeds and its cleanup visits exactly `maxAutoProcessRequests`
+        // entries of the run.
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositCancellationRequest(victimRequestId, RUN_LENGTH, user, cancelShares);
+
+        uint256 cancelRequestId = _requestDepositCancellation(user, victimRequestId, cancelShares);
+
+        assertEq(cancelRequestId, RUN_LENGTH);
+
+        assertEq(spPrime.firstPendingDepositId(),                        1 + MAX_AUTO_PROCESS_REQUESTS);
+        assertEq(spPrime.getPendingDepositRequests().length,             RUN_LENGTH + 1 - MAX_AUTO_PROCESS_REQUESTS);
+        assertEq(spPrime.pendingDepositSavingsShares(),                  victimShares - cancelShares);
+        assertEq(spPrime.pendingCancelledDepositSavingsShares(),         runShares + cancelShares);
+        assertEq(spPrime.getPendingDepositCancellationRequests().length, RUN_LENGTH + 1);
+
+        _assertDepositRequest(victimRequestId, user, user, 900_000e6);
+
+        // A second cancellation advances the head by the bound again.
+
+        cancelRequestId = _requestDepositCancellation(user, victimRequestId, cancelShares);
+
+        assertEq(cancelRequestId, RUN_LENGTH + 1);
+
+        assertEq(spPrime.firstPendingDepositId(),                        1 + 2 * MAX_AUTO_PROCESS_REQUESTS);
+        assertEq(spPrime.getPendingDepositRequests().length,             RUN_LENGTH + 1 - 2 * MAX_AUTO_PROCESS_REQUESTS);
+        assertEq(spPrime.pendingDepositSavingsShares(),                  victimShares - 2 * cancelShares);
+        assertEq(spPrime.pendingCancelledDepositSavingsShares(),         runShares + 2 * cancelShares);
+        assertEq(spPrime.getPendingDepositCancellationRequests().length, RUN_LENGTH + 2);
+
+        _assertDepositRequest(victimRequestId, user, user, 800_000e6);
+
+        // A third one clears the remainder of the run and stops at the live victim entry.
+
+        cancelRequestId = _requestDepositCancellation(user, victimRequestId, cancelShares);
+
+        assertEq(cancelRequestId, RUN_LENGTH + 2);
+
+        assertEq(spPrime.firstPendingDepositId(),                        RUN_LENGTH + 1);
+        assertEq(spPrime.getPendingDepositRequests().length,             1);
+        assertEq(spPrime.pendingDepositSavingsShares(),                  victimShares - 3 * cancelShares);
+        assertEq(spPrime.pendingCancelledDepositSavingsShares(),         runShares + 3 * cancelShares);
+        assertEq(spPrime.getPendingDepositCancellationRequests().length, RUN_LENGTH + 3);
+
+        _assertDepositRequest(victimRequestId, user, user, 700_000e6 + 1);
+
+        // No shares were minted by the cleanups.
+
+        assertEq(spPrime.balanceOf(user), 0);
+    }
+
+    function test_requestDeposit_boundedInstantFill() external {
+        _fillHead();
+
+        assertEq(spPrime.getPendingDepositRequests().length, RUN_LENGTH);
+        assertEq(spPrime.pendingDepositSavingsShares(),      0);
+
+        // The run (120 entries) is longer than the bound (50): the deposit is queued, not filled,
+        // and the walk advances the head by the bound.
+
+        deal(address(usdc), user, 1_000_000e6);
+
+        vm.prank(user);
+        usdc.approve(address(spPrime), 1_000_000e6);
+
+        uint256 expectedSavingsShares = spUSDC.convertToShares(1_000_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.Referral(REFERRAL, RUN_LENGTH + 1, user, user, 1_000_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositRequest(RUN_LENGTH + 1, user, user, 1_000_000e6, expectedSavingsShares);
+
+        vm.prank(user);
+        uint256 requestId = spPrime.requestDeposit(1_000_000e6, user, REFERRAL);
+
+        assertEq(requestId, RUN_LENGTH + 1);
+
+        assertEq(spPrime.firstPendingDepositId(),            1 + MAX_AUTO_PROCESS_REQUESTS);
+        assertEq(spPrime.getPendingDepositRequests().length, RUN_LENGTH + 1 - MAX_AUTO_PROCESS_REQUESTS);
+        assertEq(spPrime.pendingDepositSavingsShares(),      expectedSavingsShares);
+        assertEq(spPrime.balanceOf(user),                    0);
+        assertEq(spPrime.totalSupply(),                      spPrime.balanceOf(head));
+
+        _assertDepositRequest(requestId, user, user, 1_000_000e6 - 1);
+
+        // Fully cancelling it leaves 21 tombstones in a row (70 of the run, minus the 50 cleared
+        // by the cancellation, plus the cancelled request itself).
+
+        _requestDepositCancellation(user, requestId, expectedSavingsShares);
+
+        assertEq(spPrime.firstPendingDepositId(),            1 + 2 * MAX_AUTO_PROCESS_REQUESTS);
+        assertEq(spPrime.getPendingDepositRequests().length, RUN_LENGTH + 1 - 2 * MAX_AUTO_PROCESS_REQUESTS);
+        assertEq(spPrime.pendingDepositSavingsShares(),      0);
+
+        // The run (21 entries) is now shorter than the bound: the next deposit is filled instantly.
+
+        deal(address(usdc), user, 1_000_000e6);
+
+        vm.prank(user);
+        usdc.approve(address(spPrime), 1_000_000e6);
+
+        uint256 expectedConvertedAssets = 1_000_000e6 - 1;
+        uint256 expectedSharesMinted    = spPrime.convertToShares(expectedConvertedAssets);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.Referral(REFERRAL, RUN_LENGTH + 2, user, user, 1_000_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositRequest(RUN_LENGTH + 2, user, user, 1_000_000e6, expectedSavingsShares);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.Deposit(RUN_LENGTH + 2, user, user, expectedSavingsShares, expectedConvertedAssets, expectedSharesMinted);
+
+        vm.prank(user);
+        requestId = spPrime.requestDeposit(1_000_000e6, user, REFERRAL);
+
+        assertEq(requestId, RUN_LENGTH + 2);
+
+        assertEq(spPrime.firstPendingDepositId(),            RUN_LENGTH + 3);
+        assertEq(spPrime.getPendingDepositRequests().length, 0);
+        assertEq(spPrime.pendingDepositSavingsShares(),      0);
+        assertEq(spPrime.balanceOf(user),                    expectedSharesMinted);
+        assertEq(spPrime.assetsOf(user),                     1_000_000e6 - 2);
+    }
+
+    function test_processPendingDeposits_clearsRun() external {
+        _fillHead();
+
+        assertEq(spPrime.getPendingDepositRequests().length, RUN_LENGTH);
+        assertEq(spPrime.pendingDepositSavingsShares(),      0);
+
+        _processPendingDeposits(0, RUN_LENGTH);
+
+        assertEq(spPrime.firstPendingDepositId(),                 RUN_LENGTH + 1);
+        assertEq(spPrime.getPendingDepositRequests().length,      0);
+        assertEq(spPrime.pendingDepositSavingsShares(),           0);
+        assertEq(spPrime.pendingCancelledDepositSavingsShares(),  runShares);
+        assertEq(spPrime.totalSupply(),                           spPrime.balanceOf(head));
+    }
+
+}
+
 contract RequestRedeemTests is SparkPrimeVaultTests {
 
     // Failure tests

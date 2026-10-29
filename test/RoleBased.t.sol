@@ -416,6 +416,42 @@ contract RoleBasedTests is TestBase {
     }
 
     /**********************************************************************************************/
+    /*** setMaxAutoProcessRequests tests                                                        ***/
+    /**********************************************************************************************/
+
+    function test_setMaxAutoProcessRequests_notAdmin() external {
+        vm.expectRevert(_notAuthorized(unauthorized, DEFAULT_ADMIN_ROLE));
+        vm.prank(unauthorized);
+        spPrime.setMaxAutoProcessRequests(100);
+    }
+
+    function test_setMaxAutoProcessRequests_zeroMaxAutoProcessRequests() external {
+        vm.expectRevert(ISparkPrimeVault.ZeroMaxAutoProcessRequests.selector);
+        vm.prank(admin);
+        spPrime.setMaxAutoProcessRequests(0);
+    }
+
+    function test_setMaxAutoProcessRequests() external {
+        assertEq(spPrime.maxAutoProcessRequests(), MAX_AUTO_PROCESS_REQUESTS);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.MaxAutoProcessRequestsSet(100);
+
+        vm.prank(admin);
+        spPrime.setMaxAutoProcessRequests(100);
+
+        assertEq(spPrime.maxAutoProcessRequests(), 100);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.MaxAutoProcessRequestsSet(1);
+
+        vm.prank(admin);
+        spPrime.setMaxAutoProcessRequests(1);
+
+        assertEq(spPrime.maxAutoProcessRequests(), 1);
+    }
+
+    /**********************************************************************************************/
     /*** setMaxRedeemFeeRate tests                                                              ***/
     /**********************************************************************************************/
 

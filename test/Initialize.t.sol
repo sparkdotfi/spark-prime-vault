@@ -19,7 +19,12 @@ contract InitializeTests is TestBase {
         implementation = new SparkPrimeVault();
     }
 
-    function _deploy(uint256 minDeposit, uint256 minDepositCancellation, uint256 minRedeem)
+    function _deploy(
+        uint256 minDeposit,
+        uint256 minDepositCancellation,
+        uint256 minRedeem,
+        uint256 maxAutoProcessRequests
+    )
         internal
         returns (ISparkPrimeVault)
     {
@@ -35,7 +40,8 @@ contract InitializeTests is TestBase {
                         admin,
                         minDeposit,
                         minDepositCancellation,
-                        minRedeem
+                        minRedeem,
+                        maxAutoProcessRequests
                     )
                 )
             ))
@@ -48,31 +54,41 @@ contract InitializeTests is TestBase {
 
     function test_initialize_zeroMinDeposit() external {
         vm.expectRevert(ISparkPrimeVault.ZeroMinDeposit.selector);
-        _deploy(0, 0, 0);
+        _deploy(0, 0, 0, 0);
     }
 
     function test_initialize_zeroMinDepositCancellation() external {
         vm.expectRevert(ISparkPrimeVault.ZeroMinDepositCancellation.selector);
-        _deploy(1, 0, 0);
+        _deploy(1, 0, 0, 0);
     }
 
     function test_initialize_zeroMinRedeem() external {
         vm.expectRevert(ISparkPrimeVault.ZeroMinRedeem.selector);
-        _deploy(1, 1, 0);
+        _deploy(1, 1, 0, 0);
+    }
+
+    function test_initialize_zeroMaxAutoProcessRequests() external {
+        vm.expectRevert(ISparkPrimeVault.ZeroMaxAutoProcessRequests.selector);
+        _deploy(1, 1, 1, 0);
     }
 
     function test_initialize_alreadyInitialized() external {
         vm.expectRevert(Initializable.InvalidInitialization.selector);
-        spPrime.initialize(address(spUSDC), "Spark Prime USDC", "spPrime", admin, 1, 1, 1);
+        spPrime.initialize(address(spUSDC), "Spark Prime USDC", "spPrime", admin, 1, 1, 1, 1);
     }
 
     function test_initialize_implementationDisabled() external {
         vm.expectRevert(Initializable.InvalidInitialization.selector);
-        implementation.initialize(address(spUSDC), "Spark Prime USDC", "spPrime", admin, 1, 1, 1);
+        implementation.initialize(address(spUSDC), "Spark Prime USDC", "spPrime", admin, 1, 1, 1, 1);
     }
 
     function test_initialize() external {
-        ISparkPrimeVault vault = _deploy(MINIMUM_DEPOSIT, MINIMUM_DEPOSIT_CANCELLATION, MINIMUM_REDEEM);
+        ISparkPrimeVault vault = _deploy(
+            MINIMUM_DEPOSIT,
+            MINIMUM_DEPOSIT_CANCELLATION,
+            MINIMUM_REDEEM,
+            MAX_AUTO_PROCESS_REQUESTS
+        );
 
         assertEq(vault.savings(),  address(spUSDC));
         assertEq(vault.asset(),    address(usdc));
@@ -91,6 +107,7 @@ contract InitializeTests is TestBase {
         assertEq(vault.minDeposit(),             MINIMUM_DEPOSIT);
         assertEq(vault.minDepositCancellation(), MINIMUM_DEPOSIT_CANCELLATION);
         assertEq(vault.minRedeem(),              MINIMUM_REDEEM);
+        assertEq(vault.maxAutoProcessRequests(), MAX_AUTO_PROCESS_REQUESTS);
 
         assertEq(usdc.allowance(address(vault), address(spUSDC)), type(uint256).max);
     }

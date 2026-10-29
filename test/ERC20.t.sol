@@ -28,7 +28,7 @@ contract ERC20Tests is TokenFuzzChecks {
                 address(new SparkPrimeVault()),
                 abi.encodeCall(
                     ISparkPrimeVault.initialize,
-                    (Ethereum.SPARK_VAULT_V2_SPUSDC, "Spark Prime USDC", "spPrime", admin, 1, 1, 1)
+                    (Ethereum.SPARK_VAULT_V2_SPUSDC, "Spark Prime USDC", "spPrime", admin, 1, 1, 1, 1)
                 )
             ))
         );

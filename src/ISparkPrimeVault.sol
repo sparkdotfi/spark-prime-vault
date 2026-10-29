@@ -143,6 +143,13 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     event Drip(uint192 chi, uint256 diff);
 
     /**
+     * @notice Emitted when the maximum number of deposit queue entries visited by the automatic
+     *         processing in `requestDeposit` and `requestDepositCancellation` is updated.
+     * @param  maxAutoProcessRequests The new maximum number of entries visited per request
+     */
+    event MaxAutoProcessRequestsSet(uint256 maxAutoProcessRequests);
+
+    /**
      * @notice Emitted when the maximum redeem fee rate is updated.
      * @param  fee The new maximum redeem fee rate [wad]
      */
@@ -346,6 +353,12 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /// @notice Thrown when the total assets adjustment is zero.
     error ZeroDeltaTotalAssets();
 
+    /**
+     * @notice Thrown when the maximum number of deposit queue entries visited by the automatic
+     *         processing is set to zero.
+     */
+    error ZeroMaxAutoProcessRequests();
+
     /// @notice Thrown when the minimum deposit is set to zero.
     error ZeroMinDeposit();
 
@@ -490,6 +503,13 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     function firstPendingRedeemId() external view returns (uint256);
 
     /**
+     * @notice Returns the maximum number of deposit queue entries visited by the automatic
+     *         processing in `requestDeposit` (instant fill) and `requestDepositCancellation`
+     *         (cleanup of cancelled entries at the front of the queue).
+     */
+    function maxAutoProcessRequests() external view returns (uint256);
+
+    /**
      * @notice Returns the assets of `account` that are claimable via claim().
      * @param  account The address of the recipient
      * @return assets  The amount of claimable assets [asset units]
@@ -504,8 +524,10 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @notice Initializes the vault implementation with core configuration.
      * @dev    Can only be called once. Sets the asset and decimals from `savings_`, sets
      *         chi/vsr/minVSR/maxVSR to RAY, sets rho to block.timestamp, grants DEFAULT_ADMIN_ROLE
-     *         to `admin`, sets the minimum deposit, deposit cancellation and redeem amounts, and
-     *         approves `savings_` to spend the vault's assets. All minimums must be nonzero.
+     *         to `admin`, sets the minimum deposit, deposit cancellation and redeem amounts, sets
+     *         the maximum number of deposit queue entries visited by the automatic processing, and
+     *         approves `savings_` to spend the vault's assets. All minimums and the maximum number
+     *         of automatically processed requests must be nonzero.
      * @param  savings_                The address of the ERC-4626 savings vault the deposited
      *                                 assets are held in
      * @param  name_                   The name of the vault token
@@ -517,6 +539,9 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      *                                 cancellation request [savings share units]
      * @param  minRedeem_              The minimum amount of shares for a redeem request
      *                                 [share units]
+     * @param  maxAutoProcessRequests_ The maximum number of deposit queue entries visited by the
+     *                                 automatic processing in `requestDeposit` and
+     *                                 `requestDepositCancellation`
      */
     function initialize(
         address        savings_,
@@ -525,12 +550,25 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
         address        admin,
         uint256        minDeposit_,
         uint256        minDepositCancellation_,
-        uint256        minRedeem_
+        uint256        minRedeem_,
+        uint256        maxAutoProcessRequests_
     ) external;
 
     /**********************************************************************************************/
     /*** Admin external functions                                                               ***/
     /**********************************************************************************************/
+
+    /**
+     * @notice Sets the maximum number of deposit queue entries visited by the automatic
+     *         processing in `requestDeposit` and `requestDepositCancellation`.
+     * @dev    This function can only be called by accounts with DEFAULT_ADMIN_ROLE.
+     *         The maximum must be nonzero. It bounds the gas spent walking over cancelled
+     *         entries at the front of the deposit queue in a single request, so a long run of
+     *         them can never make requests revert; the operator clears such a run with
+     *         `processPendingDeposits`.
+     * @param  maxAutoProcessRequests_ The new maximum number of entries visited per request
+     */
+    function setMaxAutoProcessRequests(uint256 maxAutoProcessRequests_) external;
 
     /**
      * @notice Sets the maximum redeem fee rate.
@@ -708,7 +746,10 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      *         minDeposit. Updates the rate accumulator (drips) before depositing.
      *         If no unfilled deposit requests are queued ahead, the request is filled immediately,
      *         up to the available capacity, in which case the returned request may already be
-     *         fully filled.
+     *         fully filled. The instant fill visits at most `maxAutoProcessRequests` entries of
+     *         the deposit queue, cancelled ones included, so the request stays queued if more
+     *         cancelled entries than that sit ahead of it until the operator clears them with
+     *         `processPendingDeposits`.
      * @param  assets_    The amount of assets to deposit [asset units]
      * @param  recipient_ The address to receive the minted shares
      * @param  referral_  The referral ID (16-bit) for tracking
@@ -724,7 +765,9 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @dev    Can only be called by the owner of the request, including while the vault is paused.
      *         `savingsShares_` must be at least minDepositCancellation and at most the unfilled
      *         savings shares of the request. If all of them are cancelled the deposit request is
-     *         removed, otherwise it keeps the rest and its position in the queue.
+     *         removed, otherwise it keeps the rest and its position in the queue. Afterwards, up
+     *         to `maxAutoProcessRequests` cancelled entries at the front of the deposit queue are
+     *         cleared, so the call never reverts because of the queue length.
      * @param  requestId_     The ID of the deposit request to cancel
      * @param  recipient_     The address to receive the assets when the cancellation is filled
      * @param  savingsShares_ The amount of savings shares to cancel [savings share units]

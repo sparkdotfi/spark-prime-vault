@@ -155,6 +155,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     mapping (address account => mapping (address spender => uint256 amount))
         public override allowance;
 
+    uint256 public override maxAutoProcessRequests;  // Max deposit queue entries visited per request
+
     modifier whenNotPaused() {
         require(!paused, IsPaused());
         _;
@@ -177,13 +179,15 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         address        admin,
         uint256        minDeposit_,
         uint256        minDepositCancellation_,
-        uint256        minRedeem_
+        uint256        minRedeem_,
+        uint256        maxAutoProcessRequests_
     )
         initializer external override
     {
         require(minDeposit_             != 0, ZeroMinDeposit());
         require(minDepositCancellation_ != 0, ZeroMinDepositCancellation());
         require(minRedeem_              != 0, ZeroMinRedeem());
+        require(maxAutoProcessRequests_ != 0, ZeroMaxAutoProcessRequests());
 
         address asset_ = IERC4626Like(savings_).asset();
 
@@ -205,6 +209,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         minDeposit             = minDeposit_;
         minDepositCancellation = minDepositCancellation_;
         minRedeem              = minRedeem_;
+        maxAutoProcessRequests = maxAutoProcessRequests_;
 
         SafeERC20.forceApprove(IERC20OZ(asset_), savings_, type(uint256).max);
     }
@@ -215,6 +220,16 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /**********************************************************************************************/
     /*** Admin external functions                                                               ***/
     /**********************************************************************************************/
+
+    function setMaxAutoProcessRequests(uint256 maxAutoProcessRequests_)
+        external
+        override
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        require(maxAutoProcessRequests_ != 0, ZeroMaxAutoProcessRequests());
+
+        emit MaxAutoProcessRequestsSet(maxAutoProcessRequests = maxAutoProcessRequests_);
+    }
 
     function setMaxRedeemFeeRate(uint256 feeRate_) external override onlyRole(DEFAULT_ADMIN_ROLE) {
         require(feeRate_ <= MAX_REDEEM_FEE, MaxFeeTooHigh());
@@ -396,9 +411,12 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         emit Referral(referral_, requestId_, msg.sender, recipient_, assets_);
         emit DepositRequest(requestId_, msg.sender, recipient_, assets_, savingsShares_);
 
-        // Fill this request, only while no nonzero requests are queued ahead.
+        // Fill this request, only while no nonzero requests are queued ahead. Best effort: the
+        // walk visits at most `maxAutoProcessRequests` entries, so the request stays queued if
+        // more cancelled entries than that sit at the front of the queue, to be cleared by the
+        // operator with `processPendingDeposits`.
         if (pendingDepositSavingsShares == savingsShares_) {
-            _processPendingDeposits(type(uint256).max, type(uint256).max);
+            _processPendingDeposits(type(uint256).max, maxAutoProcessRequests);
         }
     }
 
@@ -439,10 +457,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
         emit DepositCancellationRequest(requestId_, newRequestId_, recipient_, savingsShares_);
 
-        // Clears all empty deposits that are at the front of the queue.
-        // Prevents depositing user from potential reverts on an atomic deposit due many processable
-        // cancelled deposit requests.
-        _processPendingDeposits(0, type(uint256).max);
+        // Clears up to `maxAutoProcessRequests` empty deposits at the front of the queue, so they
+        // do not block the next instant fill. Best effort: bounding the walk keeps the gas cost of
+        // a cancellation independent of the queue length, so it never reverts because of it.
+        _processPendingDeposits(0, maxAutoProcessRequests);
     }
 
     function requestRedeem(uint256 shares_, address recipient_)

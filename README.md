@@ -24,7 +24,7 @@ The vault token is a standard ERC-20 (with EIP-2612-style `permit`, supporting b
 Deposits are two-step: the user's assets go to the savings sleeve immediately, and vault shares are minted once there is capacity.
 
 - **Request**: `requestDeposit(assets, recipient, referral)` pulls `assets` from the caller, deposits them into the savings vault (`spUSDC`) and queues a request denominated in **savings shares**. Requires `assets >= minDeposit` and that `recipient` is neither the zero address nor the vault. Emits `Referral` (with the integrator's `referral` code) and `DepositRequest`.
-- **Instant Fill**: If the new request is the only pending deposit (nothing queued ahead of it) and capacity is available, it is processed within the same transaction.
+- **Instant Fill**: If the new request is the only pending deposit (nothing queued ahead of it) and capacity is available, it is processed within the same transaction. The fill is best-effort: it visits at most `maxAutoProcessRequests` entries of the deposit queue, cancelled ones included, so the request stays queued if more cancelled entries than that sit ahead of it, until `OPERATOR_ROLE` clears them with `processPendingDeposits`.
 - **Queueing**: Otherwise the request waits in the FIFO `_depositRequests` queue. Queued depositors keep earning savings yield while waiting, since the vault holds their savings shares.
 - **Capacity**: Fills are bounded by `availableCapacity() = maxCapacity - totalSupply` (floored at 0), converted to savings shares.
 - **Processing**: `OPERATOR_ROLE` calls `processPendingDeposits(maxSavingsShares, maxRequests)`. Savings shares are converted to assets and then minted as `spPrime` to each request's `recipient` at the current `chi`. Requests can be **partially filled**; a partially filled request stays at the head of the queue.
@@ -34,7 +34,7 @@ Deposits are two-step: the user's assets go to the savings sleeve immediately, a
 
 - **Request**: The request `owner` (only) calls `requestDepositCancellation(requestId, recipient, savingsShares)` on a still-pending deposit. `savingsShares` must be at least `minDepositCancellation` and at most the request's unfilled savings shares; they move to the FIFO `_depositCancellationRequests` queue.
 - **Partial cancellation**: If all unfilled savings shares are cancelled, the deposit request is removed. Otherwise it keeps the rest and its position in the deposit queue.
-- **Cleanup**: Each cancellation also clears fully cancelled entries at the front of the deposit queue, so they do not block the next instant fill.
+- **Cleanup**: Each cancellation also clears up to `maxAutoProcessRequests` fully cancelled entries at the front of the deposit queue, so they do not block the next instant fill. The bound keeps the gas cost of a cancellation independent of the queue length, so a cancellation never reverts because of it; a longer run of cancelled entries is cleared by `OPERATOR_ROLE` with `processPendingDeposits`.
 - **Processing**: `OPERATOR_ROLE` calls `processPendingDepositCancellations(maxSavingsShares, maxRequests)`, which redeems the savings shares for the underlying asset and sends it to the `recipient`. Bounded by what the savings vault can redeem (`maxRedeem`). Because the refund is made from the queued savings shares, it includes all savings yield accrued while queued. Partial fills are supported.
 - **Updating the recipient**: The `owner` can call `updateDepositCancellationRecipient(requestId, recipient)`.
 
@@ -62,6 +62,7 @@ Redemptions are always asynchronous (there is no instant fill).
 
 - All three queues (deposit, deposit cancellation, redeem) are FIFO and are processed with `maxRequests` bounding the number of entries visited per call, so processing can be batched.
 - Each queue tracks its head (`firstPendingDepositId`, `firstPendingDepositCancellationId`, `firstPendingRedeemId`); fully filled or cancelled entries are deleted and skipped.
+- The automatic processing of the deposit queue in `requestDeposit` (instant fill) and `requestDepositCancellation` (cleanup) visits at most `maxAutoProcessRequests` entries, so a run of cancelled entries at the front of the queue, which anyone can grow by repeatedly depositing and cancelling behind a live entry, can never make these calls run out of gas. Such a run is cleared with `processPendingDeposits(0, maxRequests)`.
 - Aggregate pending amounts are tracked in `pendingDepositSavingsShares`, `pendingCancelledDepositSavingsShares`, and `pendingRedeemShares`.
 - Pending requests can be inspected with `getPending{Deposit,DepositCancellation,Redeem}Request(requestId)` and `getPending...Requests()` (full pending list) or `getPending...Requests(startId, length)` (`length` entries from `startId`; an empty array if `length` is zero; reverts if `startId` is before the queue head or the range extends past the end of the queue).
 
@@ -93,6 +94,7 @@ The vault is designed for Spark Vault V2 savings vaults (e.g., `spUSDC`) and rel
 | `minDeposit`             | `setMinDeposit` (`DEFAULT_ADMIN_ROLE`)             | Minimum assets per `requestDeposit`. Nonzero.                          |
 | `minDepositCancellation` | `setMinDepositCancellation` (`DEFAULT_ADMIN_ROLE`) | Minimum savings shares per `requestDepositCancellation`. Nonzero.      |
 | `minRedeem`              | `setMinRedeem` (`DEFAULT_ADMIN_ROLE`)              | Minimum shares per `requestRedeem`   |
+| `maxAutoProcessRequests` | `setMaxAutoProcessRequests` (`DEFAULT_ADMIN_ROLE`) | Maximum deposit queue entries visited by the automatic processing in `requestDeposit` and `requestDepositCancellation`. Nonzero. |
 | `minVSR`/`maxVSR`        | `setVSRBounds` (`DEFAULT_ADMIN_ROLE`)              | `RAY <= minVSR <= maxVSR <= MAX_VSR`.                                  |
 | `vsr`                    | `setVSR` (`OPERATOR_ROLE`)                         | Must be within `[minVSR, maxVSR]`; drips before updating.              |
 | `maxRedeemFeeRate`       | `setMaxRedeemFeeRate` (`DEFAULT_ADMIN_ROLE`)       | Wad; capped by the `MAX_REDEEM_FEE` constant (1%).                     |
@@ -104,7 +106,7 @@ The vault is designed for Spark Vault V2 savings vaults (e.g., `spUSDC`) and rel
 
 | Role                         | Permitted Actions                                                                                                            | Description                                                                                                                           |
 | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| **`DEFAULT_ADMIN_ROLE`**     | `setMaxRedeemFeeRate`, `setMinDeposit`, `setMinDepositCancellation`, `setMinRedeem`, `setVSRBounds`, `_authorizeUpgrade`     | Governs vault parameters, bounds, and contract upgrades.                                                                              |
+| **`DEFAULT_ADMIN_ROLE`**     | `setMaxAutoProcessRequests`, `setMaxRedeemFeeRate`, `setMinDeposit`, `setMinDepositCancellation`, `setMinRedeem`, `setVSRBounds`, `_authorizeUpgrade` | Governs vault parameters, bounds, and contract upgrades.                                                                              |
 | **`LOSS_MANAGER_ROLE`**      | `adjustTotalAssets`                                                                                                          | Manually changes `totalAssets` (and by extension `chi`) to realize gains or losses (only while paused).                               |
 | **`OPERATOR_ROLE`**          | `setCapacity`, `setVSR`                                                                                                      | Sets the deposit capacity and the Vault Savings Rate within configured bounds (`[minVSR, maxVSR]`).                                   |
 | **`OPERATOR_ROLE`**          | `processPendingDeposits`, `processPendingDepositCancellations`, `processPendingRedeems`                                      | Settles the deposit, deposit-cancellation, and redeem queues (deposits and redeems only while unpaused).                              |
