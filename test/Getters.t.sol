@@ -177,6 +177,15 @@ contract GetPendingDepositRequestTests is GettersTestBase {
         spPrime.getPendingDepositRequests(1, 1);
     }
 
+    function test_getPendingDepositRequests_startIdTooLargeBoundary() external {
+        _requestDeposit(owner1, recipient1, 1_000e6);
+
+        vm.expectRevert(ISparkPrimeVault.StartIdTooLarge.selector);
+        spPrime.getPendingDepositRequests(2, 0);
+
+        spPrime.getPendingDepositRequests(1, 0);
+    }
+
     function test_getPendingDepositRequests_lengthTooLargeBoundary() external {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
@@ -376,6 +385,17 @@ contract GetPendingDepositCancellationRequestTests is GettersTestBase {
         spPrime.getPendingDepositCancellationRequests(1, 1);
     }
 
+    function test_getPendingDepositCancellationRequests_startIdTooLargeBoundary() external {
+        _requestDeposit(owner1, recipient1, 1_000e6);
+
+        _requestDepositCancellation(owner1, 0, recipient1, spUSDC.convertToShares(1_000e6));
+
+        vm.expectRevert(ISparkPrimeVault.StartIdTooLarge.selector);
+        spPrime.getPendingDepositCancellationRequests(2, 0);
+
+        spPrime.getPendingDepositCancellationRequests(1, 0);
+    }
+
     function test_getPendingDepositCancellationRequests_lengthTooLargeBoundary() external {
         _requestDeposit(owner1, recipient1, 1_000e6);
         _requestDeposit(owner2, recipient2, 2_000e6);
@@ -570,6 +590,17 @@ contract GetPendingRedeemRequestTests is GettersTestBase {
         spPrime.getPendingRedeemRequests(0, 1);
 
         spPrime.getPendingRedeemRequests(1, 1);
+    }
+
+    function test_getPendingRedeemRequests_startIdTooLargeBoundary() external {
+        _requestDeposit(owner1, 1_000e6);
+
+        _requestRedeem(owner1, recipient1, spPrime.balanceOf(owner1));
+
+        vm.expectRevert(ISparkPrimeVault.StartIdTooLarge.selector);
+        spPrime.getPendingRedeemRequests(2, 0);
+
+        spPrime.getPendingRedeemRequests(1, 0);
     }
 
     function test_getPendingRedeemRequests_lengthTooLargeBoundary() external {
