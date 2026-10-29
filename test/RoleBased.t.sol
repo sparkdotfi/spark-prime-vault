@@ -383,6 +383,15 @@ contract RoleBasedTests is TestBase {
         spPrime.setCapacity(2_000_000e6);
     }
 
+    function test_setCapacity_capacityTooHighBoundary() external {
+        vm.expectRevert(ISparkPrimeVault.CapacityTooHigh.selector);
+        vm.prank(operator);
+        spPrime.setCapacity(uint256(type(uint128).max) + 1);
+
+        vm.prank(operator);
+        spPrime.setCapacity(type(uint128).max);
+    }
+
     function test_setCapacity() external {
         assertEq(spPrime.maxCapacity(),       100_000_000e6);
         assertEq(spPrime.availableCapacity(), 100_000_000e6);
@@ -397,13 +406,13 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.availableCapacity(), 2_000_000e6);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.CapacitySet(operator, type(uint256).max);
+        emit ISparkPrimeVault.CapacitySet(operator, type(uint128).max);
 
         vm.prank(operator);
-        spPrime.setCapacity(type(uint256).max);
+        spPrime.setCapacity(type(uint128).max);
 
-        assertEq(spPrime.maxCapacity(),       type(uint256).max);
-        assertEq(spPrime.availableCapacity(), type(uint256).max);
+        assertEq(spPrime.maxCapacity(),       type(uint128).max);
+        assertEq(spPrime.availableCapacity(), type(uint128).max);
 
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.CapacitySet(operator, 0);
