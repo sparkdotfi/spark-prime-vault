@@ -872,7 +872,7 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @dev    Includes fully cancelled requests, which have zero shares.
      * @return requests_ The deposit requests
      */
-    function getPendingDepositRequests() external view returns (Request[] memory requests_);
+    function pendingDepositRequests() external view returns (Request[] memory requests_);
 
     /**
      * @notice Returns `length_` deposit requests, starting from the request with ID `startId_`.
@@ -913,7 +913,7 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      *         of the queue.
      * @return requests_ The deposit cancellation requests
      */
-    function getPendingDepositCancellationRequests()
+    function pendingDepositCancellationRequests()
         external
         view
         returns (Request[] memory requests_);
@@ -954,7 +954,7 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @notice Returns the redeem requests from the first pending request to the end of the queue.
      * @return requests_ The redeem requests
      */
-    function getPendingRedeemRequests() external view returns (Request[] memory requests_);
+    function pendingRedeemRequests() external view returns (Request[] memory requests_);
 
     /**
      * @notice Returns `length_` redeem requests, starting from the request with ID `startId_`.

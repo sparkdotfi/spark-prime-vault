@@ -686,7 +686,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         return (request_.owner, request_.recipient, request_.shares);
     }
 
-    function getPendingDepositRequests()
+    function pendingDepositRequests()
         external
         view
         override
@@ -739,7 +739,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         return (request_.owner, request_.recipient, request_.shares);
     }
 
-    function getPendingDepositCancellationRequests()
+    function pendingDepositCancellationRequests()
         external
         view
         override
@@ -791,7 +791,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         return (request_.owner, request_.recipient, request_.shares);
     }
 
-    function getPendingRedeemRequests()
+    function pendingRedeemRequests()
         external
         view
         override
