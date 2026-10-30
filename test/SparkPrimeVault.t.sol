@@ -940,6 +940,35 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _assertDepositRequest(9, ali, ali, 800_000e6 - 4);
     }
 
+    function test_processPendingDeposits_zeroBudgetSkipsCapacityConversion() external {
+        // Fill Deposit Requests 3 and 4, leaving cancelled Deposit Request 5 at the front.
+        vm.prank(operator);
+        spPrime.processPendingDeposits(type(uint256).max, 2);
+
+        assertEq(spPrime.firstPendingDepositId(), 5);
+
+        uint256 totalSupply                 = spPrime.totalSupply();
+        uint256 pendingDepositSavingsShares = spPrime.pendingDepositSavingsShares();
+
+        // A zero budget must not convert the available capacity into savings shares.
+        vm.expectCall(address(spUSDC), abi.encodeWithSelector(ISparkVaultLike.convertToShares.selector), 0);
+
+        vm.prank(operator);
+        spPrime.processPendingDeposits(0, type(uint256).max);
+
+        // Cancelled Deposit Request 5 is cleared, processing stops at Deposit Request 6.
+        assertEq(spPrime.firstPendingDepositId(), 6);
+
+        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
+        spPrime.getPendingDepositRequest(5);
+
+        _assertDepositRequest(6, ali, ali, 700_000e6 - 1);
+
+        // Nothing is filled.
+        assertEq(spPrime.totalSupply(),                 totalSupply);
+        assertEq(spPrime.pendingDepositSavingsShares(), pendingDepositSavingsShares);
+    }
+
 }
 
 contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {

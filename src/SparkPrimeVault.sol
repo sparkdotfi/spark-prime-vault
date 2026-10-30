@@ -291,6 +291,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /**********************************************************************************************/
 
     function setCapacity(uint256 capacity_) external override onlyRole(OPERATOR_ROLE) {
+        require(capacity_ <= type(uint128).max, CapacityTooHigh());
+
         emit CapacitySet(msg.sender, maxCapacity = capacity_);
     }
 
@@ -899,7 +901,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         drip();
 
         // Convert the maximum admissible assets into savings shares denomination
-        uint256 remaining_ = _min(
+        // Skipped with a zero budget so cleanup never depends on capacity.
+        uint256 remaining_ = maxSavingsShares_ == 0 ? 0 : _min(
             maxSavingsShares_,
             IERC4626Like(savings).convertToShares(convertToAssets(availableCapacity()))
         );
