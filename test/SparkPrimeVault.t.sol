@@ -34,19 +34,19 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         vm.expectRevert(ISparkPrimeVault.IsPaused.selector);
         vm.prank(user);
-        spPrime.requestDeposit(100e6, user, 0);
+        spPrime.requestDeposit(100e6, user, 0, 0);
     }
 
     function test_requestDeposit_zeroRecipient() external {
         vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
         vm.prank(user);
-        spPrime.requestDeposit(100e6, address(0), 0);
+        spPrime.requestDeposit(100e6, address(0), 0, 0);
     }
 
     function test_requestDeposit_vaultIsRecipient() external {
         vm.expectRevert(ISparkPrimeVault.VaultIsRecipient.selector);
         vm.prank(user);
-        spPrime.requestDeposit(100e6, address(spPrime), 0);
+        spPrime.requestDeposit(100e6, address(spPrime), 0, 0);
     }
 
     function test_requestDeposit_belowMinDepositBoundary() external {
@@ -57,10 +57,10 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         vm.expectRevert(ISparkPrimeVault.BelowMinDeposit.selector);
         vm.prank(user);
-        spPrime.requestDeposit(MINIMUM_DEPOSIT - 1, user, 0);
+        spPrime.requestDeposit(MINIMUM_DEPOSIT - 1, user, 0, 0);
 
         vm.prank(user);
-        spPrime.requestDeposit(MINIMUM_DEPOSIT, user, 0);
+        spPrime.requestDeposit(MINIMUM_DEPOSIT, user, 0, 0);
     }
 
     function test_requestDeposit_insufficientAllowanceBoundary() external {
@@ -71,10 +71,10 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         vm.prank(user);
         vm.expectRevert("ERC20: transfer amount exceeds allowance");
-        spPrime.requestDeposit(1_000_000e6 + 1, user, 0);
+        spPrime.requestDeposit(1_000_000e6 + 1, user, 0, 0);
 
         vm.prank(user);
-        spPrime.requestDeposit(1_000_000e6, user, 0);
+        spPrime.requestDeposit(1_000_000e6, user, 0, 0);
     }
 
     function test_requestDeposit_insufficientBalanceBoundary() external {
@@ -85,10 +85,10 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         vm.prank(user);
         vm.expectRevert("ERC20: transfer amount exceeds balance");
-        spPrime.requestDeposit(1_000_000e6 + 1, user, 0);
+        spPrime.requestDeposit(1_000_000e6 + 1, user, 0, 0);
 
         vm.prank(user);
-        spPrime.requestDeposit(1_000_000e6, user, 0);
+        spPrime.requestDeposit(1_000_000e6, user, 0, 0);
     }
 
     // Success tests
@@ -149,7 +149,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         emit ISparkPrimeVault.Deposit(1, user, user, expectedSavingsSharesConsumed, expectedConvertedAssets, expectedSharesMinted);
 
         vm.prank(user);
-        uint256 requestId = spPrime.requestDeposit(800_000e6, user, REFERRAL);
+        uint256 requestId = spPrime.requestDeposit(800_000e6, user, REFERRAL, 0);
 
         assertEq(requestId, 1);
 
@@ -222,7 +222,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         emit ISparkPrimeVault.DepositRequest(1, user, user, 800_000e6, expectedSavingsSharesMinted);
 
         vm.prank(user);
-        uint256 requestId = spPrime.requestDeposit(800_000e6, user, REFERRAL);
+        uint256 requestId = spPrime.requestDeposit(800_000e6, user, REFERRAL, 0);
 
         assertEq(requestId, 1);
 
@@ -233,6 +233,93 @@ contract RequestDepositTests is SparkPrimeVaultTests {
         vaultState.depositRequests.pendingShareValue = 800_000e6 - 1;
         vaultState.depositRequests.length            = 1;
         vaultState.depositRequests.firstPendingId    = 1;
+
+        vaultBalances.savingsShareValue += 800_000e6;
+
+        _assertVaultState();
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+    }
+
+    function test_requestDeposit_tombstoneBoundary() external {
+        _setCapacity(0);
+
+        _requestDeposit(user, 1_000e6);
+        _requestDeposit(user, 1_000e6);
+        _requestDeposit(user, 1_000e6);
+
+        _requestDepositCancellation(user, 0, user, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(user, 1, user, spUSDC.convertToShares(1_000e6));
+        _requestDepositCancellation(user, 2, user, spUSDC.convertToShares(1_000e6));
+
+        _setCapacity(spPrime.convertToShares(1_500_000e6));
+
+        vaultState.rho                    = vm.getBlockTimestamp();
+        vaultState.chi                    = 1.049999999999999999961070145e27;
+        vaultState.totalAssets            = 1_000_000e6 - 2;
+        vaultState.availableCapacityValue = 500_000e6;
+        vaultState.availableLiquidAssets  = 1_000_000e6 - 1;
+
+        vaultState.depositRequests.pendingShareValue = 0;
+        vaultState.depositRequests.length            = 0;
+        vaultState.depositRequests.firstPendingId    = 1;
+
+        AccountBalances memory userBalances = AccountBalances({
+            account           : user,
+            assets            : 0,
+            shareValue        : 1_000_000e6 - 2,
+            savingsShareValue : 0,
+            claimableAssets   : 0
+        });
+
+        AccountBalances memory vaultBalances = AccountBalances({
+            account           : address(spPrime),
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 1_000_000e6 - 1,
+            claimableAssets   : 0
+        });
+
+        _assertVaultState();
+
+        _assertAccountBalances(userBalances);
+        _assertAccountBalances(vaultBalances);
+
+        deal(address(usdc), user, 800_000e6);
+
+        vm.prank(user);
+        usdc.approve(address(spPrime), 800_000e6);
+
+        uint256 expectedConvertedAssets       = 500_000e6 - 1;
+        uint256 expectedSavingsSharesMinted   = spUSDC.convertToShares(800_000e6);
+        uint256 expectedSavingsSharesConsumed = spUSDC.convertToShares(expectedConvertedAssets) + 1;
+        uint256 expectedSharesMinted          = spPrime.convertToShares(expectedConvertedAssets);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.Referral(REFERRAL, 1, user, user, 800_000e6);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.DepositRequest(1, user, user, 800_000e6, expectedSavingsSharesMinted);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.Deposit(1, user, user, expectedSavingsSharesConsumed, expectedConvertedAssets, expectedSharesMinted);
+
+        vm.prank(user);
+        uint256 requestId = spPrime.requestDeposit(800_000e6, user, REFERRAL, 0);
+
+        assertEq(requestId, 1);
+
+        _assertDepositRequest(1, user, user, 300_000e6);
+
+        vaultState.totalAssets            += 500_000e6 - 1;
+        vaultState.availableCapacityValue  = 2;
+        vaultState.availableLiquidAssets  += 800_000e6;
+
+        vaultState.depositRequests.pendingShareValue += 300_000e6;
+        vaultState.depositRequests.length             = 1;
+        vaultState.depositRequests.firstPendingId     = 1;
+
+        userBalances.shareValue += 500_000e6 - 1;
 
         vaultBalances.savingsShareValue += 800_000e6;
 

@@ -782,12 +782,19 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      *         rate accumulator (via `drip()`) before depositing. If no unfilled deposit requests
      *         are queued ahead, the request is filled immediately, up to the available capacity, in
      *         which case the returned request may already be fully filled.
-     * @param  assets_    The amount of assets to deposit [asset units]
-     * @param  recipient_ The address to receive the minted shares
-     * @param  referral_  The referral ID (16-bit) for tracking
-     * @return requestId_ The ID of the deposit request
+     * @param  assets_                   The amount of assets to deposit [asset units]
+     * @param  recipient_                The address to receive the minted shares
+     * @param  referral_                 The referral ID (16-bit) for tracking
+     * @param  maxEmptyRequestsToProcess The maximum number of empty deposit requests to process
+     *                                   ahead of this request
+     * @return requestId_                The ID of the deposit request
      */
-    function requestDeposit(uint256 assets_, address recipient_, uint16 referral_)
+    function requestDeposit(
+        uint256 assets_,
+        address recipient_,
+        uint16  referral_,
+        uint256 maxEmptyRequestsToProcess
+    )
         external
         returns (uint256 requestId_);
 

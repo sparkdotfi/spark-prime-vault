@@ -365,7 +365,12 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /*** Request functions                                                                      ***/
     /**********************************************************************************************/
 
-    function requestDeposit(uint256 assets_, address recipient_, uint16 referral_)
+    function requestDeposit(
+        uint256 assets_,
+        address recipient_,
+        uint16  referral_,
+        uint256 maxEmptyRequestsToProcess
+    )
         external
         override
         whenNotPaused
@@ -392,8 +397,13 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         emit Referral(referral_, requestId_, msg.sender, recipient_, assets_);
         emit DepositRequest(requestId_, msg.sender, recipient_, assets_, savingsShares_);
 
-        // Fill this request, only while no nonzero requests are queued ahead.
-        if (pendingDepositSavingsShares == savingsShares_) {
+        // Fill this request only if:
+        //   - no nonzero requests are queued ahead, and
+        //   - no more than `maxEmptyRequestsToProcess` zero requests are queued ahead
+        if (
+            pendingDepositSavingsShares == savingsShares_ &&
+            pendingDepositRequestsLength() <= maxEmptyRequestsToProcess + 1
+        ) {
             _processPendingDeposits(type(uint256).max, type(uint256).max);
         }
     }
@@ -434,11 +444,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         }
 
         emit DepositCancellationRequest(requestId_, newRequestId_, recipient_, savingsShares_);
-
-        // Clears all empty deposits that are at the front of the queue.
-        // Prevents depositing user from potential reverts on an atomic deposit due many processable
-        // cancelled deposit requests.
-        _processPendingDeposits(0, type(uint256).max);
     }
 
     function requestRedeem(uint256 shares_, address recipient_)
@@ -664,7 +669,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /*** Request getter functions                                                               ***/
     /**********************************************************************************************/
 
-    function pendingDepositRequestsLength() external view override returns (uint256) {
+    function pendingDepositRequestsLength() public view override returns (uint256) {
         return _depositRequests.length - firstPendingDepositId;
     }
 

@@ -220,7 +220,7 @@ abstract contract TestBase is Test {
 
         vm.startPrank(account);
         usdc.approve(address(spPrime), assets);
-        requestId = spPrime.requestDeposit(assets, recipient, 0);
+        requestId = spPrime.requestDeposit(assets, recipient, 0, type(uint256).max);
         vm.stopPrank();
     }
 
