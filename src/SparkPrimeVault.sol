@@ -666,6 +666,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /*** Request getter functions                                                               ***/
     /**********************************************************************************************/
 
+    function pendingDepositRequestsLength() external view override returns (uint256) {
+        return _depositRequests.length - firstPendingDepositId;
+    }
+
     function getPendingDepositRequest(uint256 requestId_)
         external
         view
@@ -682,7 +686,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         return (request_.owner, request_.recipient, request_.shares);
     }
 
-    function getPendingDepositRequests()
+    function pendingDepositRequests()
         external
         view
         override
@@ -703,14 +707,19 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         override
         returns (Request[] memory requests_)
     {
-        require(startId_ >= firstPendingDepositId,              StartIdTooSmall());
-        require(length_  <= _depositRequests.length - startId_, LengthTooLarge());
+        require(startId_ >= firstPendingDepositId,   StartIdTooSmall());
+        require(startId_ <= _depositRequests.length, StartIdTooLarge());
 
+        length_   = _min(length_, _depositRequests.length - startId_);
         requests_ = new Request[](length_);
 
         for (uint256 i_ = startId_; i_ < startId_ + length_; ++i_) {
             requests_[i_ - startId_] = _depositRequests[i_];
         }
+    }
+
+    function pendingDepositCancellationRequestsLength() external view override returns (uint256) {
+        return _depositCancellationRequests.length - firstPendingDepositCancellationId;
     }
 
     function getPendingDepositCancellationRequest(uint256 requestId_)
@@ -730,7 +739,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         return (request_.owner, request_.recipient, request_.shares);
     }
 
-    function getPendingDepositCancellationRequests()
+    function pendingDepositCancellationRequests()
         external
         view
         override
@@ -751,14 +760,19 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         override
         returns (Request[] memory requests_)
     {
-        require(startId_ >= firstPendingDepositCancellationId,              StartIdTooSmall());
-        require(length_  <= _depositCancellationRequests.length - startId_, LengthTooLarge());
+        require(startId_ >= firstPendingDepositCancellationId,   StartIdTooSmall());
+        require(startId_ <= _depositCancellationRequests.length, StartIdTooLarge());
 
+        length_   = _min(length_, _depositCancellationRequests.length - startId_);
         requests_ = new Request[](length_);
 
         for (uint256 i_ = startId_; i_ < startId_ + length_; ++i_) {
             requests_[i_ - startId_] = _depositCancellationRequests[i_];
         }
+    }
+
+    function pendingRedeemRequestsLength() external view override returns (uint256) {
+        return _redeemRequests.length - firstPendingRedeemId;
     }
 
     function getPendingRedeemRequest(uint256 requestId_)
@@ -777,7 +791,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         return (request_.owner, request_.recipient, request_.shares);
     }
 
-    function getPendingRedeemRequests()
+    function pendingRedeemRequests()
         external
         view
         override
@@ -798,9 +812,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         override
         returns (Request[] memory requests_)
     {
-        require(startId_ >= firstPendingRedeemId,              StartIdTooSmall());
-        require(length_  <= _redeemRequests.length - startId_, LengthTooLarge());
+        require(startId_ >= firstPendingRedeemId,   StartIdTooSmall());
+        require(startId_ <= _redeemRequests.length, StartIdTooLarge());
 
+        length_   = _min(length_, _redeemRequests.length - startId_);
         requests_ = new Request[](length_);
 
         for (uint256 i_ = startId_; i_ < startId_ + length_; ++i_) {

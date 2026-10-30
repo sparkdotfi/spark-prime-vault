@@ -348,7 +348,7 @@ abstract contract TestBase is Test {
         );
 
         assertEq(
-            spPrime.getPendingDepositRequests().length,
+            spPrime.pendingDepositRequests().length,
             vaultState.depositRequests.length,
             "vaultState.depositRequests.length"
         );
@@ -369,7 +369,7 @@ abstract contract TestBase is Test {
         );
 
         assertEq(
-            spPrime.getPendingDepositCancellationRequests().length,
+            spPrime.pendingDepositCancellationRequests().length,
             vaultState.depositCancellationRequests.length,
             "vaultState.depositCancellationRequests.length"
         );
@@ -390,7 +390,7 @@ abstract contract TestBase is Test {
         );
 
         assertEq(
-            spPrime.getPendingRedeemRequests().length,
+            spPrime.pendingRedeemRequests().length,
             vaultState.redeemRequests.length,
             "vaultState.redeemRequests.length"
         );
