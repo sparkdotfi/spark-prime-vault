@@ -19,12 +19,14 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @param  owner     The address that created the request and can update its recipient or, for
      *                   deposit requests, cancel it.
      * @param  recipient The address that receives the proceeds when the request is filled.
+     * @param  timestamp The timestamp of the request [unix epoch time].
      * @param  shares    The unfilled shares of the request, savings shares for deposit and deposit
      *                   cancellation requests, vault shares for redeem requests.
      */
     struct Request {
         address owner;
         address recipient;
+        uint64  timestamp;
         uint256 shares;
     }
 
@@ -917,12 +919,13 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @param  requestId_ The ID of the deposit request
      * @return owner_     The owner of the request
      * @return recipient_ The address to receive the shares when the request is filled
+     * @return timestamp_ The timestamp of the request [unix epoch time]
      * @return shares_    The unfilled savings shares of the request [savings share units]
      */
     function getPendingDepositRequest(uint256 requestId_)
         external
         view
-        returns (address owner_, address recipient_, uint256 shares_);
+        returns (address owner_, address recipient_, uint64 timestamp_, uint256 shares_);
 
     /**
      * @notice Returns the deposit requests from the first pending request to the end of the queue.
@@ -958,12 +961,13 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @param  requestId_ The ID of the deposit cancellation request
      * @return owner_     The owner of the request
      * @return recipient_ The address to receive the assets when the request is filled
+     * @return timestamp_ The timestamp of the request [unix epoch time]
      * @return shares_    The unfilled savings shares of the request [savings share units]
      */
     function getPendingDepositCancellationRequest(uint256 requestId_)
         external
         view
-        returns (address owner_, address recipient_, uint256 shares_);
+        returns (address owner_, address recipient_, uint64 timestamp_, uint256 shares_);
 
     /**
      * @notice Returns the deposit cancellation requests from the first pending request to the end
@@ -1000,12 +1004,13 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @param  requestId_ The ID of the redeem request
      * @return owner_     The owner of the request
      * @return recipient_ The address to receive the assets when the request is filled
+     * @return timestamp_ The timestamp of the request [unix epoch time]
      * @return shares_    The unfilled vault shares of the request [share units]
      */
     function getPendingRedeemRequest(uint256 requestId_)
         external
         view
-        returns (address owner_, address recipient_, uint256 shares_);
+        returns (address owner_, address recipient_, uint64 timestamp_, uint256 shares_);
 
     /**
      * @notice Returns the redeem requests from the first pending request to the end of the queue.
