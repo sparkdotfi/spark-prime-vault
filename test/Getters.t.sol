@@ -53,6 +53,15 @@ contract PendingDepositRequestTests is GettersTestBase {
         _requestDeposit(owner1, recipient1, 1_000e6);
 
         assertEq(spPrime.pendingDepositRequestsLength(), 2);
+
+        _setCapacity(VAULT_CAPACITY);
+        _processPendingDeposits(type(uint256).max, 1);
+
+        assertEq(spPrime.pendingDepositRequestsLength(), 1);
+
+        _processPendingDeposits(type(uint256).max, 1);
+
+        assertEq(spPrime.pendingDepositRequestsLength(), 0);
     }
 
     /**********************************************************************************************/
@@ -261,6 +270,14 @@ contract PendingDepositCancellationRequestTests is GettersTestBase {
         _requestDepositCancellation(owner2, 1, recipient2, spUSDC.convertToShares(2_000e6));
 
         assertEq(spPrime.pendingDepositCancellationRequestsLength(), 2);
+
+        _processPendingDepositCancellations(type(uint256).max, 1);
+
+        assertEq(spPrime.pendingDepositCancellationRequestsLength(), 1);
+
+        _processPendingDepositCancellations(type(uint256).max, 1);
+
+        assertEq(spPrime.pendingDepositCancellationRequestsLength(), 0);
     }
 
     /**********************************************************************************************/
@@ -491,6 +508,14 @@ contract PendingRedeemRequestTests is GettersTestBase {
         _requestRedeem(owner2, spPrime.balanceOf(owner2));
 
         assertEq(spPrime.pendingPendingRedeemRequestsLength(), 2);
+
+        _processPendingRedeems(type(uint256).max, 1);
+
+        assertEq(spPrime.pendingPendingRedeemRequestsLength(), 1);
+
+        _processPendingRedeems(type(uint256).max, 1);
+
+        assertEq(spPrime.pendingPendingRedeemRequestsLength(), 0);
     }
 
     /**********************************************************************************************/
