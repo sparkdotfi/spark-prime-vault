@@ -935,7 +935,7 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
         returns (Request[] memory requests_);
 
     /// @notice Gets the number of pending redeem requests that have not yet been processed.
-    function pendingPendingRedeemRequestsLength() external view returns (uint256);
+    function pendingRedeemRequestsLength() external view returns (uint256);
 
     /**
      * @notice Returns a pending redeem request.

@@ -490,32 +490,32 @@ contract PendingDepositCancellationRequestTests is GettersTestBase {
 contract PendingRedeemRequestTests is GettersTestBase {
 
     /**********************************************************************************************/
-    /*** pendingPendingRedeemRequestsLength                                                     ***/
+    /*** pendingRedeemRequestsLength                                                            ***/
     /**********************************************************************************************/
 
-    function test_pendingPendingRedeemRequestsLength() external {
+    function test_pendingRedeemRequestsLength() external {
         _setCapacity(VAULT_CAPACITY);
 
         _requestDeposit(owner1, 1_000e6);
         _requestDeposit(owner2, 2_000e6);
 
-        assertEq(spPrime.pendingPendingRedeemRequestsLength(), 0);
+        assertEq(spPrime.pendingRedeemRequestsLength(), 0);
 
         _requestRedeem(owner1, spPrime.balanceOf(owner1));
 
-        assertEq(spPrime.pendingPendingRedeemRequestsLength(), 1);
+        assertEq(spPrime.pendingRedeemRequestsLength(), 1);
 
         _requestRedeem(owner2, spPrime.balanceOf(owner2));
 
-        assertEq(spPrime.pendingPendingRedeemRequestsLength(), 2);
+        assertEq(spPrime.pendingRedeemRequestsLength(), 2);
 
         _processPendingRedeems(type(uint256).max, 1);
 
-        assertEq(spPrime.pendingPendingRedeemRequestsLength(), 1);
+        assertEq(spPrime.pendingRedeemRequestsLength(), 1);
 
         _processPendingRedeems(type(uint256).max, 1);
 
-        assertEq(spPrime.pendingPendingRedeemRequestsLength(), 0);
+        assertEq(spPrime.pendingRedeemRequestsLength(), 0);
     }
 
     /**********************************************************************************************/

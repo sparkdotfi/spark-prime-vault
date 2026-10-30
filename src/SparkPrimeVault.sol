@@ -771,7 +771,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         }
     }
 
-    function pendingPendingRedeemRequestsLength() external view override returns (uint256) {
+    function pendingRedeemRequestsLength() external view override returns (uint256) {
         return _redeemRequests.length - firstPendingRedeemId;
     }
 
