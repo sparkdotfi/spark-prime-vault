@@ -110,7 +110,7 @@ contract InitializeTests is TestBase {
         assertTrue(vault.hasRole(DEFAULT_ADMIN_ROLE, admin));
 
         assertEq(vault.chi(),    RAY);
-        assertEq(vault.rho(),    block.timestamp);
+        assertEq(vault.rho(),    vm.getBlockTimestamp());
         assertEq(vault.vsr(),    RAY);
         assertEq(vault.minVSR(), RAY);
         assertEq(vault.maxVSR(), RAY);
