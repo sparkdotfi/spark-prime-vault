@@ -34,9 +34,10 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
 
     /**
      * @notice Emitted when the maximum capacity is updated.
+     * @param  caller   The address that updated the maximum capacity
      * @param  capacity The new maximum capacity [share units]
      */
-    event CapacitySet(uint256 capacity);
+    event CapacitySet(address indexed caller, uint256 capacity);
 
     /**
      * @notice Emitted when claimable assets are transferred to their recipient.
@@ -144,30 +145,73 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
 
     /**
      * @notice Emitted when the maximum redeem fee rate is updated.
-     * @param  fee The new maximum redeem fee rate [wad]
+     * @param  caller The address that updated the maximum redeem fee rate
+     * @param  fee    The new maximum redeem fee rate [wad]
      */
-    event MaxRedeemFeeRateSet(uint256 fee);
+    event MaxRedeemFeeRateSet(address indexed caller, uint256 fee);
 
     /**
      * @notice Emitted when the minimum deposit cancellation is updated.
+     * @param  caller                 The address that updated the minimum deposit cancellation
      * @param  minDepositCancellation The new minimum deposit cancellation [savings share units]
      */
-    event MinDepositCancellationSet(uint256 minDepositCancellation);
+    event MinDepositCancellationSet(address indexed caller, uint256 minDepositCancellation);
 
     /**
      * @notice Emitted when the minimum deposit is updated.
+     * @param  caller     The address that updated the minimum deposit
      * @param  minDeposit The new minimum deposit [asset units]
      */
-    event MinDepositSet(uint256 minDeposit);
+    event MinDepositSet(address indexed caller, uint256 minDeposit);
 
     /**
      * @notice Emitted when the minimum redeem is updated.
+     * @param  caller    The address that updated the minimum redeem
      * @param  minRedeem The new minimum redeem [share units]
      */
-    event MinRedeemSet(uint256 minRedeem);
+    event MinRedeemSet(address indexed caller, uint256 minRedeem);
 
-    /// @notice Emitted when the vault is paused.
-    event Paused();
+    /**
+     * @notice Emitted when the vault is paused.
+     * @param  caller The address that paused the vault
+     */
+    event Paused(address indexed caller);
+
+    /**
+     * @notice Emitted when pending deposits are processed.
+     * @param  caller           The address that processed the pending deposits
+     * @param  maxSavingsShares The maximum amount of savings shares processed
+     * @param  maxRequests      The maximum number of requests processed
+     */
+    event ProcessPendingDeposits(
+        address indexed caller,
+        uint256         maxSavingsShares,
+        uint256         maxRequests
+    );
+
+    /**
+     * @notice Emitted when pending deposit cancellations are processed.
+     * @param  caller           The address that processed the pending deposit cancellations
+     * @param  maxSavingsShares The maximum amount of savings shares processed
+     * @param  maxRequests      The maximum number of requests processed
+     */
+    event ProcessPendingDepositCancellations(
+        address indexed caller,
+        uint256         maxSavingsShares,
+        uint256         maxRequests
+    );
+
+    /**
+     * @notice Emitted when pending redemptions are processed.
+     * @param  caller           The address that processed the pending redemptions
+     * @param  maxShares        The maximum amount of shares processed
+     * @param  maxRequests      The maximum number of requests processed
+     */
+    event ProcessPendingRedeems(
+        address indexed caller,
+        uint256         maxShares,
+        uint256         maxRequests
+    );
 
     /**
      * @notice Emitted when a redeem request is filled, fully or partially.
@@ -190,9 +234,10 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
 
     /**
      * @notice Emitted when the redeem fee rate is updated.
-     * @param  fee The new redeem fee rate [wad]
+     * @param  caller The address that updated the redeem fee rate
+     * @param  fee    The new redeem fee rate [wad]
      */
-    event RedeemFeeRateSet(uint256 fee);
+    event RedeemFeeRateSet(address indexed caller, uint256 fee);
 
     /**
      * @notice Emitted when the recipient of a redeem request is updated.
@@ -237,32 +282,39 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**
      * @notice Emitted when savings shares are withdrawn from the vault by accounts with
      *         `TAKER_ROLE`.
+     * @param  caller The address that withdrew the savings shares
      * @param  shares The amount of savings shares withdrawn from the vault [savings share units]
      */
-    event Take(uint256 shares);
+    event Take(address indexed caller, uint256 shares);
 
     /**
      * @notice Emitted when the total assets of the vault are adjusted.
-     * @param  chi              The new rate accumulator value after the adjustment [ray]
-     * @param  deltaTotalAssets The signed change in total assets [asset units]
+     * @param  caller            The address that adjusted the total assets
+     * @param  chi               The new rate accumulator value after the adjustment [ray]
+     * @param  deltaTotalAssets  The signed change in total assets [asset units]
      */
-    event TotalAssetsAdjusted(uint192 chi, int256 deltaTotalAssets);
+    event TotalAssetsAdjusted(address indexed caller, uint192 chi, int256 deltaTotalAssets);
 
-    /// @notice Emitted when the vault is unpaused.
-    event Unpaused();
+    /**
+     * @notice Emitted when the vault is unpaused.
+     * @param  caller The address that unpaused the vault
+     */
+    event Unpaused(address indexed caller);
 
     /**
      * @notice Emitted when the bounds for the Vault Savings Rate (VSR) are updated.
+     * @param  caller The address that updated the bounds
      * @param  minVSR The new minimum allowed VSR value [ray]
      * @param  maxVSR The new maximum allowed VSR value [ray]
      */
-    event VSRBoundsSet(uint256 minVSR, uint256 maxVSR);
+    event VSRBoundsSet(address indexed caller, uint256 minVSR, uint256 maxVSR);
 
     /**
      * @notice Emitted when the Vault Savings Rate (VSR) is updated.
-     * @param  vsr The new VSR value after the update [ray]
+     * @param  caller The address that updated the VSR
+     * @param  vsr    The new VSR value after the update [ray]
      */
-    event VSRSet(uint256 vsr);
+    event VSRSet(address indexed caller, uint256 vsr);
 
     /**********************************************************************************************/
     /*** Custom Errors                                                                          ***/

@@ -11,11 +11,14 @@ import { SparkPrimeVault } from "../src/SparkPrimeVault.sol";
 
 contract InitializeTests is TestBase {
 
+    address internal deployer = makeAddr("deployer");
+
     SparkPrimeVault internal implementation;
 
     function setUp() public override virtual {
         super.setUp();
 
+        vm.prank(deployer);
         implementation = new SparkPrimeVault();
     }
 
@@ -23,6 +26,8 @@ contract InitializeTests is TestBase {
         internal
         returns (ISparkPrimeVault)
     {
+        vm.prank(deployer);
+
         return SparkPrimeVault(
             address(new ERC1967Proxy(
                 address(implementation),
@@ -72,7 +77,29 @@ contract InitializeTests is TestBase {
     }
 
     function test_initialize() external {
+        address expectedProxy = vm.computeCreateAddress(deployer, vm.getNonce(deployer));
+
+        vm.expectEmit(expectedProxy);
+        emit ISparkPrimeVault.Drip(uint192(RAY), 0);
+
+        vm.expectEmit(expectedProxy);
+        emit ISparkPrimeVault.VSRSet(expectedProxy, RAY);
+
+        vm.expectEmit(expectedProxy);
+        emit ISparkPrimeVault.VSRBoundsSet(expectedProxy, RAY, RAY);
+
+        vm.expectEmit(expectedProxy);
+        emit ISparkPrimeVault.MinDepositSet(deployer, MINIMUM_DEPOSIT);
+
+        vm.expectEmit(expectedProxy);
+        emit ISparkPrimeVault.MinDepositCancellationSet(deployer, MINIMUM_DEPOSIT_CANCELLATION);
+
+        vm.expectEmit(expectedProxy);
+        emit ISparkPrimeVault.MinRedeemSet(deployer, MINIMUM_REDEEM);
+
         ISparkPrimeVault vault = _deploy(MINIMUM_DEPOSIT, MINIMUM_DEPOSIT_CANCELLATION, MINIMUM_REDEEM);
+
+        assertEq(address(vault), expectedProxy);
 
         assertEq(vault.savings(),  address(spUSDC));
         assertEq(vault.asset(),    address(usdc));

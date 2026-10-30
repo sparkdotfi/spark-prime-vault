@@ -181,10 +181,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     )
         initializer external override
     {
-        require(minDeposit_             != 0, ZeroMinDeposit());
-        require(minDepositCancellation_ != 0, ZeroMinDepositCancellation());
-        require(minRedeem_              != 0, ZeroMinRedeem());
-
         address asset_ = IERC4626Like(savings_).asset();
 
         savings  = savings_;
@@ -195,16 +191,15 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
 
-        chi = uint192(RAY);
         rho = uint64(block.timestamp);
-        vsr = RAY;
 
-        minVSR = RAY;
-        maxVSR = RAY;
+        emit Drip(chi = uint192(RAY), 0);
+        emit VSRSet(address(this), vsr = RAY);
+        emit VSRBoundsSet(address(this), minVSR = RAY, maxVSR = RAY);
 
-        minDeposit             = minDeposit_;
-        minDepositCancellation = minDepositCancellation_;
-        minRedeem              = minRedeem_;
+        _setMinDeposit(minDeposit_);
+        _setMinDepositCancellation(minDepositCancellation_);
+        _setMinRedeem(minRedeem_);
 
         SafeERC20.forceApprove(IERC20OZ(asset_), savings_, type(uint256).max);
     }
@@ -218,13 +213,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
     function setMaxRedeemFeeRate(uint256 feeRate_) external override onlyRole(DEFAULT_ADMIN_ROLE) {
         require(feeRate_ <= MAX_REDEEM_FEE, MaxFeeTooHigh());
-        emit MaxRedeemFeeRateSet(maxRedeemFeeRate = feeRate_);
+        emit MaxRedeemFeeRateSet(msg.sender, maxRedeemFeeRate = feeRate_);
     }
 
     function setMinDeposit(uint256 minDeposit_) external override onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(minDeposit_ != 0, ZeroMinDeposit());
-
-        emit MinDepositSet(minDeposit = minDeposit_);
+        _setMinDeposit(minDeposit_);
     }
 
     function setMinDepositCancellation(uint256 minDepositCancellation_)
@@ -232,15 +225,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         override
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
-        require(minDepositCancellation_ != 0, ZeroMinDepositCancellation());
-
-        emit MinDepositCancellationSet(minDepositCancellation = minDepositCancellation_);
+        _setMinDepositCancellation(minDepositCancellation_);
     }
 
     function setMinRedeem(uint256 minRedeem_) external override onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(minRedeem_ != 0, ZeroMinRedeem());
-
-        emit MinRedeemSet(minRedeem = minRedeem_);
+        _setMinRedeem(minRedeem_);
     }
 
     function setVSRBounds(uint256 minVSR_, uint256 maxVSR_)
@@ -252,7 +241,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         require(maxVSR_ <= MAX_VSR, MaxVSRTooHigh());
         require(minVSR_ <= maxVSR_, MinVSRGtMaxVSR());
 
-        emit VSRBoundsSet(minVSR = minVSR_, maxVSR = maxVSR_);
+        emit VSRBoundsSet(msg.sender, minVSR = minVSR_, maxVSR = maxVSR_);
     }
 
     /**********************************************************************************************/
@@ -279,7 +268,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         require(updatedChi_ != 0,                       ChiTooLow());
         require(updatedChi_ <= type(uint256).max / RAY, ChiTooHigh());
 
-        emit TotalAssetsAdjusted(chi = uint192(updatedChi_), deltaTotalAssets_);
+        emit TotalAssetsAdjusted(msg.sender, chi = uint192(updatedChi_), deltaTotalAssets_);
     }
 
     /**********************************************************************************************/
@@ -292,9 +281,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
             InsufficientShares()
         );
 
-        SafeERC20.safeTransfer(IERC20OZ(savings), msg.sender, savingsShares_);
+        emit Take(msg.sender, savingsShares_);
 
-        emit Take(savingsShares_);
+        SafeERC20.safeTransfer(IERC20OZ(savings), msg.sender, savingsShares_);
     }
 
     /**********************************************************************************************/
@@ -302,7 +291,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /**********************************************************************************************/
 
     function setCapacity(uint256 capacity_) external override onlyRole(OPERATOR_ROLE) {
-        emit CapacitySet(maxCapacity = capacity_);
+        emit CapacitySet(msg.sender, maxCapacity = capacity_);
     }
 
     function setVSR(uint256 vsr_) external override onlyRole(OPERATOR_ROLE) {
@@ -311,7 +300,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
         drip();
 
-        emit VSRSet(vsr = vsr_);
+        emit VSRSet(msg.sender, vsr = vsr_);
     }
 
     function processPendingDeposits(uint256 maxSavingsShares_, uint256 maxRequests_)
@@ -320,6 +309,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         onlyRole(OPERATOR_ROLE)
         whenNotPaused
     {
+        emit ProcessPendingDeposits(msg.sender, maxSavingsShares_, maxRequests_);
         _processPendingDeposits(maxSavingsShares_, maxRequests_);
     }
 
@@ -328,6 +318,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         override
         onlyRole(OPERATOR_ROLE)
     {
+        emit ProcessPendingDepositCancellations(msg.sender, maxSavingsShares_, maxRequests_);
         _processPendingDepositCancellations(maxSavingsShares_, maxRequests_);
     }
 
@@ -337,6 +328,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         onlyRole(OPERATOR_ROLE)
         whenNotPaused
     {
+        emit ProcessPendingRedeems(msg.sender, maxShares_, maxRequests_);
         _processPendingRedeems(maxShares_, maxRequests_);
     }
 
@@ -346,7 +338,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
     function setRedeemFeeRate(uint256 feeRate_) external override onlyRole(REDEEM_FEE_SETTER_ROLE) {
         require(feeRate_ <= maxRedeemFeeRate, FeeTooHigh());
-        emit RedeemFeeRateSet(redeemFeeRate = feeRate_);
+        emit RedeemFeeRateSet(msg.sender, redeemFeeRate = feeRate_);
     }
 
     /**********************************************************************************************/
@@ -355,7 +347,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
     function pause() external override onlyRole(PAUSER_ROLE) {
         paused = true;
-        emit Paused();
+        emit Paused(msg.sender);
     }
 
     /**********************************************************************************************/
@@ -364,7 +356,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
     function unpause() external override onlyRole(UNPAUSER_ROLE) {
         paused = false;
-        emit Unpaused();
+        emit Unpaused(msg.sender);
     }
 
     /**********************************************************************************************/
@@ -864,6 +856,28 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
     function totalAssets() public view override returns (uint256) {
         return convertToAssets(totalSupply);
+    }
+
+    /**********************************************************************************************/
+    /*** Config internal helper functions                                                       ***/
+    /**********************************************************************************************/
+
+    function _setMinDeposit(uint256 minDeposit_) internal {
+        require(minDeposit_ != 0, ZeroMinDeposit());
+
+        emit MinDepositSet(msg.sender, minDeposit = minDeposit_);
+    }
+
+    function _setMinDepositCancellation(uint256 minDepositCancellation_) internal {
+        require(minDepositCancellation_ != 0, ZeroMinDepositCancellation());
+
+        emit MinDepositCancellationSet(msg.sender, minDepositCancellation = minDepositCancellation_);
+    }
+
+    function _setMinRedeem(uint256 minRedeem_) internal {
+        require(minRedeem_ != 0, ZeroMinRedeem());
+
+        emit MinRedeemSet(msg.sender, minRedeem = minRedeem_);
     }
 
     /**********************************************************************************************/
