@@ -29,7 +29,7 @@ contract RequestDepositCancellationTests is TestBase {
 
         depositRequestId = _requestDeposit(user, 1_000_000e6);  // Deposit Request 0 (Queued)
 
-        ( , , requestShares ) = spPrime.getPendingDepositRequest(depositRequestId);
+        ( , , , requestShares ) = spPrime.getPendingDepositRequest(depositRequestId);
 
         vaultState.rho                    = vm.getBlockTimestamp();
         vaultState.chi                    = 1.049999999999999999961070145e27;
@@ -109,7 +109,7 @@ contract RequestDepositCancellationTests is TestBase {
     function test_requestDepositCancellation_notRequestOwner() external {
         uint256 requestId2 = _requestDeposit(user, recipient, 1_000_000e6);
 
-        ( , , uint256 requestShares2 ) = spPrime.getPendingDepositRequest(requestId2);
+        ( , , , uint256 requestShares2 ) = spPrime.getPendingDepositRequest(requestId2);
 
         // The deposit recipient cannot cancel, only the owner can.
         vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);

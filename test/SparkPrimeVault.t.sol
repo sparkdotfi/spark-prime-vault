@@ -526,13 +526,17 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
             spPrime.getPendingDepositRequest(i);
         }
 
-        _assertDepositRequest(3, ali,        ali,        400_000e6 - 1);
-        _assertDepositRequest(4, bob,        bob,        500_000e6 - 1);
-        _assertDepositRequest(5, address(0), address(0), 0);
-        _assertDepositRequest(6, ali,        ali,        700_000e6 - 1);
-        _assertDepositRequest(7, bob,        bob,        800_000e6 - 1);
-        _assertDepositRequest(8, address(0), address(0), 0);
-        _assertDepositRequest(9, ali,        ali,        1_000_000e6 - 1);
+        _assertDepositRequest(3, ali, ali, 400_000e6 - 1);
+        _assertDepositRequest(4, bob, bob, 500_000e6 - 1);
+
+        _assertEmptyDepositRequest(5);
+
+        _assertDepositRequest(6, ali, ali, 700_000e6 - 1);
+        _assertDepositRequest(7, bob, bob, 800_000e6 - 1);
+
+        _assertEmptyDepositRequest(8);
+
+        _assertDepositRequest(9, ali, ali, 1_000_000e6 - 1);
     }
 
     // Failure tests
@@ -669,10 +673,12 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
             spPrime.getPendingDepositRequest(i);
         }
 
-        _assertDepositRequest(6, ali,        ali,        700_000e6 - 1);
-        _assertDepositRequest(7, bob,        bob,        800_000e6 - 1);
-        _assertDepositRequest(8, address(0), address(0), 0);
-        _assertDepositRequest(9, ali,        ali,        1_000_000e6 - 1);
+        _assertDepositRequest(6, ali, ali, 700_000e6 - 1);
+        _assertDepositRequest(7, bob, bob, 800_000e6 - 1);
+
+        _assertEmptyDepositRequest(8);
+
+        _assertDepositRequest(9, ali, ali, 1_000_000e6 - 1);
     }
 
     function test_processPendingDeposits_limitedMaxSavingsShares_infiniteMaxRequests() external {
@@ -731,10 +737,12 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
             spPrime.getPendingDepositRequest(i);
         }
 
-        _assertDepositRequest(6, ali,        ali,        400_000e6 - 2);  // Partial fill
-        _assertDepositRequest(7, bob,        bob,        800_000e6 - 1);
-        _assertDepositRequest(8, address(0), address(0), 0);
-        _assertDepositRequest(9, ali,        ali,        1_000_000e6 - 1);
+        _assertDepositRequest(6, ali, ali, 400_000e6 - 2);  // Partial fill
+        _assertDepositRequest(7, bob, bob, 800_000e6 - 1);
+
+        _assertEmptyDepositRequest(8);
+
+        _assertDepositRequest(9, ali, ali, 1_000_000e6 - 1);
     }
 
     function _getMaxDepositableAmount(uint256 requestAmount, uint256 maxSavingsShareValue, uint256 assetsDeposited) internal pure returns (uint256) {
@@ -882,10 +890,12 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
             spPrime.getPendingDepositRequest(i);
         }
 
-        _assertDepositRequest(6, ali,        ali,        400_000e6 - 2);  // Partial fill
-        _assertDepositRequest(7, bob,        bob,        800_000e6 - 1);
-        _assertDepositRequest(8, address(0), address(0), 0);
-        _assertDepositRequest(9, ali,        ali,        1_000_000e6 - 1);
+        _assertDepositRequest(6, ali, ali, 400_000e6 - 2);  // Partial fill
+        _assertDepositRequest(7, bob, bob, 800_000e6 - 1);
+
+        _assertEmptyDepositRequest(8);
+
+        _assertDepositRequest(9, ali, ali, 1_000_000e6 - 1);
 
         // Deposit Request 6 (Remainder)
 

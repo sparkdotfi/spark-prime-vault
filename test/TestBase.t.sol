@@ -444,11 +444,12 @@ abstract contract TestBase is Test {
         uint256 requestId,
         address owner,
         address recipient,
-        uint256 savingsShareValue
+        uint256 savingsShareValue,
+        uint256 timestamp
     )
         internal view
     {
-        ( address owner_, address recipient_, uint256 shares_ ) =
+        ( address owner_, address recipient_, uint64 timestamp_, uint256 shares_ ) =
             spPrime.getPendingDepositRequest(requestId);
 
         assertEq(
@@ -469,13 +470,28 @@ abstract contract TestBase is Test {
             "depositRequest.savingsShareValue"
         );
 
+        assertEq(
+            timestamp_,
+            uint64(timestamp),
+            "depositRequest.timestamp"
+        );
+    }
+
+    function _assertDepositRequest(
+        uint256 requestId,
+        address owner,
+        address recipient,
+        uint256 savingsShareValue
+    ) internal view {
+        _assertDepositRequest(requestId, owner, recipient, savingsShareValue, vm.getBlockTimestamp());
     }
 
     function _assertDepositRequest(
         ISparkPrimeVault.Request memory request,
         address                         owner,
         address                         recipient,
-        uint256                         savingsShareValue
+        uint256                         savingsShareValue,
+        uint256                         timestamp
     )
         internal view
     {
@@ -496,17 +512,37 @@ abstract contract TestBase is Test {
             savingsShareValue,
             "depositRequest.savingsShareValue"
         );
+
+        assertEq(
+            request.timestamp,
+            uint64(timestamp),
+            "depositRequest.timestamp"
+        );
+    }
+
+    function _assertDepositRequest(
+        ISparkPrimeVault.Request memory request,
+        address                         owner,
+        address                         recipient,
+        uint256                         savingsShareValue
+    ) internal view {
+        _assertDepositRequest(request, owner, recipient, savingsShareValue, vm.getBlockTimestamp());
+    }
+
+    function _assertEmptyDepositRequest(uint256 requestId) internal view {
+        _assertDepositRequest(requestId, address(0), address(0), 0, 0);
     }
 
     function _assertDepositCancellationRequest(
         uint256 requestId,
         address owner,
         address recipient,
-        uint256 savingsShareValue
+        uint256 savingsShareValue,
+        uint256 timestamp
     )
         internal view
     {
-        ( address owner_, address recipient_, uint256 shares_ ) =
+        ( address owner_, address recipient_, uint64 timestamp_, uint256 shares_ ) =
             spPrime.getPendingDepositCancellationRequest(requestId);
 
         assertEq(
@@ -526,13 +562,33 @@ abstract contract TestBase is Test {
             savingsShareValue,
             "depositCancellationRequest.savingsShareValue"
         );
+
+        assertEq(
+            timestamp_,
+            uint64(timestamp),
+            "depositCancellationRequest.timestamp"
+        );
+    }
+
+    function _assertDepositCancellationRequest(
+        uint256 requestId,
+        address owner,
+        address recipient,
+        uint256 savingsShareValue
+    ) internal view {
+        _assertDepositCancellationRequest(requestId, owner, recipient, savingsShareValue, vm.getBlockTimestamp());
+    }
+
+    function _assertEmptyDepositCancellationRequest(uint256 requestId) internal view {
+        _assertDepositCancellationRequest(requestId, address(0), address(0), 0, 0);
     }
 
     function _assertDepositCancellationRequest(
         ISparkPrimeVault.Request memory request,
         address                         owner,
         address                         recipient,
-        uint256                         savingsShareValue
+        uint256                         savingsShareValue,
+        uint256                         timestamp
     )
         internal view
     {
@@ -553,17 +609,33 @@ abstract contract TestBase is Test {
             savingsShareValue,
             "depositCancellationRequest.savingsShareValue"
         );
+
+        assertEq(
+            request.timestamp,
+            uint64(timestamp),
+            "depositCancellationRequest.timestamp"
+        );
+    }
+
+    function _assertDepositCancellationRequest(
+        ISparkPrimeVault.Request memory request,
+        address                         owner,
+        address                         recipient,
+        uint256                         savingsShareValue
+    ) internal view {
+        _assertDepositCancellationRequest(request, owner, recipient, savingsShareValue, vm.getBlockTimestamp());
     }
 
     function _assertRedeemRequest(
         uint256 requestId,
         address owner,
         address recipient,
-        uint256 shareValue
+        uint256 shareValue,
+        uint256 timestamp
     )
         internal view
     {
-        ( address owner_, address recipient_, uint256 shares_ ) =
+        ( address owner_, address recipient_, uint64 timestamp_, uint256 shares_ ) =
             spPrime.getPendingRedeemRequest(requestId);
 
         assertEq(
@@ -583,13 +655,33 @@ abstract contract TestBase is Test {
             shareValue,
             "redeemRequest.shareValue"
         );
+
+        assertEq(
+            timestamp_,
+            uint64(timestamp),
+            "redeemRequest.timestamp"
+        );
+    }
+
+    function _assertRedeemRequest(
+        uint256 requestId,
+        address owner,
+        address recipient,
+        uint256 shareValue
+    ) internal view {
+        _assertRedeemRequest(requestId, owner, recipient, shareValue, vm.getBlockTimestamp());
+    }
+
+    function _assertEmptyRedeemRequest(uint256 requestId) internal view {
+        _assertRedeemRequest(requestId, address(0), address(0), 0, 0);
     }
 
     function _assertRedeemRequest(
         ISparkPrimeVault.Request memory request,
         address                         owner,
         address                         recipient,
-        uint256                         shareValue
+        uint256                         shareValue,
+        uint256                         timestamp
     )
         internal view
     {
@@ -610,6 +702,21 @@ abstract contract TestBase is Test {
             shareValue,
             "redeemRequest.shareValue"
         );
+
+        assertEq(
+            request.timestamp,
+            uint64(timestamp),
+            "redeemRequest.timestamp"
+        );
+    }
+
+    function _assertRedeemRequest(
+        ISparkPrimeVault.Request memory request,
+        address                         owner,
+        address                         recipient,
+        uint256                         shareValue
+    ) internal view {
+        _assertRedeemRequest(request, owner, recipient, shareValue, vm.getBlockTimestamp());
     }
 
     function _assertEmptyRequest(ISparkPrimeVault.Request memory request) internal view {
@@ -629,6 +736,12 @@ abstract contract TestBase is Test {
             request.shares,
             0,
             "request.shares not zero"
+        );
+
+        assertEq(
+            request.timestamp,
+            0,
+            "request.timestamp not zero"
         );
     }
 
