@@ -307,9 +307,6 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /// @notice Thrown when an action is attempted while the vault is paused.
     error IsPaused();
 
-    /// @notice Thrown when a requested range of requests extends past the end of the queue.
-    error LengthTooLarge();
-
     /// @notice Thrown when a total assets adjustment would reduce total assets to zero or below.
     error LossTooHigh();
 
@@ -853,6 +850,9 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /*** Request getter functions                                                               ***/
     /**********************************************************************************************/
 
+    /// @notice Gets the number of pending deposit requests that have not yet been processed.
+    function pendingDepositRequestsLength() external view returns (uint256);
+
     /**
      * @notice Returns a pending deposit request.
      * @dev    Reverts if `requestId_` is before the first pending request or does not exist. A
@@ -877,9 +877,9 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**
      * @notice Returns `length_` deposit requests, starting from the request with ID `startId_`.
      * @dev    Returns an empty array if `length_` is zero and `startId_` is valid. Reverts if
-     *         `startId_` is before the first pending request, if the range extends past the end
-     *         of the queue, or if `startId_` is itself past the end of the queue.
-     *         Includes fully cancelled requests, which have zero shares.
+     *         `startId_` is before the first pending request or if `startId_` is itself past the
+     *         end of the queue. Length is clamped to the number of request entries starting from
+     *         `startId_`. Includes fully cancelled requests, which have zero shares.
      * @param  startId_  The first request ID to return
      * @param  length_   The number of requests to return
      * @return requests_ The deposit requests
@@ -888,6 +888,12 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
         external
         view
         returns (Request[] memory requests_);
+
+    /**
+     * @notice Gets the number of pending deposit cancellation requests that have not yet been
+     *         processed.
+     */
+    function pendingDepositCancellationRequestsLength() external view returns (uint256);
 
     /**
      * @notice Returns a pending deposit cancellation request.
@@ -916,8 +922,9 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @notice Returns `length_` deposit cancellation requests, starting from the request with ID
      *         `startId_`.
      * @dev    Returns an empty array if `length_` is zero and `startId_` is valid. Reverts if
-     *         `startId_` is before the first pending request, if the range extends past the end
-     *         of the queue, or if `startId_` is itself past the end of the queue.
+     *         `startId_` is before the first pending request or if `startId_` is itself past the
+     *         end of the queue. Length is clamped to the number of request entries starting from
+     *         `startId_`.
      * @param  startId_  The first request ID to return
      * @param  length_   The number of requests to return
      * @return requests_ The deposit cancellation requests
@@ -926,6 +933,9 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
         external
         view
         returns (Request[] memory requests_);
+
+    /// @notice Gets the number of pending redeem requests that have not yet been processed.
+    function pendingPendingRedeemRequestsLength() external view returns (uint256);
 
     /**
      * @notice Returns a pending redeem request.
@@ -949,8 +959,9 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**
      * @notice Returns `length_` redeem requests, starting from the request with ID `startId_`.
      * @dev    Returns an empty array if `length_` is zero and `startId_` is valid. Reverts if
-     *         `startId_` is before the first pending request, if the range extends past the end
-     *         of the queue, or if `startId_` is itself past the end of the queue.
+     *         `startId_` is before the first pending request or if `startId_` is itself past the
+     *         end of the queue. Length is clamped to the number of request entries starting from
+     *         `startId_`.
      * @param  startId_  The first request ID to return
      * @param  length_   The number of requests to return
      * @return requests_ The redeem requests
