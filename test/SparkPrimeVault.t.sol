@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
+import { console } from "../lib/forge-std/src/console.sol";
+
 import { IERC20 } from "../lib/oz/contracts/token/ERC20/IERC20.sol";
 
 import { ISparkPrimeVault } from "../src/ISparkPrimeVault.sol";
@@ -725,95 +727,6 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         _assertDepositRequest(9, ali,        ali,        1_000_000e6 - 1);
     }
 
-    function _getMaxDepositableAmount(uint256 requestAmount, uint256 maxSavingsShareValue, uint256 assetsDeposited) internal pure returns (uint256) {
-        return assetsDeposited + requestAmount > maxSavingsShareValue
-            ? maxSavingsShareValue - assetsDeposited
-            : requestAmount;
-    }
-
-    function testFuzz_processPendingDeposits(uint256 maxSavingsShareValue, uint256 maxRequests) external {
-        maxSavingsShareValue = _bound(maxSavingsShareValue, 0, 2 * vaultState.depositRequests.pendingShareValue);
-        maxRequests          = _bound(maxRequests,          0, 2 * vaultState.depositRequests.length);
-
-        vm.startPrank(operator);
-        spPrime.processPendingDeposits(spUSDC.convertToShares(maxSavingsShareValue), maxRequests);
-        vm.stopPrank();
-
-        uint256 assetsDeposited;
-
-        for (uint256 i = 0; i < maxRequests; ++i) {
-            if (i == 0) {
-                uint256 depositAmount = _getMaxDepositableAmount(400_000e6, maxSavingsShareValue, 0);
-
-                aliBalances.shareValue += depositAmount;
-                assetsDeposited        += depositAmount;
-
-                if (depositAmount < 400_000e6) break;
-            }
-
-            if (i == 1) {
-                uint256 depositAmount = _getMaxDepositableAmount(500_000e6, maxSavingsShareValue, assetsDeposited);
-
-                bobBalances.shareValue += depositAmount;
-                assetsDeposited        += depositAmount;
-
-                if (depositAmount < 500_000e6) break;
-            }
-
-            if (i == 3) {
-                uint256 depositAmount = _getMaxDepositableAmount(700_000e6, maxSavingsShareValue, assetsDeposited);
-
-                aliBalances.shareValue += depositAmount;
-                assetsDeposited        += depositAmount;
-
-                if (depositAmount < 700_000e6) break;
-            }
-
-            if (i == 4) {
-                uint256 depositAmount = _getMaxDepositableAmount(800_000e6, maxSavingsShareValue, assetsDeposited);
-
-                bobBalances.shareValue += depositAmount;
-                assetsDeposited        += depositAmount;
-
-                if (depositAmount < 800_000e6) break;
-            }
-
-            if (i == 6) {
-                uint256 depositAmount = _getMaxDepositableAmount(200_000e6, maxSavingsShareValue, assetsDeposited);
-
-                aliBalances.shareValue += depositAmount;
-                assetsDeposited        += depositAmount;
-
-                break; // Last deposit request can never be entirely fulfilled.
-            }
-
-            --vaultState.depositRequests.length;
-            ++vaultState.depositRequests.firstPendingId;
-
-            if (vaultState.depositRequests.length == 0) break;
-        }
-
-        vaultState.totalAssets += assetsDeposited;
-
-        if (vaultState.availableCapacityValue < assetsDeposited) {
-            vaultState.availableCapacityValue = 0;
-        } else {
-            vaultState.availableCapacityValue -= assetsDeposited;
-        }
-
-        if (vaultState.depositRequests.pendingShareValue < assetsDeposited) {
-            vaultState.depositRequests.pendingShareValue = 0;
-        } else {
-            vaultState.depositRequests.pendingShareValue -= assetsDeposited;
-        }
-
-        _assertVaultState(10);
-        _assertAccountBalances(aliBalances,   10);
-        _assertAccountBalances(bobBalances,   10);
-        _assertAccountBalances(camBalances,   10);
-        _assertAccountBalances(vaultBalances, 10);
-    }
-
     function test_processPendingDeposits_multipleCalls() external {
         // Deposit Request 3
 
@@ -922,6 +835,95 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
         }
 
         _assertDepositRequest(9, ali, ali, 800_000e6 - 4);
+    }
+
+    function _getMaxDepositableAmount(uint256 requestAmount, uint256 maxSavingsShareValue, uint256 assetsDeposited) internal pure returns (uint256) {
+        return assetsDeposited + requestAmount > maxSavingsShareValue
+            ? maxSavingsShareValue - assetsDeposited
+            : requestAmount;
+    }
+
+    function testFuzz_processPendingDeposits(uint256 maxSavingsShareValue, uint256 maxRequests) external {
+        maxSavingsShareValue = _bound(maxSavingsShareValue, 0, 2 * vaultState.depositRequests.pendingShareValue);
+        maxRequests          = _bound(maxRequests,          0, 2 * vaultState.depositRequests.length);
+
+        vm.startPrank(operator);
+        spPrime.processPendingDeposits(spUSDC.convertToShares(maxSavingsShareValue), maxRequests);
+        vm.stopPrank();
+
+        uint256 assetsDeposited;
+
+        for (uint256 i = 0; i < maxRequests; ++i) {
+            if (i == 0) {
+                uint256 depositAmount = _getMaxDepositableAmount(400_000e6, maxSavingsShareValue, 0);
+
+                aliBalances.shareValue += depositAmount;
+                assetsDeposited        += depositAmount;
+
+                if (depositAmount < 400_000e6) break;
+            }
+
+            if (i == 1) {
+                uint256 depositAmount = _getMaxDepositableAmount(500_000e6, maxSavingsShareValue, assetsDeposited);
+
+                bobBalances.shareValue += depositAmount;
+                assetsDeposited        += depositAmount;
+
+                if (depositAmount < 500_000e6) break;
+            }
+
+            if (i == 3) {
+                uint256 depositAmount = _getMaxDepositableAmount(700_000e6, maxSavingsShareValue, assetsDeposited);
+
+                aliBalances.shareValue += depositAmount;
+                assetsDeposited        += depositAmount;
+
+                if (depositAmount < 700_000e6) break;
+            }
+
+            if (i == 4) {
+                uint256 depositAmount = _getMaxDepositableAmount(800_000e6, maxSavingsShareValue, assetsDeposited);
+
+                bobBalances.shareValue += depositAmount;
+                assetsDeposited        += depositAmount;
+
+                if (depositAmount < 800_000e6) break;
+            }
+
+            if (i == 6) {
+                uint256 depositAmount = _getMaxDepositableAmount(200_000e6, maxSavingsShareValue, assetsDeposited);
+
+                aliBalances.shareValue += depositAmount;
+                assetsDeposited        += depositAmount;
+
+                break; // Last deposit request can never be entirely fulfilled.
+            }
+
+            --vaultState.depositRequests.length;
+            ++vaultState.depositRequests.firstPendingId;
+
+            if (vaultState.depositRequests.length == 0) break;
+        }
+
+        vaultState.totalAssets += assetsDeposited;
+
+        if (vaultState.availableCapacityValue < assetsDeposited) {
+            vaultState.availableCapacityValue = 0;
+        } else {
+            vaultState.availableCapacityValue -= assetsDeposited;
+        }
+
+        if (vaultState.depositRequests.pendingShareValue < assetsDeposited) {
+            vaultState.depositRequests.pendingShareValue = 0;
+        } else {
+            vaultState.depositRequests.pendingShareValue -= assetsDeposited;
+        }
+
+        _assertVaultState(10);
+        _assertAccountBalances(aliBalances,   10);
+        _assertAccountBalances(bobBalances,   10);
+        _assertAccountBalances(camBalances,   10);
+        _assertAccountBalances(vaultBalances, 10);
     }
 
 }
@@ -1538,6 +1540,202 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
             vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
             spPrime.getPendingDepositCancellationRequest(i);
         }
+    }
+
+    function _getMaxWithdrawalableAmount(uint256 requestAmount, uint256 maxSavingsShares, uint256 savingsSharesWithdrawn)
+        internal view returns (uint256 withdrawShares, uint256 withdrawAmount, bool isPartial)
+    {
+        uint256 requestShares = spUSDC.convertToShares(requestAmount);
+
+        withdrawShares = ((savingsSharesWithdrawn + requestShares) > maxSavingsShares) ? maxSavingsShares - savingsSharesWithdrawn : requestShares;
+        withdrawAmount = spUSDC.convertToAssets(withdrawShares);
+        isPartial      = withdrawShares < requestShares;
+    }
+
+    function testFuzz_processPendingDepositCancellations(uint256 maxSavingsShareValue, uint256 maxRequests) external {
+        _setupMockCallReverts();
+
+        maxSavingsShareValue = _bound(maxSavingsShareValue, 0, 2 * vaultState.depositCancellationRequests.pendingShareValue);
+        maxRequests          = _bound(maxRequests,          0, 2 * vaultState.depositCancellationRequests.length);
+
+        uint256 maxSavingsShares = spUSDC.convertToShares(maxSavingsShareValue);
+
+        vm.prank(operator);
+        spPrime.processPendingDepositCancellations(maxSavingsShares, maxRequests);
+
+        uint256 savingsSharesWithdrawn;
+        uint256 assetsWithdrawn;
+        uint256 totalClaimable;
+
+        for (uint256 i = 0; i < maxRequests; ++i) {
+            if (i == 0) {
+                ( uint256 withdrawShares, uint256 withdrawAmount, bool isPartial ) =
+                    _getMaxWithdrawalableAmount(100_000e6, maxSavingsShares, savingsSharesWithdrawn);
+
+                savingsSharesWithdrawn += withdrawShares;
+                assetsWithdrawn        += withdrawAmount;
+
+                if (isPartial) {
+                    aliBalances.assets += withdrawAmount;
+                    break;
+                }
+
+                aliBalances.claimableAssets += withdrawAmount;
+                totalClaimable              += withdrawAmount;
+            }
+
+            if (i == 1) {
+                ( uint256 withdrawShares, uint256 withdrawAmount, bool isPartial ) =
+                    _getMaxWithdrawalableAmount(200_000e6, maxSavingsShares, savingsSharesWithdrawn);
+
+                bobBalances.assets     += withdrawAmount;
+                savingsSharesWithdrawn += withdrawShares;
+                assetsWithdrawn        += withdrawAmount;
+
+                if (isPartial) break;
+            }
+
+            if (i == 2) {
+                ( uint256 withdrawShares, uint256 withdrawAmount, bool isPartial ) =
+                    _getMaxWithdrawalableAmount(300_000e6, maxSavingsShares, savingsSharesWithdrawn);
+
+                camBalances.assets     += withdrawAmount;
+                savingsSharesWithdrawn += withdrawShares;
+                assetsWithdrawn        += withdrawAmount;
+
+                if (isPartial) break;
+            }
+
+            if (i == 3) {
+                ( uint256 withdrawShares, uint256 withdrawAmount, bool isPartial ) =
+                    _getMaxWithdrawalableAmount(400_000e6, maxSavingsShares, savingsSharesWithdrawn);
+
+                savingsSharesWithdrawn += withdrawShares;
+                assetsWithdrawn        += withdrawAmount;
+
+                if (isPartial) {
+                    danBalances.assets += withdrawAmount;
+                    break;
+                }
+
+                danBalances.claimableAssets += withdrawAmount;
+                totalClaimable              += withdrawAmount;
+            }
+
+            if (i == 4) {
+                ( uint256 withdrawShares, uint256 withdrawAmount, bool isPartial ) =
+                    _getMaxWithdrawalableAmount(500_000e6, maxSavingsShares, savingsSharesWithdrawn);
+
+                savingsSharesWithdrawn += withdrawShares;
+                assetsWithdrawn        += withdrawAmount;
+
+                if (isPartial) {
+                    bobBalances.assets += withdrawAmount;
+                    break;
+                }
+
+                bobBalances.claimableAssets += withdrawAmount;
+                totalClaimable              += withdrawAmount;
+            }
+
+            if (i == 5) {
+                ( uint256 withdrawShares, uint256 withdrawAmount, bool isPartial ) =
+                    _getMaxWithdrawalableAmount(600_000e6, maxSavingsShares, savingsSharesWithdrawn);
+
+                camBalances.assets     += withdrawAmount;
+                savingsSharesWithdrawn += withdrawShares;
+                assetsWithdrawn        += withdrawAmount;
+
+                if (isPartial) break;
+            }
+
+            if (i == 6) {
+                ( uint256 withdrawShares, uint256 withdrawAmount, bool isPartial ) =
+                    _getMaxWithdrawalableAmount(700_000e6, maxSavingsShares, savingsSharesWithdrawn);
+
+                savingsSharesWithdrawn += withdrawShares;
+                assetsWithdrawn        += withdrawAmount;
+
+                if (isPartial) {
+                    aliBalances.assets += withdrawAmount;
+                    break;
+                }
+
+                aliBalances.claimableAssets += withdrawAmount;
+                totalClaimable              += withdrawAmount;
+            }
+
+            if (i == 7) {
+                ( uint256 withdrawShares, uint256 withdrawAmount, bool isPartial ) =
+                    _getMaxWithdrawalableAmount(800_000e6, maxSavingsShares, savingsSharesWithdrawn);
+
+                savingsSharesWithdrawn += withdrawShares;
+                assetsWithdrawn        += withdrawAmount;
+
+                if (isPartial) {
+                    danBalances.assets += withdrawAmount;
+                    break;
+                }
+
+                danBalances.claimableAssets += withdrawAmount;
+                totalClaimable              += withdrawAmount;
+            }
+
+            if (i == 8) {
+                ( uint256 withdrawShares, uint256 withdrawAmount, bool isPartial ) =
+                    _getMaxWithdrawalableAmount(900_000e6, maxSavingsShares, savingsSharesWithdrawn);
+
+                camBalances.assets     += withdrawAmount;
+                savingsSharesWithdrawn += withdrawShares;
+                assetsWithdrawn        += withdrawAmount;
+
+                if (isPartial) break;
+            }
+
+            if (i == 9) {
+                ( uint256 withdrawShares, uint256 withdrawAmount, bool isPartial ) =
+                    _getMaxWithdrawalableAmount(1_000_000e6, maxSavingsShares, savingsSharesWithdrawn);
+
+                aliBalances.assets     += withdrawAmount;
+                savingsSharesWithdrawn += withdrawShares;
+                assetsWithdrawn        += withdrawAmount;
+
+                if (isPartial) break;
+            }
+
+            --vaultState.depositCancellationRequests.length;
+            ++vaultState.depositCancellationRequests.firstPendingId;
+
+            if (vaultState.depositCancellationRequests.length == 0) break;
+        }
+
+        vaultState.totalClaimable += totalClaimable;
+        vaultBalances.assets      += totalClaimable;
+
+        if (vaultState.availableLiquidAssets < assetsWithdrawn) {
+            vaultState.availableLiquidAssets = 0;
+        } else {
+            vaultState.availableLiquidAssets -= assetsWithdrawn;
+        }
+
+        if (vaultState.depositCancellationRequests.pendingShareValue < assetsWithdrawn) {
+            vaultState.depositCancellationRequests.pendingShareValue = 0;
+        } else {
+            vaultState.depositCancellationRequests.pendingShareValue -= assetsWithdrawn;
+        }
+
+        if (vaultBalances.savingsShareValue < assetsWithdrawn) {
+            vaultBalances.savingsShareValue = 0;
+        } else {
+            vaultBalances.savingsShareValue -= assetsWithdrawn;
+        }
+
+        _assertVaultState(10);
+        _assertAccountBalances(aliBalances,   10);
+        _assertAccountBalances(bobBalances,   10);
+        _assertAccountBalances(camBalances,   10);
+        _assertAccountBalances(danBalances,   10);
+        _assertAccountBalances(vaultBalances, 10);
     }
 
 }
