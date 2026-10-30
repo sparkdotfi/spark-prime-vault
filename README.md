@@ -119,9 +119,9 @@ The vault is designed for Spark Vault V2 savings vaults (e.g., `spUSDC`) and rel
 
 ---
 
-# THIS VAULT IS INTENDED TO BE USED WITH `spark-vaults-v2@v1.0.1` AS THE `savings` VAULT. ANY OTHER `savings` IMPLEMENTATION SHOULD BE REVIEWED FROM FIRST PRINCIPLES.
+## THIS VAULT IS INTENDED TO BE USED WITH `spark-vaults-v2@v1.0.1` AS THE `savings` VAULT. ANY OTHER `savings` IMPLEMENTATION SHOULD BE REVIEWED FROM FIRST PRINCIPLES.
 
-# If another vault is used, it must AT LEAST adhere to these standards:
+### If another vault is used, it must AT LEAST adhere to these standards:
 
 Savings vault:
 • `withdraw(assets, receiver, owner)` and `redeem(shares, receiver, owner)` succeed for any amount, including zero assets, or shares that round to zero assets. This is because processing the redeem and cancellation queues can call `withdraw` or `redeem` with 0 or dust amount that are worth zero assets or shares.
@@ -129,7 +129,7 @@ Savings vault:
 • No deposit or exit fee. `convertToAssets`, `convertToShares`, and the executed amounts agree up to rounding, and the full asset amount reaches the receiver.
 • The share price never decreases.
 • Withdrawals and redemptions are synchronous and pay out to an arbitrary receiver.
-• `deposit` accepts the vault as both caller and receiver. Granting the vault the savings vault’s TAKER_ROLE, or reaching the savings vault’s deposit cap, makes requestDeposit revert. (TODO: ?)
+• `deposit` accepts the vault as both caller and receiver.
 
 Underlying asset:
 • `transfer` succeeds for any amount, including zero.
