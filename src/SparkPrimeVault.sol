@@ -156,7 +156,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         public override allowance;
 
     modifier whenNotPaused() {
-        require(!paused, IsPaused());
+        _revertIfPaused();
         _;
     }
 
@@ -1160,6 +1160,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
     function _min(uint256 x_, uint256 y_) internal pure returns (uint256) {
         return x_ < y_ ? x_ : y_;
+    }
+
+    function _revertIfPaused() internal view {
+        require(!paused, IsPaused());
     }
 
     function _rpow(uint256 x_, uint256 n_) internal pure returns (uint256 z_) {
