@@ -39,7 +39,7 @@ contract RequestDepositCancellationTests is TestBase {
 
         vaultState.depositRequests.pendingShareValue = 1_000_000e6 - 1;
         vaultState.depositRequests.length            = 1;
-        vaultState.depositRequests.firstPendingId    = 0;
+        vaultState.depositRequests.processedCount    = 0;
 
         userBalances = AccountBalances({
             account           : user,
@@ -160,11 +160,11 @@ contract RequestDepositCancellationTests is TestBase {
 
         vaultState.depositRequests.pendingShareValue = 0;
         vaultState.depositRequests.length            = 1;
-        vaultState.depositRequests.firstPendingId    = 0;
+        vaultState.depositRequests.processedCount    = 0;
 
         vaultState.depositCancellationRequests.pendingShareValue = 1_000_000e6 - 1;
         vaultState.depositCancellationRequests.length            = 1;
-        vaultState.depositCancellationRequests.firstPendingId    = 0;
+        vaultState.depositCancellationRequests.processedCount    = 0;
 
         _assertVaultState();
         _assertDepositCancellationRequest(cancelRequestId, user, recipient, 1_000_000e6 - 1);
@@ -193,7 +193,7 @@ contract RequestDepositCancellationTests is TestBase {
 
         vaultState.depositCancellationRequests.pendingShareValue = 400_000e6 - 1;
         vaultState.depositCancellationRequests.length            = 1;
-        vaultState.depositCancellationRequests.firstPendingId    = 0;
+        vaultState.depositCancellationRequests.processedCount    = 0;
 
         _assertVaultState();
         _assertDepositRequest(depositRequestId, user, user, 600_000e6 - 1);

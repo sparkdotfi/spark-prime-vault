@@ -13,7 +13,7 @@ The vault token is a standard ERC-20 (with EIP-2612-style `permit`, supporting b
 ### 1. Rate Accumulator (`chi` & `vsr`)
 
 - Yield accrues continuously via the Vault Savings Rate (`vsr`), a per-second compounding factor (ray).
-- `drip()` (public) compounds accumulated interest into the accumulator `chi`. It is also invoked by `setVSR`, `adjustTotalAssets`, `requestDeposit`, `requestDepositCancellation`, `requestRedeem`, and all `process*` functions.
+- `drip()` (public) compounds accumulated interest into the accumulator `chi`. It is also invoked by `setVSR`, `adjustTotalAssets`, `requestDeposit`, `requestRedeem`, and all `process*` functions. `requestDepositCancellation` does **not** drip.
 - Share-to-asset conversion: `assets = shares * nowChi() / RAY`, where `nowChi()` is the up-to-date `chi` without writing state.
 - Initialized with `chi = vsr = minVSR = maxVSR = RAY` (0% yield) until the admin sets bounds and `OPERATOR_ROLE` sets a rate.
 - `vsr` must stay within `[minVSR, maxVSR]`. Bounds are configured by `DEFAULT_ADMIN_ROLE` with `minVSR >= RAY` and `maxVSR <= MAX_VSR` (100% APY).
@@ -34,7 +34,7 @@ Deposits are two-step: the user's assets go to the savings sleeve immediately, a
 
 - **Request**: The request `owner` (only) calls `requestDepositCancellation(requestId, recipient, savingsShares)` on a still-pending deposit. `recipient` must be neither the zero address nor the vault. `savingsShares` must be at least `minDepositCancellation` and at most the request's unfilled savings shares; they move to the FIFO `_depositCancellationRequests` queue.
 - **Partial cancellation**: If all unfilled savings shares are cancelled, the deposit request is removed. Otherwise it keeps the rest and its position in the deposit queue.
-- **Cleanup**: Each cancellation also clears fully cancelled entries at the front of the deposit queue, so they do not block the next instant fill.
+- **Cleanup**: Fully cancelled entries (zero shares) stay in the deposit queue until `processPendingDeposits` (or an instant fill) skips over them, which happens even when there is no available capacity. An instant fill is still possible behind cancelled entries, since it depends on `pendingDepositSavingsShares` rather than the queue length.
 - **Processing**: `OPERATOR_ROLE` calls `processPendingDepositCancellations(maxSavingsShares, maxRequests)`, which redeems the savings shares for the underlying asset and sends it to the `recipient`. Bounded by what the savings vault can redeem (`maxRedeem`). Because the refund is made from the queued savings shares, it includes all savings yield accrued while queued. Partial fills are supported.
 - **Updating the recipient**: The `owner` can call `updateDepositCancellationRecipient(requestId, recipient)`.
 
@@ -61,9 +61,9 @@ Redemptions are always asynchronous (there is no instant fill).
 ### 7. Queue Mechanics
 
 - All three queues (deposit, deposit cancellation, redeem) are FIFO and are processed with `maxRequests` bounding the number of entries visited per call, so processing can be batched.
-- Each queue tracks its head (`firstPendingDepositId`, `firstPendingDepositCancellationId`, `firstPendingRedeemId`); fully filled or cancelled entries are deleted and skipped.
-- Aggregate pending amounts are tracked in `pendingDepositSavingsShares`, `pendingCancelledDepositSavingsShares`, and `pendingRedeemShares`.
-- Pending requests can be inspected with `getPending{Deposit,DepositCancellation,Redeem}Request(requestId)` and `getPending...Requests()` (full pending list; the deposit getters can return fully cancelled entries with zero shares) or `getPending...Requests(startId, length)` (`length` entries from `startId`; an empty array if `length` is zero; reverts if `startId` is before the queue head or the range extends past the end of the queue; `length` of zero does not revert).
+- Each queue's head is tracked by a processed counter (`processedDepositCount`, `processedDepositCancellationCount`, `processedRedeemCount`); fully filled entries are deleted and the head advances past them.
+- Aggregate pending amounts are tracked in `pendingDepositSavingsShares`, `pendingCancelledDepositSavingsShares`, and `pendingRedeemShares`. `totalClaimable` tracks the sum of `claimableAssets`.
+- Pending requests can be inspected with `pending{Deposit,DepositCancellation,Redeem}RequestsLength()`, `getPending{Deposit,DepositCancellation,Redeem}Request(requestId)` (reverts with `InvalidRequestId` if outside the pending range), `pending*Requests()` (full pending list; the deposit list can include fully cancelled entries with zero shares), or `getPending*Requests(startId, length)`. The ranged getter reverts if `startId` is before the queue head (`StartIdTooSmall`) or greater than the queue length (`StartIdTooLarge`); `length` is clamped to the entries available, so overshooting or a `length` of zero returns a shorter or empty array rather than reverting.
 
 ### 8. Pausing
 
