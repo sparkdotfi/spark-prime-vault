@@ -221,7 +221,7 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @param  owner               The owner of the redeem request
      * @param  recipient           The address receiving the assets
      * @param  sharesBurned        The amount of vault shares burned [share units]
-     * @param  savingsSharesBurned The amount of savings shares withdrawn [savings share units]
+     * @param  savingsSharesBurned The amount of savings shares redeemed [savings share units]
      * @param  assetsReceived      The amount of assets sent to, or made claimable by, the
      *                             recipient [asset units]
      */
@@ -727,13 +727,15 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
         external;
 
     /**
-     * @notice Fills pending redeem requests in queue order, burning their shares and withdrawing
-     *         assets for their recipients.
+     * @notice Fills pending redeem requests in queue order, burning their shares and redeeming
+     *         savings shares for their recipients.
      * @dev    This function can only be called by accounts with `OPERATOR_ROLE` while the vault is
      *         not paused. Processing is limited by `maxShares_`, `maxRequests_`, and the available
      *         liquid assets, which are re-checked before each request. The last processed request
-     *         may be partially filled. Assets that cannot be sent to a recipient are credited as
-     *         claimable assets.
+     *         may be partially filled. The value of the burned vault shares is converted to savings
+     *         shares rounding down, which are then redeemed, so the recipient receives at most
+     *         that value and rounding stays with the vault. Assets that cannot be sent to a
+     *         recipient are credited as claimable assets.
      * @param  maxShares_   The maximum amount of vault shares to process [share units]
      * @param  maxRequests_ The maximum number of queue entries to visit
      */

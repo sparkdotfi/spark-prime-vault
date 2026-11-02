@@ -13,10 +13,6 @@ interface IERC4626Like {
         external
         returns (uint256 assets);
 
-    function withdraw(uint256 assets, address receiver, address owner)
-        external
-        returns (uint256 shares);
-
 }
 
 contract ClaimTests is TestBase {
@@ -222,12 +218,12 @@ contract ClaimTests is TestBase {
         _assertAccountBalances(userBalances);
         _assertAccountBalances(vaultBalances);
 
-        // Withdrawing directly to the recipient fails, so assets are kept in the vault as claimable
+        // Redeeming directly to the recipient fails, so assets are kept in the vault as claimable
         vm.mockCallRevert(
             address(spUSDC),
             abi.encodeWithSelector(
-                IERC4626Like.withdraw.selector,
-                500_000e6,
+                IERC4626Like.redeem.selector,
+                spUSDC.convertToShares(500_000e6),
                 user,
                 address(spPrime)
             ),
@@ -235,24 +231,24 @@ contract ClaimTests is TestBase {
         );
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.ClaimableAssetsIncreased(user, 500_000e6);
+        emit ISparkPrimeVault.ClaimableAssetsIncreased(user, 500_000e6 - 1);
 
         _processPendingRedeems(1);
 
         vaultState.availableCapacityValue += 500_000e6;
-        vaultState.availableLiquidAssets  -= 500_000e6 + 1;
+        vaultState.availableLiquidAssets  -= 500_000e6;
         vaultState.totalAssets            -= 500_000e6;
-        vaultState.totalClaimable         += 500_000e6;
+        vaultState.totalClaimable         += 500_000e6 - 1;
 
         vaultState.redeemRequests.pendingShareValue = 0;
         vaultState.redeemRequests.length            = 0;
         vaultState.redeemRequests.processedCount    = 1;
 
-        userBalances.claimableAssets = 500_000e6;
+        userBalances.claimableAssets = 500_000e6 - 1;
 
-        vaultBalances.assets            = 500_000e6;
+        vaultBalances.assets            = 500_000e6 - 1;
         vaultBalances.shareValue        = 0;
-        vaultBalances.savingsShareValue = 500_000e6 - 2;
+        vaultBalances.savingsShareValue = 500_000e6 - 1;
 
         _assertVaultState();
         _assertAccountBalances(userBalances);
@@ -260,13 +256,13 @@ contract ClaimTests is TestBase {
         // User claims their assets
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Claim(user, 500_000e6);
+        emit ISparkPrimeVault.Claim(user, 500_000e6 - 1);
 
         spPrime.claim(user);
 
         vaultState.totalClaimable = 0;
 
-        userBalances.assets          = 500_000e6;
+        userBalances.assets          = 500_000e6 - 1;
         userBalances.claimableAssets = 0;
 
         vaultBalances.assets = 0;
