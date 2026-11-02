@@ -291,6 +291,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /**********************************************************************************************/
 
     function setCapacity(uint256 capacity_) external override onlyRole(OPERATOR_ROLE) {
+        require(capacity_ <= type(uint128).max, CapacityTooHigh());
+
         emit CapacitySet(msg.sender, maxCapacity = capacity_);
     }
 
