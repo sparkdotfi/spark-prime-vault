@@ -156,12 +156,11 @@ contract RequestDepositCancellationTests is TestBase {
 
         assertEq(cancelRequestId, 0);
 
-        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
-        spPrime.getPendingDepositRequest(depositRequestId);
+        _assertEmptyDepositRequest(0);
 
         vaultState.depositRequests.pendingShareValue = 0;
-        vaultState.depositRequests.length            = 0;
-        vaultState.depositRequests.firstPendingId    = 1;
+        vaultState.depositRequests.length            = 1;
+        vaultState.depositRequests.firstPendingId    = 0;
 
         vaultState.depositCancellationRequests.pendingShareValue = 1_000_000e6 - 1;
         vaultState.depositCancellationRequests.length            = 1;
