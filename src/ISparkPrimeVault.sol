@@ -801,8 +801,9 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      *         `savingsShares_` must be at least `minDepositCancellation` and at most the unfilled
      *         savings shares of the request. If all of them are cancelled the deposit request is
      *         removed, otherwise it keeps the rest and its position in the queue. `recipient_` must
-     *         be neither `address(0)` nor the vault. Also clears fully cancelled requests at the
-     *         front of the deposit queue.
+     *         be neither `address(0)` nor the vault. Does not drip and does not touch the rest of
+     *         the deposit queue: a fully cancelled entry stays in place until `processPendingDeposits`
+     *         or an instant fill skips over it.
      * @param  requestId_     The ID of the deposit request to cancel
      * @param  recipient_     The address to receive the assets when the cancellation is filled
      * @param  savingsShares_ The amount of savings shares to cancel [savings share units]
