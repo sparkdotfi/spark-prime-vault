@@ -106,7 +106,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         vaultState.depositRequests.pendingShareValue = 0;
         vaultState.depositRequests.length            = 0;
-        vaultState.depositRequests.firstPendingId    = 1;
+        vaultState.depositRequests.processedCount    = 1;
 
         AccountBalances memory userBalances = AccountBalances({
             account           : user,
@@ -161,7 +161,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         vaultState.depositRequests.pendingShareValue += 300_000e6;
         vaultState.depositRequests.length             = 1;
-        vaultState.depositRequests.firstPendingId     = 1;
+        vaultState.depositRequests.processedCount     = 1;
 
         userBalances.shareValue += 500_000e6 - 1;
 
@@ -185,7 +185,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         vaultState.depositRequests.pendingShareValue = 0;
         vaultState.depositRequests.length            = 0;
-        vaultState.depositRequests.firstPendingId    = 1;
+        vaultState.depositRequests.processedCount    = 1;
 
         AccountBalances memory userBalances = AccountBalances({
             account           : user,
@@ -232,7 +232,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         vaultState.depositRequests.pendingShareValue = 800_000e6 - 1;
         vaultState.depositRequests.length            = 1;
-        vaultState.depositRequests.firstPendingId    = 1;
+        vaultState.depositRequests.processedCount    = 1;
 
         vaultBalances.savingsShareValue += 800_000e6;
 
@@ -262,11 +262,11 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         vaultState.depositRequests.pendingShareValue = 0;
         vaultState.depositRequests.length            = 3;
-        vaultState.depositRequests.firstPendingId    = 0;
+        vaultState.depositRequests.processedCount    = 0;
 
         vaultState.depositCancellationRequests.pendingShareValue = 3_000e6 - 1;
         vaultState.depositCancellationRequests.length            = 3;
-        vaultState.depositCancellationRequests.firstPendingId    = 0;
+        vaultState.depositCancellationRequests.processedCount    = 0;
 
         AccountBalances memory userBalances = AccountBalances({
             account           : user,
@@ -321,7 +321,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
 
         vaultState.depositRequests.pendingShareValue = 0;
         vaultState.depositRequests.length            = 0;
-        vaultState.depositRequests.firstPendingId    = 4;
+        vaultState.depositRequests.processedCount    = 4;
 
         userBalances.assets     -= 200_000e6;
         userBalances.shareValue += 200_000e6 - 2;
@@ -397,7 +397,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
         vaultState.availableCapacityValue = 104_000_000e6;  // Vault capacity value was 105m because of 5% change in chi prior to the first deposit
         vaultState.availableLiquidAssets  = 1_000_000e6 - 1;
 
-        vaultState.depositRequests.firstPendingId = 1;
+        vaultState.depositRequests.processedCount = 1;
 
         AccountBalances memory userBalances = AccountBalances({
             account           : user,
@@ -430,7 +430,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
 
         vaultState.redeemRequests.pendingShareValue = 525_000e6 - 1;  // 500k spPrime == 525k USD because of current exchange rate
         vaultState.redeemRequests.length            = 1;
-        vaultState.redeemRequests.firstPendingId    = 0;
+        vaultState.redeemRequests.processedCount    = 0;
 
         userBalances.shareValue -= 525_000e6;
 
@@ -455,7 +455,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
         vaultState.availableCapacityValue = 104_000_000e6;  // Vault capacity value was 105m because of 5% change in chi prior to the first deposit
         vaultState.availableLiquidAssets  = 1_000_000e6 - 1;
 
-        vaultState.depositRequests.firstPendingId = 1;
+        vaultState.depositRequests.processedCount = 1;
 
         AccountBalances memory userBalances = AccountBalances({
             account           : user,
@@ -495,7 +495,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
 
         vaultState.redeemRequests.pendingShareValue = 525_000e6 - 2_625e6 - 1;
         vaultState.redeemRequests.length            = 1;
-        vaultState.redeemRequests.firstPendingId    = 0;
+        vaultState.redeemRequests.processedCount    = 0;
 
         userBalances.shareValue -= 525_000e6;
 
@@ -569,11 +569,11 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
 
         vaultState.depositRequests.pendingShareValue = pendingDepositAssets - 3;
         vaultState.depositRequests.length            = 10;
-        vaultState.depositRequests.firstPendingId    = 0;
+        vaultState.depositRequests.processedCount    = 0;
 
         vaultState.depositCancellationRequests.pendingShareValue = pendingDepositCancellationAssets - 3;
         vaultState.depositCancellationRequests.length            = 5;
-        vaultState.depositCancellationRequests.firstPendingId    = 0;
+        vaultState.depositCancellationRequests.processedCount    = 0;
 
         aliBalances = AccountBalances({
             account           : ali,
@@ -697,7 +697,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
 
         vaultState.depositRequests.pendingShareValue -= assetsDeposited - 1;
         vaultState.depositRequests.length             = 1;
-        vaultState.depositRequests.firstPendingId     = 9;
+        vaultState.depositRequests.processedCount     = 9;
 
         aliBalances.shareValue += 400_000e6 + 700_000e6 + 200_000e6 - 4;
         bobBalances.shareValue += 500_000e6 + 800_000e6 - 4;
@@ -749,7 +749,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
 
         vaultState.depositRequests.pendingShareValue -= assetsDeposited - 1;
         vaultState.depositRequests.length             = 4;
-        vaultState.depositRequests.firstPendingId     = 6;
+        vaultState.depositRequests.processedCount     = 6;
 
         aliBalances.shareValue += 400_000e6 - 2;
         bobBalances.shareValue += 500_000e6 - 2;
@@ -813,7 +813,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
 
         vaultState.depositRequests.pendingShareValue -= assetsDeposited - 1;
         vaultState.depositRequests.length             = 4;
-        vaultState.depositRequests.firstPendingId     = 6;
+        vaultState.depositRequests.processedCount     = 6;
 
         aliBalances.shareValue += 400_000e6 + 300_000e6 - 2;
         bobBalances.shareValue += 500_000e6 - 2;
@@ -900,7 +900,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
             }
 
             --vaultState.depositRequests.length;
-            ++vaultState.depositRequests.firstPendingId;
+            ++vaultState.depositRequests.processedCount;
 
             if (vaultState.depositRequests.length == 0) break;
         }
@@ -966,7 +966,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
 
         vaultState.depositRequests.pendingShareValue -= assetsDeposited - 1;
         vaultState.depositRequests.length             = 4;
-        vaultState.depositRequests.firstPendingId     = 6;
+        vaultState.depositRequests.processedCount     = 6;
 
         aliBalances.shareValue += 400_000e6 + 300_000e6 - 2;
         bobBalances.shareValue += 500_000e6 - 2;
@@ -1023,7 +1023,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
 
         vaultState.depositRequests.pendingShareValue -= assetsDeposited + 2;
         vaultState.depositRequests.length             = 1;
-        vaultState.depositRequests.firstPendingId     = 9;
+        vaultState.depositRequests.processedCount     = 9;
 
         aliBalances.shareValue += 400_000e6 + 200_000e6;
         bobBalances.shareValue += 800_000e6 - 2;
@@ -1100,11 +1100,11 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
 
         vaultState.depositRequests.pendingShareValue = 0;
         vaultState.depositRequests.length            = 10;
-        vaultState.depositRequests.firstPendingId    = 0;
+        vaultState.depositRequests.processedCount    = 0;
 
         vaultState.depositCancellationRequests.pendingShareValue = depositedAssets - 5;
         vaultState.depositCancellationRequests.length            = 10;
-        vaultState.depositCancellationRequests.firstPendingId    = 0;
+        vaultState.depositCancellationRequests.processedCount    = 0;
 
         aliBalances = AccountBalances({
             account           : ali,
@@ -1308,7 +1308,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
 
         vaultState.depositCancellationRequests.pendingShareValue = 0;
         vaultState.depositCancellationRequests.length            = 0;
-        vaultState.depositCancellationRequests.firstPendingId    = 10;
+        vaultState.depositCancellationRequests.processedCount    = 10;
 
         aliBalances.assets          += 1_000_000e6 - 1;
         aliBalances.claimableAssets += 100_000e6 + 700_000e6 - 2;
@@ -1394,7 +1394,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
 
         vaultState.depositCancellationRequests.pendingShareValue -= assetsWithdrawn - 2;
         vaultState.depositCancellationRequests.length            = 4;
-        vaultState.depositCancellationRequests.firstPendingId    = 6;
+        vaultState.depositCancellationRequests.processedCount    = 6;
 
         aliBalances.claimableAssets += 100_000e6 - 1;
 
@@ -1484,7 +1484,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
 
         vaultState.depositCancellationRequests.pendingShareValue -= assetsWithdrawn;
         vaultState.depositCancellationRequests.length            = 5;
-        vaultState.depositCancellationRequests.firstPendingId    = 5;
+        vaultState.depositCancellationRequests.processedCount    = 5;
 
         aliBalances.claimableAssets += 100_000e6 - 1;
 
@@ -1575,7 +1575,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
 
         vaultState.depositCancellationRequests.pendingShareValue -= assetsWithdrawn;
         vaultState.depositCancellationRequests.length             = 5;
-        vaultState.depositCancellationRequests.firstPendingId     = 5;
+        vaultState.depositCancellationRequests.processedCount     = 5;
 
         aliBalances.claimableAssets += 100_000e6 - 1;
 
@@ -1651,7 +1651,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
 
         vaultState.depositCancellationRequests.pendingShareValue = 0;
         vaultState.depositCancellationRequests.length            = 0;
-        vaultState.depositCancellationRequests.firstPendingId    = 10;
+        vaultState.depositCancellationRequests.processedCount    = 10;
 
         aliBalances.assets          += 1_000_000e6 - 1;
         aliBalances.claimableAssets += 700_000e6 - 1;
@@ -1730,11 +1730,11 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
 
         vaultState.depositRequests.pendingShareValue = 0;
         vaultState.depositRequests.length            = 0;
-        vaultState.depositRequests.firstPendingId    = 3;
+        vaultState.depositRequests.processedCount    = 3;
 
         vaultState.redeemRequests.pendingShareValue = depositedAssets - 6;
         vaultState.redeemRequests.length            = 10;
-        vaultState.redeemRequests.firstPendingId    = 0;
+        vaultState.redeemRequests.processedCount    = 0;
 
         aliBalances = AccountBalances({
             account           : ali,
@@ -1965,7 +1965,7 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
 
         vaultState.redeemRequests.pendingShareValue -= assetsRedeemed - 2;
         vaultState.redeemRequests.length             = 1;
-        vaultState.redeemRequests.firstPendingId     = 9;
+        vaultState.redeemRequests.processedCount     = 9;
 
         aliBalances.assets          += 200_000e6 + 2;
         aliBalances.claimableAssets += 100_000e6 + 700_000e6 - 2;
@@ -2074,7 +2074,7 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
 
         vaultState.redeemRequests.pendingShareValue -= assetsRedeemed - 2;
         vaultState.redeemRequests.length             = 4;
-        vaultState.redeemRequests.firstPendingId     = 6;
+        vaultState.redeemRequests.processedCount     = 6;
 
         aliBalances.claimableAssets += 100_000e6 - 1;
 
@@ -2185,7 +2185,7 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
 
         vaultState.redeemRequests.pendingShareValue -= assetsRedeemed - 1;
         vaultState.redeemRequests.length             = 5;
-        vaultState.redeemRequests.firstPendingId     = 5;
+        vaultState.redeemRequests.processedCount     = 5;
 
         aliBalances.claimableAssets += 100_000e6 - 1;
 
@@ -2297,7 +2297,7 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
 
         vaultState.redeemRequests.pendingShareValue -= assetsRedeemed - 1;
         vaultState.redeemRequests.length             = 5;
-        vaultState.redeemRequests.firstPendingId     = 5;
+        vaultState.redeemRequests.processedCount     = 5;
 
         aliBalances.claimableAssets += 100_000e6 - 1;
 
@@ -2392,7 +2392,7 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
 
         vaultState.redeemRequests.pendingShareValue -= assetsRedeemed + 1;
         vaultState.redeemRequests.length             = 1;
-        vaultState.redeemRequests.firstPendingId     = 9;
+        vaultState.redeemRequests.processedCount     = 9;
 
         aliBalances.assets          += 200_000e6 + 3;
         aliBalances.claimableAssets += 700_000e6 - 1;

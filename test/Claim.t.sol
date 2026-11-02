@@ -108,11 +108,11 @@ contract ClaimTests is TestBase {
 
         vaultState.depositRequests.pendingShareValue = 0;
         vaultState.depositRequests.length            = 1;
-        vaultState.depositRequests.firstPendingId    = 0;
+        vaultState.depositRequests.processedCount    = 0;
 
         vaultState.depositCancellationRequests.pendingShareValue = 1_000_000e6 - 1;
         vaultState.depositCancellationRequests.length            = 1;
-        vaultState.depositCancellationRequests.firstPendingId    = 0;
+        vaultState.depositCancellationRequests.processedCount    = 0;
 
         AccountBalances memory userBalances = AccountBalances({
             account           : user,
@@ -156,7 +156,7 @@ contract ClaimTests is TestBase {
 
         vaultState.depositCancellationRequests.pendingShareValue = 0;
         vaultState.depositCancellationRequests.length            = 0;
-        vaultState.depositCancellationRequests.firstPendingId    = 1;
+        vaultState.depositCancellationRequests.processedCount    = 1;
 
         userBalances.claimableAssets = 1_000_000e6 - 1;
 
@@ -196,11 +196,11 @@ contract ClaimTests is TestBase {
 
         vaultState.depositRequests.pendingShareValue = 0;
         vaultState.depositRequests.length            = 0;
-        vaultState.depositRequests.firstPendingId    = 1;
+        vaultState.depositRequests.processedCount    = 1;
 
         vaultState.redeemRequests.pendingShareValue = 500_000e6;
         vaultState.redeemRequests.length            = 1;
-        vaultState.redeemRequests.firstPendingId    = 0;
+        vaultState.redeemRequests.processedCount    = 0;
 
         AccountBalances memory userBalances = AccountBalances({
             account           : user,
@@ -246,7 +246,7 @@ contract ClaimTests is TestBase {
 
         vaultState.redeemRequests.pendingShareValue = 0;
         vaultState.redeemRequests.length            = 0;
-        vaultState.redeemRequests.firstPendingId    = 1;
+        vaultState.redeemRequests.processedCount    = 1;
 
         userBalances.claimableAssets = 500_000e6;
 

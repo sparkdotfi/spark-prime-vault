@@ -44,8 +44,8 @@ abstract contract TestBase is Test {
 
     struct PendingRequestsState {
         uint256 pendingShareValue;  // USDC value of spUSDC shares (deposit queue) or spPrime shares (redeem queue)
-        uint256 length;             // Requests from firstPendingId to the end, cancelled included
-        uint256 firstPendingId;     // First unfilled request id
+        uint256 length;             // Number of requests from `processedCount` to the end, cancelled included
+        uint256 processedCount;     // Number of requests that have been processed (either filled or cancelled)
     }
 
     struct VaultState {
@@ -144,19 +144,19 @@ abstract contract TestBase is Test {
         PendingRequestsState memory depositRequests = PendingRequestsState({
             pendingShareValue : 0,
             length            : 0,
-            firstPendingId    : 0
+            processedCount    : 0
         });
 
         PendingRequestsState memory depositCancellationRequests = PendingRequestsState({
             pendingShareValue : 0,
             length            : 0,
-            firstPendingId    : 0
+            processedCount    : 0
         });
 
         PendingRequestsState memory redeemRequests = PendingRequestsState({
             pendingShareValue : 0,
             length            : 0,
-            firstPendingId    : 0
+            processedCount    : 0
         });
 
         vaultState = VaultState({
@@ -353,9 +353,9 @@ abstract contract TestBase is Test {
         );
 
         assertEq(
-            spPrime.firstPendingDepositId(),
-            vaultState.depositRequests.firstPendingId,
-            "vaultState.depositRequests.firstPendingId"
+            spPrime.processedDepositCount(),
+            vaultState.depositRequests.processedCount,
+            "vaultState.depositRequests.processedCount"
         );
 
         // Deposit Cancellation Requests
@@ -374,9 +374,9 @@ abstract contract TestBase is Test {
         );
 
         assertEq(
-            spPrime.firstPendingDepositCancellationId(),
-            vaultState.depositCancellationRequests.firstPendingId,
-            "vaultState.depositCancellationRequests.firstPendingId"
+            spPrime.processedDepositCancellationCount(),
+            vaultState.depositCancellationRequests.processedCount,
+            "vaultState.depositCancellationRequests.processedCount"
         );
 
         // Redeem Requests
@@ -395,9 +395,9 @@ abstract contract TestBase is Test {
         );
 
         assertEq(
-            spPrime.firstPendingRedeemId(),
-            vaultState.redeemRequests.firstPendingId,
-            "vaultState.redeemRequests.firstPendingId"
+            spPrime.processedRedeemCount(),
+            vaultState.redeemRequests.processedCount,
+            "vaultState.redeemRequests.processedCount"
         );
 
     }
