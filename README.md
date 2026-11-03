@@ -11,6 +11,7 @@ The vault token is a standard ERC-20 (with EIP-2612-style `permit`, supporting b
 > If another vault is used, it must AT LEAST adhere to these standards: <br>
 >
 > Savings vault:<br>
+>
 > - `redeem(shares, receiver, owner)` succeeds for any amount, including zero shares, or shares that round to zero assets. This is because processing the redeem and cancellation queues can call `redeem` with 0 or dust amounts that are worth zero assets.<br>
 > - `maxWithdraw(address(this))` and `maxRedeem(address(this))` return amounts that a `redeem` in the same block will honour in full.<br>
 > - No deposit or exit fee. `convertToAssets`, `convertToShares`, and the executed amounts agree up to rounding, and the full asset amount reaches the receiver.<br>
@@ -19,6 +20,7 @@ The vault token is a standard ERC-20 (with EIP-2612-style `permit`, supporting b
 > - `deposit` accepts the vault as both caller and receiver.<br>
 >
 > Underlying asset:<br>
+>
 > - `transfer` succeeds for any amount, including zero.<br>
 
 ## Core Mechanisms
@@ -63,7 +65,7 @@ Redemptions are always asynchronous (there is no instant fill).
 
 ### 5. Handling Failing Redemptions & Claims
 
-- Assets are paid out to recipients by the savings vault directly. If the redemption of savings shares to a recipient fails, the assets are instead redeemed to the vault and credited to `claimableAssets[recipient]`, so a failing request cannot block the queue. Emits `ClaimableAssetsIncreased`.
+- Assets are paid out to recipients by the savings vault directly. If the redemption of savings shares to a recipient fails, the assets are instead redeemed to the vault and credited to `claimableAssetsOf[recipient]`, so a failing request cannot block the queue. Emits `ClaimableAssetsIncreased`.
 - `claim(recipient)` is permissionless and always sends the assets to `recipient`; it reverts while transferring the assets to the recipient fails.
 - If the fallback redemption to the vault also fails (e.g. the savings vault is reverted for some reason or the vault itself cannot receive), the whole `process*` call reverts.
 
@@ -75,7 +77,7 @@ Redemptions are always asynchronous (there is no instant fill).
 
 - All three queues (deposit, deposit cancellation, redeem) are FIFO and are processed with `maxRequests` bounding the number of entries visited per call, so processing can be batched.
 - Each queue's head is tracked by a processed counter (`processedDepositCount`, `processedDepositCancellationCount`, `processedRedeemCount`); fully filled entries are deleted and the head advances past them.
-- Aggregate pending amounts are tracked in `pendingDepositSavingsShares`, `pendingCancelledDepositSavingsShares`, and `pendingRedeemShares`. `totalClaimable` tracks the sum of `claimableAssets`.
+- Aggregate pending amounts are tracked in `pendingDepositSavingsShares`, `pendingCancelledDepositSavingsShares`, and `pendingRedeemShares`. `totalClaimable` tracks the sum of `claimableAssetsOf`.
 - Pending requests can be inspected with `pending{Deposit,DepositCancellation,Redeem}RequestsLength()`, `getPending{Deposit,DepositCancellation,Redeem}Request(requestId)` (reverts with `InvalidRequestId` if outside the pending range), `pending*Requests()` (full pending list; the deposit list can include fully cancelled entries with zero shares), or `getPending*Requests(startId, length)`. The ranged getter reverts if `startId` is before the queue head (`StartIdTooSmall`) or greater than the queue length (`StartIdTooLarge`); `length` is clamped to the entries available, so overshooting or a `length` of zero returns a shorter or empty array rather than reverting.
 
 ### 8. Pausing
