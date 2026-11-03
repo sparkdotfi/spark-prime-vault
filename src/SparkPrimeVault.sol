@@ -33,10 +33,6 @@ interface IERC4626Like {
         external
         returns (uint256 assets);
 
-    function withdraw(uint256 assets, address receiver, address owner)
-        external
-        returns (uint256 shares);
-
     function asset() external view returns (address);
 
     function convertToAssets(uint256 shares) external view returns (uint256 assets);
@@ -1006,7 +1002,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
             _burn(address(this), shares_);
 
-            uint256 savingsShares_ = _withdrawSavings(assets_, request_.recipient);
+            // Redeem savings shares rounded down, so that any rounding error stays with the vault.
+            uint256 savingsShares_ = IERC4626Like(savings).convertToShares(assets_);
+
+            assets_ = _redeemSavings(savingsShares_, request_.recipient);
 
             emit Redeem(i_, request_.owner, request_.recipient, shares_, savingsShares_, assets_);
 
@@ -1033,25 +1032,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         // to claimable funds to be handled asynchronously.
 
         assets_ = IERC4626Like(savings).redeem(savingsShares_, address(this), address(this));
-
-        _incrementClaimableAssets(recipient_, assets_);
-    }
-
-    function _withdrawSavings(uint256 assets_, address recipient_)
-        internal
-        returns (uint256 savingsShares_)
-    {
-        try IERC4626Like(savings).withdraw(assets_, recipient_, address(this))
-            returns (uint256 savingsSharesBurned_)
-        {
-            return savingsSharesBurned_;
-        } catch {}
-
-        // Any recipient-specific reversion of the savingsVault or underlying
-        // asset transfer that occurs as a result of a user-request is added
-        // to claimable funds to be handled asynchronously.
-
-        savingsShares_ = IERC4626Like(savings).withdraw(assets_, address(this), address(this));
 
         _incrementClaimableAssets(recipient_, assets_);
     }

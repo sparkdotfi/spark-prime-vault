@@ -719,7 +719,7 @@ abstract contract TestBase is Test {
         _assertRedeemRequest(request, owner, recipient, shareValue, vm.getBlockTimestamp());
     }
 
-    function _assertEmptyRequest(ISparkPrimeVault.Request memory request) internal view {
+    function _assertEmptyRequest(ISparkPrimeVault.Request memory request) internal pure {
         assertEq(
             request.owner,
             address(0),

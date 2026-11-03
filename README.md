@@ -45,14 +45,14 @@ Redemptions are always asynchronous (there is no instant fill).
 - **Request**: `requestRedeem(shares, recipient)` transfers `shares` from the caller into the vault, requires `shares >= minRedeem` (checked before the fee) and that `recipient` is neither the zero address nor the vault.
 - **Redeem Fee**: The fee is taken **upfront in shares**: `fee = ceil(shares * redeemFeeRate / WAD)` is burned immediately, and only `shares - fee` is queued. The rate is locked in at request time. Emits `RedeemRequest(requestId, owner, recipient, sharesToBurn, feeSharesBurned)`.
 - **Queueing**: Queued shares are escrowed in the vault (counted in `pendingRedeemShares`) and keep earning vault yield until processed.
-- **Processing**: `OPERATOR_ROLE` calls `processPendingRedeems(maxShares, maxRequests)`. Bounded by `availableLiquidAssets()` (the savings vault's `maxWithdraw` for the vault). For each fill, the escrowed shares are burned and the corresponding assets are withdrawn from the savings vault straight to the `recipient`. Partial fills are supported.
+- **Processing**: `OPERATOR_ROLE` calls `processPendingRedeems(maxShares, maxRequests)`. Bounded by `availableLiquidAssets()` (the savings vault's `maxWithdraw` for the vault). For each fill, the escrowed shares are burned, their value is converted to savings shares (rounding down, so rounding stays with the vault), and those savings shares are redeemed from the savings vault straight to the `recipient`. Partial fills are supported.
 - **Updating the recipient**: The `owner` can call `updateRedeemRecipient(requestId, recipient)`.
 
-### 5. Handling Failing Redemptions/Withdrawals & Claims
+### 5. Handling Failing Redemptions & Claims
 
-- Assets are paid out to recipients by the savings vault directly. If the redemption or withdrawal of savings shares to a recipient fails, the assets are instead redeemed/withdrawn to the vault and credited to `claimableAssets[recipient]`, so a failing request cannot block the queue. Emits `ClaimableAssetsIncreased`.
+- Assets are paid out to recipients by the savings vault directly. If the redemption of savings shares to a recipient fails, the assets are instead redeemed to the vault and credited to `claimableAssets[recipient]`, so a failing request cannot block the queue. Emits `ClaimableAssetsIncreased`.
 - `claim(recipient)` is permissionless and always sends the assets to `recipient`; it reverts while transferring the assets to the recipient fails.
-- If the fallback redemption/withdrawal to the vault also fails (e.g. the savings vault is reverted for some reason or the vault itself cannot receive), the whole `process*` call reverts.
+- If the fallback redemption to the vault also fails (e.g. the savings vault is reverted for some reason or the vault itself cannot receive), the whole `process*` call reverts.
 
 ### 6. Liquidity
 
@@ -77,11 +77,11 @@ Redemptions are always asynchronous (there is no instant fill).
 The vault is designed for Spark Vault V2 savings vaults (e.g., `spUSDC`) and relies on the following:
 
 - **Deposits from the vault are accepted**: `requestDeposit` deposits into the savings vault with the vault as caller and receiver. It reverts if the vault holds the savings vault's `TAKER_ROLE` (Spark Vault V2 rejects deposits from takers) or if the deposit would exceed the savings vault's deposit cap.
-- **No fees**: `convertToShares`/`convertToAssets` are used for pricing, so deposits, redemptions, and withdrawals must not charge fees.
+- **No fees**: `convertToShares`/`convertToAssets` are used for pricing, so deposits and redemptions must not charge fees.
 - **Share price never falls**: savings shares are worth at least as many assets over time.
-- **`maxRedeem`/`maxWithdraw` are honoured**: amounts within these bounds can be redeemed or withdrawn in the same transaction.
-- **Synchronous payout**: `redeem` and `withdraw` deliver assets in the same call.
-- **Zero amounts succeed**: `withdraw`/`redeem` of zero (or of dust that converts to zero assets) do not revert, and the asset accepts zero-value transfers. Queue remainders can produce such calls.
+- **`maxRedeem`/`maxWithdraw` are honoured**: amounts within these bounds can be redeemed in the same transaction (`maxWithdraw` sizes redeem fills, `maxRedeem` sizes cancellation fills).
+- **Synchronous payout**: `redeem` delivers assets in the same call.
+- **Zero amounts succeed**: `redeem` of zero (or of dust that converts to zero assets) does not revert, and the asset accepts zero-value transfers. Queue remainders can produce such calls.
 
 ---
 
@@ -124,11 +124,11 @@ The vault is designed for Spark Vault V2 savings vaults (e.g., `spUSDC`) and rel
 ### If another vault is used, it must AT LEAST adhere to these standards:
 
 Savings vault:
-• `withdraw(assets, receiver, owner)` and `redeem(shares, receiver, owner)` succeed for any amount, including zero assets, or shares that round to zero assets. This is because processing the redeem and cancellation queues can call `withdraw` or `redeem` with 0 or dust amount that are worth zero assets or shares.
-• `maxWithdraw(address(this))` and `maxRedeem(address(this))` return amounts that a `withdraw` or `redeem` in the same block will honour in full.
+• `redeem(shares, receiver, owner)` succeeds for any amount, including zero shares, or shares that round to zero assets. This is because processing the redeem and cancellation queues can call `redeem` with 0 or dust amounts that are worth zero assets.
+• `maxWithdraw(address(this))` and `maxRedeem(address(this))` return amounts that a `redeem` in the same block will honour in full.
 • No deposit or exit fee. `convertToAssets`, `convertToShares`, and the executed amounts agree up to rounding, and the full asset amount reaches the receiver.
 • The share price never decreases.
-• Withdrawals and redemptions are synchronous and pay out to an arbitrary receiver.
+• Redemptions are synchronous and pay out to an arbitrary receiver.
 • `deposit` accepts the vault as both caller and receiver.
 
 Underlying asset:
