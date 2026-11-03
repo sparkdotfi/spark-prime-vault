@@ -1005,7 +1005,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
             uint256 savingsShares_ =
                 IERC4626Like(savings).convertToShares(convertToAssets(shares_));
 
-            assets_ = _redeemSavings(savingsShares_, request_.recipient);
+            uint256 assets_ = _redeemSavings(savingsShares_, request_.recipient);
 
             emit Redeem(i_, request_.owner, request_.recipient, shares_, savingsShares_, assets_);
 
