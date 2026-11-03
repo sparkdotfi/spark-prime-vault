@@ -144,3 +144,5 @@ vite.config.ts.timestamp-*
 
 # Foundry Cache
 cache
+
+.DS_Store
