@@ -8,20 +8,20 @@ contract E2ETests is TestBase {
     uint256 internal constant DAILY_1BP_VSR = 1.000000001157349541564501380e27;  // 1.0001 per day
     uint256 internal constant DAILY_2BP_VSR = 1.000000002314583366871550052e27;  // 1.0002 per day
 
-    address internal user = makeAddr("user");
+    address internal ali = makeAddr("ali");
 
     function setUp() public override {
         super.setUp();
 
-        vm.label(user, "user");
+        vm.label(ali, "ali");
 
         _setVSR(DAILY_2BP_VSR);
         _setSavingsVSR(DAILY_1BP_VSR);
     }
 
     function test_e2e_flow1() external {
-        AccountBalances memory userBalances = AccountBalances({
-            account           : user,
+        AccountBalances memory aliBalances = AccountBalances({
+            account           : ali,
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 0,
@@ -51,27 +51,28 @@ contract E2ETests is TestBase {
         vaultState.availableCapacityValue = 0;
 
         _assertVaultState();
-        _assertAccountBalances(userBalances);
+        _assertAccountBalances(aliBalances);
         _assertAccountBalances(vaultBalances);
         _assertAccountBalances(takerBalances);
 
         // 1. User requests deposit
 
-        _requestDeposit(user, 1_000_000e6);  // Deposit Request 0 (Queued)
+        _requestDeposit(ali, 1_000_000e6);  // Deposit Request 0 (Queued)
 
-        uint256 depositTimestamp = vm.getBlockTimestamp();
+        uint256 aliEarmarkedAssets = 1_000_000e6;
+        uint256 depositTimestamp   = vm.getBlockTimestamp();
 
-        vaultState.availableLiquidAssets = 1_000_000e6 - 1;
+        vaultState.availableLiquidAssets += aliEarmarkedAssets - 1;
 
-        vaultState.depositRequests.pendingShareValue = 1_000_000e6 - 1;
-        vaultState.depositRequests.length            = 1;
+        vaultState.depositRequests.pendingShareValue += aliEarmarkedAssets - 1;
+        vaultState.depositRequests.length            += 1;
 
-        vaultBalances.savingsShareValue = 1_000_000e6 - 1;
+        vaultBalances.savingsShareValue += aliEarmarkedAssets - 1;
 
-        _assertDepositRequest(0, user, user, 1_000_000e6 - 1, depositTimestamp);
+        _assertDepositRequest(0, ali, ali, aliEarmarkedAssets - 1, depositTimestamp);
 
         _assertVaultState();
-        _assertAccountBalances(userBalances);
+        _assertAccountBalances(aliBalances);
         _assertAccountBalances(vaultBalances);
         _assertAccountBalances(takerBalances);
 
@@ -79,16 +80,22 @@ contract E2ETests is TestBase {
 
         skip(1 days);
 
-        vaultState.availableLiquidAssets = 1_000_100e6 - 1;
+        uint256 deltaSavingsYield = vaultState.availableLiquidAssets * 1 / 10_000;
 
-        vaultState.depositRequests.pendingShareValue = 1_000_100e6 - 1;
+        assertEq(deltaSavingsYield, 100e6 - 1);
 
-        vaultBalances.savingsShareValue = 1_000_100e6 - 1;
+        aliEarmarkedAssets += deltaSavingsYield;
 
-        _assertDepositRequest(0, user, user, 1_000_100e6 - 1, depositTimestamp);
+        vaultState.availableLiquidAssets += deltaSavingsYield + 1;
+
+        vaultState.depositRequests.pendingShareValue += deltaSavingsYield + 1;
+
+        vaultBalances.savingsShareValue += deltaSavingsYield + 1;
+
+        _assertDepositRequest(0, ali, ali, aliEarmarkedAssets, depositTimestamp);
 
         _assertVaultState();
-        _assertAccountBalances(userBalances);
+        _assertAccountBalances(aliBalances);
         _assertAccountBalances(vaultBalances);
         _assertAccountBalances(takerBalances);
 
@@ -96,24 +103,24 @@ contract E2ETests is TestBase {
 
         _setCapacity(VAULT_CAPACITY);
 
+        vaultState.availableCapacityValue = spPrime.convertToAssets(VAULT_CAPACITY);
+
         _processPendingDeposits(type(uint256).max);
 
         vaultState.rho = vm.getBlockTimestamp();
         vaultState.chi = 1.000199999999999999999965892e27;
 
-        vaultState.totalAssets            = 1_000_100e6 - 2;
-        vaultState.availableCapacityValue = 99_019_900e6 + 1;  // (100m - 999_900.019995) * 1.0002
+        vaultState.totalAssets            += aliEarmarkedAssets - 1;
+        vaultState.availableCapacityValue -= aliEarmarkedAssets - 1;
 
-        vaultState.depositRequests.pendingShareValue = 0;
-        vaultState.depositRequests.length            = 0;
-        vaultState.depositRequests.processedCount    = 1;
+        vaultState.depositRequests.pendingShareValue  = 0;
+        vaultState.depositRequests.length            -= 1;
+        vaultState.depositRequests.processedCount    += 1;
 
-        userBalances.shareValue = 1_000_100e6 - 2;
-
-        assertEq(spPrime.balanceOf(user), 999_900.019995e6);  // (1_000_100e6 - 1) / 1.0002
+        aliBalances.shareValue = aliEarmarkedAssets - 1;
 
         _assertVaultState();
-        _assertAccountBalances(userBalances);
+        _assertAccountBalances(aliBalances);
         _assertAccountBalances(vaultBalances);
         _assertAccountBalances(takerBalances);
 
@@ -121,34 +128,44 @@ contract E2ETests is TestBase {
 
         skip(1 days);
 
-        vaultState.totalAssets            = 1_000_300.02e6 - 2;
-        vaultState.availableCapacityValue = 99_039_703.98e6 + 1;
-        vaultState.availableLiquidAssets  = 1_000_200.01e6 - 1;
+        deltaSavingsYield = vaultState.availableLiquidAssets * 1 / 10_000;
 
-        userBalances.shareValue = 1_000_300.02e6 - 2;
+        uint256 aliDeltaPrimeYield = aliEarmarkedAssets * 2 / 10_000;
 
-        vaultBalances.savingsShareValue = 1_000_200.01e6 - 1;
+        assertEq(deltaSavingsYield,  100.01e6 - 1);
+        assertEq(aliDeltaPrimeYield, 200.02e6 - 1);
+
+        aliEarmarkedAssets += aliDeltaPrimeYield;
+
+        vaultState.totalAssets            += aliDeltaPrimeYield + 1;
+        vaultState.availableCapacityValue += vaultState.availableCapacityValue * 2 / 10_000;
+        vaultState.availableLiquidAssets  += deltaSavingsYield + 1;
+
+        aliBalances.shareValue += aliDeltaPrimeYield + 1;
+
+        vaultBalances.savingsShareValue += deltaSavingsYield + 1;
 
         _assertVaultState();
-        _assertAccountBalances(userBalances);
+        _assertAccountBalances(aliBalances);
         _assertAccountBalances(vaultBalances);
         _assertAccountBalances(takerBalances);
 
         // 5. Take, taker deploys half of the vault's spUSDC
 
-        uint256 takenSavingsShares = spUSDC.balanceOf(address(spPrime)) / 2;
+        uint256 takenSavingsShareValue = vaultState.availableLiquidAssets / 2;
 
-        vm.prank(taker);
-        spPrime.take(takenSavingsShares);
+        vm.startPrank(taker);
+        spPrime.take(spUSDC.convertToShares(takenSavingsShareValue));
+        vm.stopPrank();
 
-        vaultState.availableLiquidAssets = 500_100.005e6 - 1;
+        vaultState.availableLiquidAssets -= takenSavingsShareValue;
 
-        vaultBalances.savingsShareValue = 500_100.005e6 - 1;
+        vaultBalances.savingsShareValue -= takenSavingsShareValue;
 
-        takerBalances.savingsShareValue = 500_100.005e6 - 1;
+        takerBalances.savingsShareValue += takenSavingsShareValue - 1;
 
         _assertVaultState();
-        _assertAccountBalances(userBalances);
+        _assertAccountBalances(aliBalances);
         _assertAccountBalances(vaultBalances);
         _assertAccountBalances(takerBalances);
 
@@ -156,41 +173,52 @@ contract E2ETests is TestBase {
 
         skip(1 days);
 
-        vaultState.totalAssets            = 1_000_500.08e6 + 2;
-        vaultState.availableCapacityValue = 99_059_511.9208e6 - 3;
-        vaultState.availableLiquidAssets  = 500_150.015e6;
+        deltaSavingsYield  = vaultState.availableLiquidAssets * 1 / 10_000;
+        aliDeltaPrimeYield = aliEarmarkedAssets * 2 / 10_000;
 
-        userBalances.shareValue = 1_000_500.08e6 + 2;
+        assertEq(deltaSavingsYield,  50.01e6);
+        assertEq(aliDeltaPrimeYield, 200.060002e6 + 1);
 
-        vaultBalances.savingsShareValue = 500_150.015e6;
+        aliEarmarkedAssets += aliDeltaPrimeYield;
 
-        takerBalances.savingsShareValue = 500_150.015e6;
+        vaultState.totalAssets            += aliDeltaPrimeYield + 1;
+        vaultState.availableCapacityValue += vaultState.availableCapacityValue * 2 / 10_000;
+        vaultState.availableLiquidAssets  += deltaSavingsYield + 1;
+
+        aliBalances.shareValue += aliDeltaPrimeYield + 1;
+
+        vaultBalances.savingsShareValue += deltaSavingsYield + 1;
+
+        takerBalances.savingsShareValue += takerBalances.savingsShareValue * 1 / 10_000 + 1;
 
         _assertVaultState();
-        _assertAccountBalances(userBalances);
+        _assertAccountBalances(aliBalances);
         _assertAccountBalances(vaultBalances);
         _assertAccountBalances(takerBalances);
 
-        // 7. User requests redeem of 250k shares, worth 250,150.03 USD at chi of 1.0002^3
+        // 7. User requests redeem of 250k USD worth of shares
 
-        _requestRedeem(user, 250_000e6);  // Redeem Request 0
+        uint256 redeemValue           = 250_000e6;
+        uint256 requestedRedeemShares = spPrime.convertToShares(redeemValue);
+
+        _requestRedeem(ali, requestedRedeemShares);  // Redeem Request 0
 
         uint256 redeemTimestamp = vm.getBlockTimestamp();
 
         vaultState.rho = redeemTimestamp;
         vaultState.chi = 1.000600120007999999999897636e27;
 
-        vaultState.redeemRequests.pendingShareValue = 250_150.03e6 + 1;
-        vaultState.redeemRequests.length            = 1;
+        vaultState.redeemRequests.pendingShareValue += redeemValue - 1;
+        vaultState.redeemRequests.length            += 1;
 
-        userBalances.shareValue = 750_350.05e6;
+        aliBalances.shareValue -= redeemValue - 1;
 
-        vaultBalances.shareValue = 250_150.03e6 + 1;
+        vaultBalances.shareValue += redeemValue - 1;
 
-        _assertRedeemRequest(0, user, user, 250_150.03e6 + 1, redeemTimestamp);
+        _assertRedeemRequest(0, ali, ali, redeemValue - 1, redeemTimestamp);
 
         _assertVaultState();
-        _assertAccountBalances(userBalances);
+        _assertAccountBalances(aliBalances);
         _assertAccountBalances(vaultBalances);
         _assertAccountBalances(takerBalances);
 
@@ -198,23 +226,36 @@ contract E2ETests is TestBase {
 
         skip(1 days);
 
-        vaultState.totalAssets            = 1_000_700.180018e6;
-        vaultState.availableCapacityValue = 99_079_323.823181e6;
-        vaultState.availableLiquidAssets  = 500_200.03e6 + 1;
+        deltaSavingsYield  = vaultState.availableLiquidAssets * 1 / 10_000;
+        aliDeltaPrimeYield = (aliEarmarkedAssets - redeemValue) * 2 / 10_000;
 
-        vaultState.redeemRequests.pendingShareValue = 250_200.060008e6;
+        uint256 redeemRequestPrimeYield = redeemValue * 2 / 10_000;
 
-        userBalances.shareValue = 750_500.12001e6;
+        assertEq(deltaSavingsYield,       50.015e6 + 1);
+        assertEq(aliDeltaPrimeYield,      150.100015e6 + 1);
+        assertEq(redeemRequestPrimeYield, 50e6);
 
-        vaultBalances.shareValue        = 250_200.060008e6;
-        vaultBalances.savingsShareValue = 500_200.03e6 + 1;
+        aliEarmarkedAssets += aliDeltaPrimeYield + redeemRequestPrimeYield;
 
-        takerBalances.savingsShareValue = 500_200.03e6 + 1;
+        redeemValue += redeemRequestPrimeYield;
 
-        _assertRedeemRequest(0, user, user, 250_200.060008e6, redeemTimestamp);
+        vaultState.totalAssets            += aliDeltaPrimeYield + redeemRequestPrimeYield;
+        vaultState.availableCapacityValue += vaultState.availableCapacityValue * 2 / 10_000;
+        vaultState.availableLiquidAssets  += deltaSavingsYield;
+
+        vaultState.redeemRequests.pendingShareValue += redeemRequestPrimeYield;
+
+        aliBalances.shareValue += aliDeltaPrimeYield;
+
+        vaultBalances.shareValue        += redeemRequestPrimeYield;
+        vaultBalances.savingsShareValue += deltaSavingsYield;
+
+        takerBalances.savingsShareValue += takerBalances.savingsShareValue * 1 / 10_000;
+
+        _assertRedeemRequest(0, ali, ali, redeemValue - 1, redeemTimestamp);
 
         _assertVaultState();
-        _assertAccountBalances(userBalances);
+        _assertAccountBalances(aliBalances);
         _assertAccountBalances(vaultBalances);
         _assertAccountBalances(takerBalances);
 
@@ -222,24 +263,51 @@ contract E2ETests is TestBase {
 
         _processPendingRedeems();
 
+        aliEarmarkedAssets -= redeemValue;
+
         vaultState.rho = vm.getBlockTimestamp();
         vaultState.chi = 1.000800240032001599999863487e27;
 
-        vaultState.totalAssets            = 750_500.12001e6;
-        vaultState.availableCapacityValue = 99_329_523.883189e6;
-        vaultState.availableLiquidAssets  = 249_999.969994e6;
+        vaultState.totalAssets            -= redeemValue - 1;
+        vaultState.availableCapacityValue += redeemValue;
+        vaultState.availableLiquidAssets  -= redeemValue - 2;
 
         vaultState.redeemRequests.pendingShareValue = 0;
         vaultState.redeemRequests.length            = 0;
         vaultState.redeemRequests.processedCount    = 1;
 
-        userBalances.assets = 250_200.060007e6;
+        aliBalances.assets += redeemValue - 2;
 
         vaultBalances.shareValue        = 0;
-        vaultBalances.savingsShareValue = 249_999.969994e6;
+        vaultBalances.savingsShareValue -= redeemValue - 2;
 
         _assertVaultState();
-        _assertAccountBalances(userBalances);
+        _assertAccountBalances(aliBalances);
+        _assertAccountBalances(vaultBalances);
+        _assertAccountBalances(takerBalances);
+
+        // 10. Warp 1 day
+
+        skip(1 days);
+
+        deltaSavingsYield  = vaultState.availableLiquidAssets * 1 / 10_000;
+        aliDeltaPrimeYield = aliEarmarkedAssets * 2 / 10_000;
+
+        assertEq(deltaSavingsYield,  25.015002e6 + 1);
+        assertEq(aliDeltaPrimeYield, 150.130035e6 + 1);
+
+        vaultState.totalAssets            += aliDeltaPrimeYield;
+        vaultState.availableCapacityValue += vaultState.availableCapacityValue * 2 / 10_000;
+        vaultState.availableLiquidAssets  += deltaSavingsYield;
+
+        aliBalances.shareValue += aliDeltaPrimeYield;
+
+        vaultBalances.savingsShareValue += deltaSavingsYield;
+
+        takerBalances.savingsShareValue += takerBalances.savingsShareValue * 1 / 10_000;
+
+        _assertVaultState();
+        _assertAccountBalances(aliBalances);
         _assertAccountBalances(vaultBalances);
         _assertAccountBalances(takerBalances);
     }
