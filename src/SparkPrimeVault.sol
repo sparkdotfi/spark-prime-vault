@@ -118,18 +118,18 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     string public override name;
     string public override symbol;
 
-    uint64  public override rho;    // Time of last drip              [unix epoch time]
-    uint192 public override chi;    // The Rate Accumulator           [ray]
-    uint256 public override vsr;    // The Vault Savings Rate         [ray]
-    uint256 public override minVSR; // The minimum Vault Savings Rate [ray]
-    uint256 public override maxVSR; // The maximum Vault Savings Rate [ray]
+    uint64  public override rho;     // Time of last drip              [unix epoch time]
+    uint192 public override chi;     // The Rate Accumulator           [ray]
+    uint256 public override vsr;     // The Vault Savings Rate         [ray]
+    uint256 public override minVSR;  // The minimum Vault Savings Rate [ray]
+    uint256 public override maxVSR;  // The maximum Vault Savings Rate [ray]
 
-    uint256 public override maxCapacity;            // Max `totalSupply`
-    uint256 public override minDeposit;             // [savings asset units]
-    uint256 public override minDepositCancellation; // [savings shares units]
-    uint256 public override minRedeem;              // [shares units]
-    uint256 public override redeemFeeRate;          // Fee rate burned in redeem requests [wad]
-    uint256 public override maxRedeemFeeRate;       // [wad]
+    uint256 public override maxCapacity;             // Max `totalSupply`
+    uint256 public override minDeposit;              // [savings asset units]
+    uint256 public override minDepositCancellation;  // [savings shares units]
+    uint256 public override minRedeem;               // [shares units]
+    uint256 public override redeemFeeRate;           // Fee rate burned in redeem requests [wad]
+    uint256 public override maxRedeemFeeRate;        // [wad]
 
     uint256 public override totalSupply;
 
@@ -146,7 +146,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     mapping (address account => uint256 balance) public override balanceOf;
     mapping (address account => uint256 nonce)   public override nonces;
 
-    mapping (address account => uint256 assets) public override claimableAssets;
+    mapping (address account => uint256 assets) public override claimableAssetsOf;
 
     mapping (address account => mapping (address spender => uint256 amount))
         public override allowance;
@@ -520,11 +520,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /**********************************************************************************************/
 
     function claim(address recipient_) external override returns (uint256 assets_) {
-        assets_ = claimableAssets[recipient_];
+        assets_ = claimableAssetsOf[recipient_];
 
         require(assets_ != 0, NothingToClaim());
 
-        claimableAssets[recipient_] = 0;
+        claimableAssetsOf[recipient_] = 0;
 
         totalClaimable -= assets_;
 
@@ -1121,8 +1121,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /**********************************************************************************************/
 
     function _incrementClaimableAssets(address recipient_, uint256 assets_) internal {
-        claimableAssets[recipient_] += assets_;
-        totalClaimable              += assets_;
+        claimableAssetsOf[recipient_] += assets_;
+        totalClaimable                += assets_;
 
         emit ClaimableAssetsIncreased(recipient_, assets_);
     }
