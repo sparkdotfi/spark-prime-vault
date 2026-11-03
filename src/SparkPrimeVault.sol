@@ -994,7 +994,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
             if (fillable_ == 0) break;  // Out of liquidity
 
             uint256 shares_ = _min(request_.shares, fillable_);
-            uint256 assets_ = convertToAssets(shares_);
 
             pendingRedeemShares -= shares_;
             request_.shares     -= shares_;
@@ -1003,7 +1002,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
             _burn(address(this), shares_);
 
             // Redeem savings shares rounded down, so that any rounding error stays with the vault.
-            uint256 savingsShares_ = IERC4626Like(savings).convertToShares(assets_);
+            uint256 savingsShares_ =
+                IERC4626Like(savings).convertToShares(convertToAssets(shares_));
 
             assets_ = _redeemSavings(savingsShares_, request_.recipient);
 
