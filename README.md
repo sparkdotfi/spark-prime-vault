@@ -6,22 +6,23 @@ An upgradeable (UUPS), yield-accruing vault token denominated in an underlying a
 
 The vault token is a standard ERC-20 (with EIP-2612-style `permit`, supporting both EOA and ERC-1271 signatures) whose `decimals` match the underlying asset. Transfers to the zero address or to the vault itself are rejected.
 
-> ### **THIS VAULT IS INTENDED TO BE USED WITH `spark-vaults-v2@v1.0.1` AS THE `savings` VAULT. ANY OTHER `savings` IMPLEMENTATION SHOULD BE REVIEWED FROM FIRST PRINCIPLES.** <br>
+> [!WARNING]
+> **THIS VAULT IS INTENDED TO BE USED WITH `spark-vaults-v2@v1.0.1` AS THE `savings` VAULT. ANY OTHER `savings` IMPLEMENTATION SHOULD BE REVIEWED FROM FIRST PRINCIPLES.**
 >
-> If another vault is used, it must AT LEAST adhere to these standards: <br>
+> If another vault is used, it must AT LEAST adhere to these standards:
 >
-> Savings vault:<br>
+> **Savings vault**
 >
-> - `redeem(shares, receiver, owner)` succeeds for any amount, including zero shares, or shares that round to zero assets. This is because processing the redeem and cancellation queues can call `redeem` with 0 or dust amounts that are worth zero assets.<br>
-> - `maxWithdraw(address(this))` and `maxRedeem(address(this))` return amounts that a `redeem` in the same block will honour in full.<br>
-> - No deposit or exit fee. `convertToAssets`, `convertToShares`, and the executed amounts agree up to rounding, and the full asset amount reaches the receiver.<br>
-> - The share price never decreases.<br>
-> - Redemptions are synchronous and pay out to an arbitrary receiver.<br>
-> - `deposit` accepts the vault as both caller and receiver.<br>
+> - `redeem(shares, receiver, owner)` succeeds for any amount, including zero shares, or shares that round to zero assets. This is because processing the redeem and cancellation queues can call `redeem` with 0 or dust amounts that are worth zero assets.
+> - `maxWithdraw(address(this))` and `maxRedeem(address(this))` return amounts that a `redeem` in the same block will honour in full.
+> - No deposit or exit fee. `convertToAssets`, `convertToShares`, and the executed amounts agree up to rounding, and the full asset amount reaches the receiver.
+> - The share price never decreases.
+> - Redemptions are synchronous and pay out to an arbitrary receiver.
+> - `deposit` accepts the vault as both caller and receiver.
 >
-> Underlying asset:<br>
+> **Underlying asset**
 >
-> - `transfer` succeeds for any amount, including zero.<br>
+> - `transfer` succeeds for any amount, including zero.
 
 ## Core Mechanisms
 
