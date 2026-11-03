@@ -65,7 +65,7 @@ abstract contract TestBase is Test {
         uint256 assets;             // USDC held
         uint256 shareValue;         // USDC value of spPrime held
         uint256 savingsShareValue;  // USDC value of spUSDC held
-        uint256 claimableAssets;    // USDC claimable
+        uint256 claimableAssetsOf;  // USDC claimable
     }
 
     uint256 internal constant MINIMUM_DEPOSIT              = 100e6;
@@ -429,10 +429,10 @@ abstract contract TestBase is Test {
         );
 
         assertApproxEqAbs(
-            spPrime.claimableAssets(accountState.account),
-            accountState.claimableAssets,
+            spPrime.claimableAssetsOf(accountState.account),
+            accountState.claimableAssetsOf,
             tolerance,
-            "accountState.claimableAssets"
+            "accountState.claimableAssetsOf"
         );
     }
 

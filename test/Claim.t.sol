@@ -115,7 +115,7 @@ contract ClaimTests is TestBase {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         AccountBalances memory vaultBalances = AccountBalances({
@@ -123,7 +123,7 @@ contract ClaimTests is TestBase {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 1_000_000e6 - 1,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         _assertVaultState();
@@ -154,7 +154,7 @@ contract ClaimTests is TestBase {
         vaultState.depositCancellationRequests.length            = 0;
         vaultState.depositCancellationRequests.processedCount    = 1;
 
-        userBalances.claimableAssets = 1_000_000e6 - 1;
+        userBalances.claimableAssetsOf = 1_000_000e6 - 1;
 
         vaultBalances.assets            = 1_000_000e6 - 1;
         vaultBalances.savingsShareValue = 0;
@@ -172,8 +172,8 @@ contract ClaimTests is TestBase {
 
         vaultState.totalClaimable = 0;
 
-        userBalances.assets          = 1_000_000e6 - 1;
-        userBalances.claimableAssets = 0;
+        userBalances.assets            = 1_000_000e6 - 1;
+        userBalances.claimableAssetsOf = 0;
 
         vaultBalances.assets = 0;
 
@@ -203,7 +203,7 @@ contract ClaimTests is TestBase {
             assets            : 0,
             shareValue        : 500_000e6 - 1,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         AccountBalances memory vaultBalances = AccountBalances({
@@ -211,7 +211,7 @@ contract ClaimTests is TestBase {
             assets            : 0,
             shareValue        : 500_000e6,
             savingsShareValue : 1_000_000e6 - 1,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         _assertVaultState();
@@ -244,7 +244,7 @@ contract ClaimTests is TestBase {
         vaultState.redeemRequests.length            = 0;
         vaultState.redeemRequests.processedCount    = 1;
 
-        userBalances.claimableAssets = 500_000e6 - 1;
+        userBalances.claimableAssetsOf = 500_000e6 - 1;
 
         vaultBalances.assets            = 500_000e6 - 1;
         vaultBalances.shareValue        = 0;
@@ -262,8 +262,8 @@ contract ClaimTests is TestBase {
 
         vaultState.totalClaimable = 0;
 
-        userBalances.assets          = 500_000e6 - 1;
-        userBalances.claimableAssets = 0;
+        userBalances.assets            = 500_000e6 - 1;
+        userBalances.claimableAssetsOf = 0;
 
         vaultBalances.assets = 0;
 

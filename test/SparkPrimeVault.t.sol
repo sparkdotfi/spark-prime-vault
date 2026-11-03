@@ -113,7 +113,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 1_000_000e6 - 2,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         AccountBalances memory vaultBalances = AccountBalances({
@@ -121,7 +121,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 1_000_000e6 - 1,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         _assertVaultState();
@@ -192,7 +192,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 1_000_000e6 - 2,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         AccountBalances memory vaultBalances = AccountBalances({
@@ -200,7 +200,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 1_000_000e6 - 1,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         _assertVaultState();
@@ -273,7 +273,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
             assets            : 200_000e6,
             shareValue        : 0,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         AccountBalances memory vaultBalances = AccountBalances({
@@ -281,7 +281,7 @@ contract RequestDepositTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 3_000e6 - 1,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         _assertVaultState();
@@ -404,7 +404,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 1_000_000e6 - 2,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         AccountBalances memory vaultBalances = AccountBalances({
@@ -412,7 +412,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 1_000_000e6 - 1,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         _assertVaultState();
@@ -462,7 +462,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 1_000_000e6 - 2,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         AccountBalances memory vaultBalances = AccountBalances({
@@ -470,7 +470,7 @@ contract RequestRedeemTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 1_000_000e6 - 1,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         _assertVaultState();
@@ -580,7 +580,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         bobBalances = AccountBalances({
@@ -588,7 +588,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         camBalances = AccountBalances({
@@ -596,7 +596,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         vaultBalances = AccountBalances({
@@ -604,7 +604,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : depositedAssets - 5,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         _assertVaultState();
@@ -1111,7 +1111,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         bobBalances = AccountBalances({
@@ -1119,7 +1119,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         camBalances = AccountBalances({
@@ -1127,7 +1127,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         danBalances = AccountBalances({
@@ -1135,7 +1135,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         vaultBalances = AccountBalances({
@@ -1143,7 +1143,7 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : depositedAssets - 5,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         _assertVaultState();
@@ -1310,15 +1310,15 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         vaultState.depositCancellationRequests.length            = 0;
         vaultState.depositCancellationRequests.processedCount    = 10;
 
-        aliBalances.assets          += 1_000_000e6 - 1;
-        aliBalances.claimableAssets += 100_000e6 + 700_000e6 - 2;
+        aliBalances.assets            += 1_000_000e6 - 1;
+        aliBalances.claimableAssetsOf += 100_000e6 + 700_000e6 - 2;
 
-        bobBalances.assets          += 200_000e6 - 1;
-        bobBalances.claimableAssets += 500_000e6 - 1;
+        bobBalances.assets            += 200_000e6 - 1;
+        bobBalances.claimableAssetsOf += 500_000e6 - 1;
 
         camBalances.assets += 300_000e6 + 600_000e6 + 900_000e6 - 3;
 
-        danBalances.claimableAssets += 400_000e6 + 800_000e6 - 2;
+        danBalances.claimableAssetsOf += 400_000e6 + 800_000e6 - 2;
 
         vaultBalances.assets            += totalClaimable - 5;
         vaultBalances.savingsShareValue  = 0;
@@ -1396,14 +1396,14 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         vaultState.depositCancellationRequests.length            = 4;
         vaultState.depositCancellationRequests.processedCount    = 6;
 
-        aliBalances.claimableAssets += 100_000e6 - 1;
+        aliBalances.claimableAssetsOf += 100_000e6 - 1;
 
-        bobBalances.assets          += 200_000e6 - 1;
-        bobBalances.claimableAssets += 500_000e6 - 1;
+        bobBalances.assets            += 200_000e6 - 1;
+        bobBalances.claimableAssetsOf += 500_000e6 - 1;
 
         camBalances.assets += 300_000e6 + 600_000e6 - 2;
 
-        danBalances.claimableAssets += 400_000e6 - 1;
+        danBalances.claimableAssetsOf += 400_000e6 - 1;
 
         vaultBalances.assets            += totalClaimable - 3;
         vaultBalances.savingsShareValue -= assetsWithdrawn - 2;
@@ -1486,14 +1486,14 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         vaultState.depositCancellationRequests.length            = 5;
         vaultState.depositCancellationRequests.processedCount    = 5;
 
-        aliBalances.claimableAssets += 100_000e6 - 1;
+        aliBalances.claimableAssetsOf += 100_000e6 - 1;
 
-        bobBalances.assets          += 200_000e6 - 1;
-        bobBalances.claimableAssets += 500_000e6 - 1;
+        bobBalances.assets            += 200_000e6 - 1;
+        bobBalances.claimableAssetsOf += 500_000e6 - 1;
 
         camBalances.assets += 300_000e6 + 500_000e6;
 
-        danBalances.claimableAssets += 400_000e6 - 1;
+        danBalances.claimableAssetsOf += 400_000e6 - 1;
 
         vaultBalances.assets            += totalClaimable - 3;
         vaultBalances.savingsShareValue -= assetsWithdrawn;
@@ -1577,14 +1577,14 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         vaultState.depositCancellationRequests.length             = 5;
         vaultState.depositCancellationRequests.processedCount     = 5;
 
-        aliBalances.claimableAssets += 100_000e6 - 1;
+        aliBalances.claimableAssetsOf += 100_000e6 - 1;
 
-        bobBalances.assets          += 200_000e6 - 1;
-        bobBalances.claimableAssets += 500_000e6 - 1;
+        bobBalances.assets            += 200_000e6 - 1;
+        bobBalances.claimableAssetsOf += 500_000e6 - 1;
 
         camBalances.assets += 300_000e6 + 500_000e6;
 
-        danBalances.claimableAssets += 400_000e6 - 1;
+        danBalances.claimableAssetsOf += 400_000e6 - 1;
 
         vaultBalances.assets            += totalClaimable - 3;
         vaultBalances.savingsShareValue -= assetsWithdrawn;
@@ -1653,12 +1653,12 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         vaultState.depositCancellationRequests.length            = 0;
         vaultState.depositCancellationRequests.processedCount    = 10;
 
-        aliBalances.assets          += 1_000_000e6 - 1;
-        aliBalances.claimableAssets += 700_000e6 - 1;
+        aliBalances.assets            += 1_000_000e6 - 1;
+        aliBalances.claimableAssetsOf += 700_000e6 - 1;
 
         camBalances.assets += 100_000e6 + 900_000e6 - 3;
 
-        danBalances.claimableAssets += 800_000e6 - 1;
+        danBalances.claimableAssetsOf += 800_000e6 - 1;
 
         vaultBalances.assets            += totalClaimable - 2;
         vaultBalances.savingsShareValue  = 0;
@@ -1739,7 +1739,7 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 1,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         bobBalances = AccountBalances({
@@ -1747,7 +1747,7 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         camBalances = AccountBalances({
@@ -1755,7 +1755,7 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         danBalances = AccountBalances({
@@ -1763,7 +1763,7 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         vaultBalances = AccountBalances({
@@ -1771,7 +1771,7 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
             assets            : 0,
             shareValue        : depositedAssets - 6,
             savingsShareValue : depositedAssets - 800_000e6 - 2,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         _assertVaultState();
@@ -1965,15 +1965,15 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
         vaultState.redeemRequests.length             = 1;
         vaultState.redeemRequests.processedCount     = 9;
 
-        aliBalances.assets          += 200_000e6 + 10;
-        aliBalances.claimableAssets += 100_000e6 + 700_000e6 - 4;
+        aliBalances.assets            += 200_000e6 + 10;
+        aliBalances.claimableAssetsOf += 100_000e6 + 700_000e6 - 4;
 
         bobBalances.assets          += 200_000e6 - 2;
-        bobBalances.claimableAssets += 500_000e6 - 2;
+        bobBalances.claimableAssetsOf += 500_000e6 - 2;
 
         camBalances.assets += 300_000e6 + 600_000e6 + 900_000e6 - 6;
 
-        danBalances.claimableAssets += 400_000e6 + 800_000e6 - 4;
+        danBalances.claimableAssetsOf += 400_000e6 + 800_000e6 - 4;
 
         vaultBalances.assets            += totalClaimable - 10;
         vaultBalances.shareValue        -= assetsRedeemed + 7;
@@ -2074,14 +2074,14 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
         vaultState.redeemRequests.length             = 4;
         vaultState.redeemRequests.processedCount     = 6;
 
-        aliBalances.claimableAssets += 100_000e6 - 2;
+        aliBalances.claimableAssetsOf += 100_000e6 - 2;
 
-        bobBalances.assets          += 200_000e6 - 2;
-        bobBalances.claimableAssets += 500_000e6 - 2;
+        bobBalances.assets            += 200_000e6 - 2;
+        bobBalances.claimableAssetsOf += 500_000e6 - 2;
 
         camBalances.assets += 300_000e6 + 600_000e6 - 4;
 
-        danBalances.claimableAssets += 400_000e6 - 2;
+        danBalances.claimableAssetsOf += 400_000e6 - 2;
 
         vaultBalances.assets            += totalClaimable - 6;
         vaultBalances.shareValue        -= assetsRedeemed - 2;
@@ -2185,14 +2185,14 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
         vaultState.redeemRequests.length             = 5;
         vaultState.redeemRequests.processedCount     = 5;
 
-        aliBalances.claimableAssets += 100_000e6 - 2;
+        aliBalances.claimableAssetsOf += 100_000e6 - 2;
 
-        bobBalances.assets          += 200_000e6 - 2;
-        bobBalances.claimableAssets += 500_000e6 - 2;
+        bobBalances.assets            += 200_000e6 - 2;
+        bobBalances.claimableAssetsOf += 500_000e6 - 2;
 
         camBalances.assets += 300_000e6 + 500_000e6 - 3;
 
-        danBalances.claimableAssets += 400_000e6 - 2;
+        danBalances.claimableAssetsOf += 400_000e6 - 2;
 
         vaultBalances.assets            += totalClaimable - 6;
         vaultBalances.shareValue        -= assetsRedeemed - 1;
@@ -2297,14 +2297,14 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
         vaultState.redeemRequests.length             = 5;
         vaultState.redeemRequests.processedCount     = 5;
 
-        aliBalances.claimableAssets += 100_000e6 - 2;
+        aliBalances.claimableAssetsOf += 100_000e6 - 2;
 
-        bobBalances.assets          += 200_000e6 - 2;
-        bobBalances.claimableAssets += 500_000e6 - 2;
+        bobBalances.assets            += 200_000e6 - 2;
+        bobBalances.claimableAssetsOf += 500_000e6 - 2;
 
         camBalances.assets += 300_000e6 + 500_000e6 - 3;
 
-        danBalances.claimableAssets += 400_000e6 - 2;
+        danBalances.claimableAssetsOf += 400_000e6 - 2;
 
         vaultBalances.assets            += totalClaimable - 6;
         vaultBalances.shareValue        -= assetsRedeemed - 1;
@@ -2392,12 +2392,12 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
         vaultState.redeemRequests.length             = 1;
         vaultState.redeemRequests.processedCount     = 9;
 
-        aliBalances.assets          += 200_000e6 + 12;
-        aliBalances.claimableAssets += 700_000e6 - 2;
+        aliBalances.assets            += 200_000e6 + 12;
+        aliBalances.claimableAssetsOf += 700_000e6 - 2;
 
         camBalances.assets += 100_000e6 + 900_000e6 - 5;
 
-        danBalances.claimableAssets += 800_000e6 - 2;
+        danBalances.claimableAssetsOf += 800_000e6 - 2;
 
         vaultBalances.assets            += totalClaimable - 4;
         vaultBalances.shareValue        -= assetsRedeemed + 10;
