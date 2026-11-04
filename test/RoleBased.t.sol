@@ -370,7 +370,7 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.pendingRedeemShares(), 0);
         assertEq(spPrime.totalSupply(),         0);
         assertEq(spPrime.totalAssets(),         0);
-        assertEq(usdc.balanceOf(user),          900_000e6 - 2);  // Rounding, 100k loss incurred
+        assertEq(usdc.balanceOf(user),          900_000e6 - 3);  // Rounding, 100k loss incurred
     }
 
     /**********************************************************************************************/

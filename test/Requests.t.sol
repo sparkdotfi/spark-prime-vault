@@ -46,7 +46,7 @@ contract RequestDepositCancellationTests is TestBase {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         recipientBalances = AccountBalances({
@@ -54,7 +54,7 @@ contract RequestDepositCancellationTests is TestBase {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         vaultBalances = AccountBalances({
@@ -62,7 +62,7 @@ contract RequestDepositCancellationTests is TestBase {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 1_000_000e6 - 1,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         _assertVaultState();
