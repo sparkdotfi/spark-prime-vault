@@ -161,7 +161,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /**********************************************************************************************/
 
     constructor() {
-        _disableInitializers();  // Avoid initializing in the context of the implementation
+        _disableInitializers(); // Avoid initializing in the context of the implementation
     }
 
     // NOTE: Neither UUPSUpgradeable nor AccessControlEnumerableUpgradeable require init functions

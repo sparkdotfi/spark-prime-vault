@@ -2418,24 +2418,28 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
         _assertRedeemRequest(9, ali, ali, 800_000e6 - 15);  // Partial fill
     }
 
-    function _getMaxRedeemableAmount(uint256 requestAmount, uint256 maxShares, uint256 sharesRedeemed)
-        internal view returns (uint256)
-    {
-        uint256 requestShares = spPrime.convertToShares(requestAmount);
-
-        return (sharesRedeemed + requestShares) > maxShares
-            ? maxShares - sharesRedeemed
-            : requestShares;
+    // Requests whose recipient cannot receive USDC, so the redeem falls back to claimable (see `setUp`).
+    function _redeemReverts(uint256 requestId) internal pure returns (bool) {
+        return requestId == 0 || requestId == 3 || requestId == 4 || requestId == 6 || requestId == 7;
     }
 
-    function _mockWithdrawRevert(uint256 withdrawAmount, address recipient) internal {
-        if (withdrawAmount == 0) return;
+    function _balancesOf(address account) internal view returns (AccountBalances storage) {
+        if (account == ali) return aliBalances;
+        if (account == bob) return bobBalances;
+        if (account == cam) return camBalances;
+        return danBalances;
+    }
 
+    function _mockRedeemRevert(uint256 assets, address recipient) internal {
         vm.mockCallRevert(
             address(spUSDC),
-            abi.encodeWithSelector(ISparkVaultLike.withdraw.selector, withdrawAmount, recipient, address(spPrime)),
+            abi.encodeWithSelector(ISparkVaultLike.redeem.selector, spUSDC.convertToShares(assets), recipient, address(spPrime)),
             ""
         );
+    }
+
+    function _min(uint256 x, uint256 y) internal pure returns (uint256) {
+        return x < y ? x : y;
     }
 
     function testFuzz_processPendingRedeems(uint256 maxShareValue, uint256 maxRequests) external {
@@ -2443,175 +2447,45 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
         maxRequests   = _bound(maxRequests,   0, 2 * vaultState.redeemRequests.length);
 
         uint256 maxShares = spPrime.convertToShares(maxShareValue);
+        uint256 remaining = maxShares;
+        uint256 end       = _min(maxRequests, vaultState.redeemRequests.length);
 
-        // Redeems are also capped by the vault's liquid assets, which only limits the last request.
-        uint256 liquidShares = spPrime.convertToShares(vaultState.availableLiquidAssets);
+        for (uint256 i = 0; i < end && remaining != 0; ++i) {
+            ( , address recipient, , uint256 requestShares ) = spPrime.getPendingRedeemRequest(i);
 
-        if (maxShares > liquidShares) {
-            maxShares = liquidShares;
-        }
+            // Each fill is capped by the vault's liquid assets (800k was taken in `setUp`).
+            uint256 fillable = _min(remaining, spPrime.convertToShares(vaultState.availableLiquidAssets));
+            uint256 shares   = _min(requestShares, fillable);
 
-        uint256 sharesRedeemed;
+            // Savings shares are rounded down, so the recipient receives slightly less than the
+            // value of the spPrime shares burned.
+            uint256 shareValue = spPrime.convertToAssets(shares);
+            uint256 assets     = spUSDC.convertToAssets(spUSDC.convertToShares(shareValue));
 
-        for (uint256 i = 0; i < maxRequests; ++i) {
-            if (i == 0) {
-                uint256 redeemShares = _getMaxRedeemableAmount(100_000e6, maxShares, sharesRedeemed);
-                uint256 redeemAmount = spPrime.convertToAssets(redeemShares);
+            remaining -= shares;
 
-                sharesRedeemed              += redeemShares;
-                vaultState.totalClaimable   += redeemAmount;
-                vaultBalances.assets        += redeemAmount;
-                aliBalances.claimableAssets += redeemAmount;
+            vaultState.totalAssets                      -= shareValue;
+            vaultState.availableCapacityValue           += shareValue;
+            vaultState.availableLiquidAssets            -= assets;
+            vaultState.redeemRequests.pendingShareValue -= shareValue;
 
-                _mockWithdrawRevert(redeemAmount, ali);
+            vaultBalances.shareValue        -= shareValue;
+            vaultBalances.savingsShareValue -= assets;
 
-                if (redeemShares < spPrime.convertToShares(100_000e6)) break;
+            if (_redeemReverts(i)) {
+                _mockRedeemRevert(shareValue, recipient);
+
+                _balancesOf(recipient).claimableAssetsOf += assets;
+                vaultState.totalClaimable                += assets;
+                vaultBalances.assets                     += assets;
+            } else {
+                _balancesOf(recipient).assets += assets;
             }
 
-            if (i == 1) {
-                uint256 redeemShares = _getMaxRedeemableAmount(200_000e6, maxShares, sharesRedeemed);
-                uint256 redeemAmount = spPrime.convertToAssets(redeemShares);
-
-                sharesRedeemed     += redeemShares;
-                bobBalances.assets += redeemAmount;
-
-                if (redeemShares < spPrime.convertToShares(200_000e6)) break;
-            }
-
-            if (i == 2) {
-                uint256 redeemShares =  _getMaxRedeemableAmount(300_000e6, maxShares, sharesRedeemed);
-                uint256 redeemAmount = spPrime.convertToAssets(redeemShares);
-
-                sharesRedeemed     += redeemShares;
-                camBalances.assets += redeemAmount;
-
-                if (redeemShares < spPrime.convertToShares(300_000e6)) break;
-            }
-
-            if (i == 3) {
-                uint256 redeemShares = _getMaxRedeemableAmount(400_000e6, maxShares, sharesRedeemed);
-                uint256 redeemAmount = spPrime.convertToAssets(redeemShares);
-
-                sharesRedeemed              += redeemShares;
-                vaultState.totalClaimable   += redeemAmount;
-                vaultBalances.assets        += redeemAmount;
-                danBalances.claimableAssets += redeemAmount;
-
-                _mockWithdrawRevert(redeemAmount, dan);
-
-                if (redeemShares < spPrime.convertToShares(400_000e6)) break;
-            }
-
-            if (i == 4) {
-                uint256 redeemShares = _getMaxRedeemableAmount(500_000e6, maxShares, sharesRedeemed);
-                uint256 redeemAmount = spPrime.convertToAssets(redeemShares);
-
-                sharesRedeemed              += redeemShares;
-                vaultState.totalClaimable   += redeemAmount;
-                vaultBalances.assets        += redeemAmount;
-                bobBalances.claimableAssets += redeemAmount;
-
-                _mockWithdrawRevert(redeemAmount, bob);
-
-                if (redeemShares < spPrime.convertToShares(500_000e6)) break;
-            }
-
-            if (i == 5) {
-                uint256 redeemShares = _getMaxRedeemableAmount(600_000e6, maxShares, sharesRedeemed);
-                uint256 redeemAmount = spPrime.convertToAssets(redeemShares);
-
-                sharesRedeemed     += redeemShares;
-                camBalances.assets += redeemAmount;
-
-                if (redeemShares < spPrime.convertToShares(600_000e6)) break;
-            }
-
-            if (i == 6) {
-                uint256 redeemShares = _getMaxRedeemableAmount(700_000e6, maxShares, sharesRedeemed);
-                uint256 redeemAmount = spPrime.convertToAssets(redeemShares);
-
-                sharesRedeemed              += redeemShares;
-                vaultState.totalClaimable   += redeemAmount;
-                vaultBalances.assets        += redeemAmount;
-                aliBalances.claimableAssets += redeemAmount;
-
-                _mockWithdrawRevert(redeemAmount, ali);
-
-                if (redeemShares < spPrime.convertToShares(700_000e6)) break;
-            }
-
-            if (i == 7) {
-                uint256 redeemShares = _getMaxRedeemableAmount(800_000e6, maxShares, sharesRedeemed);
-                uint256 redeemAmount = spPrime.convertToAssets(redeemShares);
-
-                sharesRedeemed              += redeemShares;
-                vaultState.totalClaimable   += redeemAmount;
-                vaultBalances.assets        += redeemAmount;
-                danBalances.claimableAssets += redeemAmount;
-
-                _mockWithdrawRevert(redeemAmount, dan);
-
-                if (redeemShares < spPrime.convertToShares(800_000e6)) break;
-            }
-
-            if (i == 8) {
-                uint256 redeemShares = _getMaxRedeemableAmount(900_000e6, maxShares, sharesRedeemed);
-                uint256 redeemAmount = spPrime.convertToAssets(redeemShares);
-
-                sharesRedeemed     += redeemShares;
-                camBalances.assets += redeemAmount;
-
-                if (redeemShares < spPrime.convertToShares(900_000e6)) break;
-            }
-
-            if (i == 9) {
-                uint256 redeemShares = _getMaxRedeemableAmount(1_000_000e6, maxShares, sharesRedeemed);
-                uint256 redeemAmount = spPrime.convertToAssets(redeemShares);
-
-                sharesRedeemed     += redeemShares;
-                aliBalances.assets += redeemAmount;
-
-                break;  // Last redeem request can never be entirely fulfilled.
-            }
+            if (shares < requestShares) break;  // Partial fill, entry stays at the head
 
             --vaultState.redeemRequests.length;
             ++vaultState.redeemRequests.processedCount;
-
-            if (vaultState.redeemRequests.length == 0) break;
-        }
-
-        uint256 assetsRedeemed = spPrime.convertToAssets(sharesRedeemed);
-
-        vaultState.availableCapacityValue += assetsRedeemed;
-
-        if (vaultState.totalAssets < assetsRedeemed) {
-            vaultState.totalAssets = 0;
-        } else {
-            vaultState.totalAssets -= assetsRedeemed;
-        }
-
-        if (vaultState.availableLiquidAssets < assetsRedeemed) {
-            vaultState.availableLiquidAssets = 0;
-        } else {
-            vaultState.availableLiquidAssets -= assetsRedeemed;
-        }
-
-        if (vaultState.redeemRequests.pendingShareValue < assetsRedeemed) {
-            vaultState.redeemRequests.pendingShareValue = 0;
-        } else {
-            vaultState.redeemRequests.pendingShareValue -= assetsRedeemed;
-        }
-
-        if (vaultBalances.shareValue < assetsRedeemed) {
-            vaultBalances.shareValue = 0;
-        } else {
-            vaultBalances.shareValue -= assetsRedeemed;
-        }
-
-        if (vaultBalances.savingsShareValue < assetsRedeemed) {
-            vaultBalances.savingsShareValue = 0;
-        } else {
-            vaultBalances.savingsShareValue -= assetsRedeemed;
         }
 
         vm.prank(operator);
