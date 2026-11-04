@@ -2454,7 +2454,7 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
             ( , address recipient, , uint256 requestShares ) = spPrime.getPendingRedeemRequest(i);
 
             // Each fill is capped by the vault's liquid assets (800k was taken in `setUp`).
-            uint256 fillable = _min(remaining, spPrime.convertToShares(vaultState.availableLiquidAssets));
+            uint256 fillable = _min(remaining,     spPrime.convertToShares(vaultState.availableLiquidAssets));
             uint256 shares   = _min(requestShares, fillable);
 
             // Savings shares are rounded down, so the recipient receives slightly less than the
