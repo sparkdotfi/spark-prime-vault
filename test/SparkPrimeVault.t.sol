@@ -1676,16 +1676,16 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         }
     }
 
-    // Requests whose recipient cannot receive USDC, so the redeem falls back to claimable (see `setUp`).
-    function _redeemReverts(uint256 requestId) internal pure returns (bool) {
-        return requestId == 0 || requestId == 3 || requestId == 4 || requestId == 6 || requestId == 7;
-    }
+    function _getMaxCancellableAmount(uint256 requestAmount, uint256 maxSavingsShares, uint256 savingsSharesWithdrawn)
+        internal view returns (uint256 savingsShares, uint256 assets, bool isPartial)
+    {
+        uint256 requestShares = spUSDC.convertToShares(requestAmount);
 
-    function _balancesOf(address account) internal view returns (AccountBalances storage) {
-        if (account == ali) return aliBalances;
-        if (account == bob) return bobBalances;
-        if (account == cam) return camBalances;
-        return danBalances;
+        savingsShares = savingsSharesWithdrawn + requestShares > maxSavingsShares
+            ? maxSavingsShares - savingsSharesWithdrawn
+            : requestShares;
+        assets        = spUSDC.convertToAssets(savingsShares);
+        isPartial     = savingsShares < requestShares;
     }
 
     function _mockRedeemRevert(uint256 savingsShares, address recipient) internal {
@@ -1696,46 +1696,134 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         );
     }
 
-    function _min(uint256 x, uint256 y) internal pure returns (uint256) {
-        return x < y ? x : y;
-    }
-
     function testFuzz_processPendingDepositCancellations(uint256 maxSavingsShareValue, uint256 maxRequests) external {
         maxSavingsShareValue = _bound(maxSavingsShareValue, 0, 2 * vaultState.depositCancellationRequests.pendingShareValue);
         maxRequests          = _bound(maxRequests,          0, 2 * vaultState.depositCancellationRequests.length);
 
         uint256 maxSavingsShares = spUSDC.convertToShares(maxSavingsShareValue);
-        uint256 remaining        = maxSavingsShares;
-        uint256 end              = _min(maxRequests, vaultState.depositCancellationRequests.length);
 
-        for (uint256 i = 0; i < end && remaining != 0; ++i) {
-            ( , address recipient, , uint256 requestShares ) = spPrime.getPendingDepositCancellationRequest(i);
+        uint256 savingsSharesWithdrawn;
+        uint256 totalClaimable;
 
-            uint256 savingsShares = _min(requestShares, remaining);
-            uint256 assets        = spUSDC.convertToAssets(savingsShares);
+        for (uint256 i = 0; i < maxRequests; ++i) {
+            if (i == 0) {
+                ( uint256 savingsShares, uint256 assets, bool isPartial ) = _getMaxCancellableAmount(100_000e6, maxSavingsShares, savingsSharesWithdrawn);
 
-            remaining -= savingsShares;
+                _mockRedeemRevert(savingsShares, ali);
 
-            vaultState.availableLiquidAssets                         -= assets;
-            vaultState.depositCancellationRequests.pendingShareValue -= assets;
+                aliBalances.claimableAssetsOf += assets;
+                totalClaimable                += assets;
+                savingsSharesWithdrawn        += savingsShares;
 
-            vaultBalances.savingsShareValue -= assets;
-
-            if (_redeemReverts(i)) {
-                _mockRedeemRevert(savingsShares, recipient);
-
-                _balancesOf(recipient).claimableAssetsOf += assets;
-                vaultState.totalClaimable                += assets;
-                vaultBalances.assets                     += assets;
-            } else {
-                _balancesOf(recipient).assets += assets;
+                if (isPartial) break;
             }
 
-            if (savingsShares < requestShares) break;  // Partial fill, entry stays at the head
+            if (i == 1) {
+                ( uint256 savingsShares, uint256 assets, bool isPartial ) = _getMaxCancellableAmount(200_000e6, maxSavingsShares, savingsSharesWithdrawn);
 
+                bobBalances.assets     += assets;
+                savingsSharesWithdrawn += savingsShares;
+
+                if (isPartial) break;
+            }
+
+            if (i == 2) {
+                ( uint256 savingsShares, uint256 assets, bool isPartial ) = _getMaxCancellableAmount(300_000e6, maxSavingsShares, savingsSharesWithdrawn);
+
+                camBalances.assets     += assets;
+                savingsSharesWithdrawn += savingsShares;
+
+                if (isPartial) break;
+            }
+
+            if (i == 3) {
+                ( uint256 savingsShares, uint256 assets, bool isPartial ) = _getMaxCancellableAmount(400_000e6, maxSavingsShares, savingsSharesWithdrawn);
+
+                _mockRedeemRevert(savingsShares, dan);
+
+                danBalances.claimableAssetsOf += assets;
+                totalClaimable                += assets;
+                savingsSharesWithdrawn        += savingsShares;
+
+                if (isPartial) break;
+            }
+
+            if (i == 4) {
+                ( uint256 savingsShares, uint256 assets, bool isPartial ) = _getMaxCancellableAmount(500_000e6, maxSavingsShares, savingsSharesWithdrawn);
+
+                _mockRedeemRevert(savingsShares, bob);
+
+                bobBalances.claimableAssetsOf += assets;
+                totalClaimable                += assets;
+                savingsSharesWithdrawn        += savingsShares;
+
+                if (isPartial) break;
+            }
+
+            if (i == 5) {
+                ( uint256 savingsShares, uint256 assets, bool isPartial ) = _getMaxCancellableAmount(600_000e6, maxSavingsShares, savingsSharesWithdrawn);
+
+                camBalances.assets     += assets;
+                savingsSharesWithdrawn += savingsShares;
+
+                if (isPartial) break;
+            }
+
+            if (i == 6) {
+                ( uint256 savingsShares, uint256 assets, bool isPartial ) = _getMaxCancellableAmount(700_000e6, maxSavingsShares, savingsSharesWithdrawn);
+
+                _mockRedeemRevert(savingsShares, ali);
+
+                aliBalances.claimableAssetsOf += assets;
+                totalClaimable                += assets;
+                savingsSharesWithdrawn        += savingsShares;
+
+                if (isPartial) break;
+            }
+
+            if (i == 7) {
+                ( uint256 savingsShares, uint256 assets, bool isPartial ) = _getMaxCancellableAmount(800_000e6, maxSavingsShares, savingsSharesWithdrawn);
+
+                _mockRedeemRevert(savingsShares, dan);
+
+                danBalances.claimableAssetsOf += assets;
+                totalClaimable                += assets;
+                savingsSharesWithdrawn        += savingsShares;
+
+                if (isPartial) break;
+            }
+
+            if (i == 8) {
+                ( uint256 savingsShares, uint256 assets, bool isPartial ) = _getMaxCancellableAmount(900_000e6, maxSavingsShares, savingsSharesWithdrawn);
+
+                camBalances.assets     += assets;
+                savingsSharesWithdrawn += savingsShares;
+
+                if (isPartial) break;
+            }
+
+            if (i == 9) {
+                ( uint256 savingsShares, uint256 assets, bool isPartial ) = _getMaxCancellableAmount(1_000_000e6, maxSavingsShares, savingsSharesWithdrawn);
+
+                aliBalances.assets     += assets;
+                savingsSharesWithdrawn += savingsShares;
+
+                if (isPartial) break;
+            }
             --vaultState.depositCancellationRequests.length;
             ++vaultState.depositCancellationRequests.processedCount;
+
+            if (vaultState.depositCancellationRequests.length == 0) break;
         }
+
+        uint256 assetsWithdrawn = spUSDC.convertToAssets(savingsSharesWithdrawn);
+
+        vaultState.totalClaimable                                += totalClaimable;
+        vaultState.availableLiquidAssets                         -= assetsWithdrawn;
+        vaultState.depositCancellationRequests.pendingShareValue -= assetsWithdrawn;
+
+        vaultBalances.assets            += totalClaimable;
+        vaultBalances.savingsShareValue -= assetsWithdrawn;
 
         vm.prank(operator);
         spPrime.processPendingDepositCancellations(maxSavingsShares, maxRequests);
