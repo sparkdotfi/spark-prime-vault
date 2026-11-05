@@ -896,7 +896,7 @@ contract ProcessPendingDepositsTests is SparkPrimeVaultTests {
                 aliBalances.shareValue += depositAmount;
                 assetsDeposited        += depositAmount;
 
-                break; // Last deposit request can never be entirely fulfilled.
+                break;  // Last deposit request can never be entirely fulfilled.
             }
 
             --vaultState.depositRequests.length;
@@ -2416,6 +2416,187 @@ contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
         }
 
         _assertRedeemRequest(9, ali, ali, 800_000e6 - 15);  // Partial fill
+    }
+
+    function _getMaxRedeemableAmount(uint256 requestAmount, uint256 maxShares, uint256 sharesRedeemed)
+        internal view returns (uint256 shares, uint256 assets, bool isPartial)
+    {
+        uint256 requestShares = spPrime.convertToShares(requestAmount);
+
+        shares    = sharesRedeemed + requestShares > maxShares ? maxShares - sharesRedeemed : requestShares;
+        isPartial = shares < requestShares;
+
+        // USDC received by the recipient: savings shares are rounded down in the vault's favour.
+        assets = spUSDC.convertToAssets(spUSDC.convertToShares(spPrime.convertToAssets(shares)));
+    }
+
+    function _mockRedeemRevert(uint256 shares, address recipient) internal {
+        uint256 savingsShares = spUSDC.convertToShares(spPrime.convertToAssets(shares));
+
+        vm.mockCallRevert(
+            address(spUSDC),
+            abi.encodeWithSelector(ISparkVaultLike.redeem.selector, savingsShares, recipient, address(spPrime)),
+            ""
+        );
+    }
+
+    function testFuzz_processPendingRedeems(uint256 maxShareValue, uint256 maxRequests) external {
+        maxShareValue = _bound(maxShareValue, 0, 2 * vaultState.redeemRequests.pendingShareValue);
+        maxRequests   = _bound(maxRequests,   0, 2 * vaultState.redeemRequests.length);
+
+        uint256 maxShares = spPrime.convertToShares(maxShareValue);
+
+        uint256 sharesRedeemed;  // spPrime shares burned
+        uint256 assetsRedeemed;  // USDC received by recipients (directly or as claimable)
+        uint256 totalClaimable;
+
+        for (uint256 i = 0; i < maxRequests; ++i) {
+            if (i == 0) {
+                ( uint256 shares, uint256 assets, bool isPartial ) = _getMaxRedeemableAmount(100_000e6, maxShares, sharesRedeemed);
+
+                _mockRedeemRevert(shares, ali);
+
+                aliBalances.claimableAssetsOf += assets;
+                totalClaimable                += assets;
+                sharesRedeemed                += shares;
+                assetsRedeemed                += assets;
+
+                if (isPartial) break;
+            }
+
+            if (i == 1) {
+                ( uint256 shares, uint256 assets, bool isPartial ) = _getMaxRedeemableAmount(200_000e6, maxShares, sharesRedeemed);
+
+                bobBalances.assets += assets;
+                sharesRedeemed     += shares;
+                assetsRedeemed     += assets;
+
+                if (isPartial) break;
+            }
+
+            if (i == 2) {
+                ( uint256 shares, uint256 assets, bool isPartial ) = _getMaxRedeemableAmount(300_000e6, maxShares, sharesRedeemed);
+
+                camBalances.assets += assets;
+                sharesRedeemed     += shares;
+                assetsRedeemed     += assets;
+
+                if (isPartial) break;
+            }
+
+            if (i == 3) {
+                ( uint256 shares, uint256 assets, bool isPartial ) = _getMaxRedeemableAmount(400_000e6, maxShares, sharesRedeemed);
+
+                _mockRedeemRevert(shares, dan);
+
+                danBalances.claimableAssetsOf += assets;
+                totalClaimable                += assets;
+                sharesRedeemed                += shares;
+                assetsRedeemed                += assets;
+
+                if (isPartial) break;
+            }
+
+            if (i == 4) {
+                ( uint256 shares, uint256 assets, bool isPartial ) = _getMaxRedeemableAmount(500_000e6, maxShares, sharesRedeemed);
+
+                _mockRedeemRevert(shares, bob);
+
+                bobBalances.claimableAssetsOf += assets;
+                totalClaimable                += assets;
+                sharesRedeemed                += shares;
+                assetsRedeemed                += assets;
+
+                if (isPartial) break;
+            }
+
+            if (i == 5) {
+                ( uint256 shares, uint256 assets, bool isPartial ) = _getMaxRedeemableAmount(600_000e6, maxShares, sharesRedeemed);
+
+                camBalances.assets += assets;
+                sharesRedeemed     += shares;
+                assetsRedeemed     += assets;
+
+                if (isPartial) break;
+            }
+
+            if (i == 6) {
+                ( uint256 shares, uint256 assets, bool isPartial ) = _getMaxRedeemableAmount(700_000e6, maxShares, sharesRedeemed);
+
+                _mockRedeemRevert(shares, ali);
+
+                aliBalances.claimableAssetsOf += assets;
+                totalClaimable                += assets;
+                sharesRedeemed                += shares;
+                assetsRedeemed                += assets;
+
+                if (isPartial) break;
+            }
+
+            if (i == 7) {
+                ( uint256 shares, uint256 assets, bool isPartial ) = _getMaxRedeemableAmount(800_000e6, maxShares, sharesRedeemed);
+
+                _mockRedeemRevert(shares, dan);
+
+                danBalances.claimableAssetsOf += assets;
+                totalClaimable                += assets;
+                sharesRedeemed                += shares;
+                assetsRedeemed                += assets;
+
+                if (isPartial) break;
+            }
+
+            if (i == 8) {
+                ( uint256 shares, uint256 assets, bool isPartial ) = _getMaxRedeemableAmount(900_000e6, maxShares, sharesRedeemed);
+
+                camBalances.assets += assets;
+                sharesRedeemed     += shares;
+                assetsRedeemed     += assets;
+
+                if (isPartial) break;
+            }
+            if (i == 9) {
+                // Only the last request can run into the vault's liquid assets (800k was taken in
+                // `setUp`), so it can never be entirely fulfilled.
+                uint256 liquidShares = sharesRedeemed + spPrime.convertToShares(vaultState.availableLiquidAssets - assetsRedeemed);
+                uint256 fillable     = maxShares < liquidShares ? maxShares : liquidShares;
+
+                ( uint256 shares, uint256 assets, ) = _getMaxRedeemableAmount(1_000_000e6, fillable, sharesRedeemed);
+
+                aliBalances.assets += assets;
+                sharesRedeemed     += shares;
+                assetsRedeemed     += assets;
+
+                break;
+            }
+
+            --vaultState.redeemRequests.length;
+            ++vaultState.redeemRequests.processedCount;
+
+            if (vaultState.redeemRequests.length == 0) break;
+        }
+
+        uint256 shareValueRedeemed = spPrime.convertToAssets(sharesRedeemed);
+
+        vaultState.totalAssets                      -= shareValueRedeemed;
+        vaultState.totalClaimable                   += totalClaimable;
+        vaultState.availableCapacityValue           += shareValueRedeemed;
+        vaultState.availableLiquidAssets            -= assetsRedeemed;
+        vaultState.redeemRequests.pendingShareValue -= shareValueRedeemed;
+
+        vaultBalances.assets            += totalClaimable;
+        vaultBalances.shareValue        -= shareValueRedeemed;
+        vaultBalances.savingsShareValue -= assetsRedeemed;
+
+        vm.prank(operator);
+        spPrime.processPendingRedeems(maxShares, maxRequests);
+
+        _assertVaultState(10);
+        _assertAccountBalances(aliBalances,   10);
+        _assertAccountBalances(bobBalances,   10);
+        _assertAccountBalances(camBalances,   10);
+        _assertAccountBalances(danBalances,   10);
+        _assertAccountBalances(vaultBalances, 10);
     }
 
 }
