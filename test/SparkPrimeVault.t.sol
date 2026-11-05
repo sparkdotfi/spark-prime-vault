@@ -1676,6 +1676,78 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         }
     }
 
+    // Requests whose recipient cannot receive USDC, so the redeem falls back to claimable (see `setUp`).
+    function _redeemReverts(uint256 requestId) internal pure returns (bool) {
+        return requestId == 0 || requestId == 3 || requestId == 4 || requestId == 6 || requestId == 7;
+    }
+
+    function _balancesOf(address account) internal view returns (AccountBalances storage) {
+        if (account == ali) return aliBalances;
+        if (account == bob) return bobBalances;
+        if (account == cam) return camBalances;
+        return danBalances;
+    }
+
+    function _mockRedeemRevert(uint256 savingsShares, address recipient) internal {
+        vm.mockCallRevert(
+            address(spUSDC),
+            abi.encodeWithSelector(ISparkVaultLike.redeem.selector, savingsShares, recipient, address(spPrime)),
+            ""
+        );
+    }
+
+    function _min(uint256 x, uint256 y) internal pure returns (uint256) {
+        return x < y ? x : y;
+    }
+
+    function testFuzz_processPendingDepositCancellations(uint256 maxSavingsShareValue, uint256 maxRequests) external {
+        maxSavingsShareValue = _bound(maxSavingsShareValue, 0, 2 * vaultState.depositCancellationRequests.pendingShareValue);
+        maxRequests          = _bound(maxRequests,          0, 2 * vaultState.depositCancellationRequests.length);
+
+        uint256 maxSavingsShares = spUSDC.convertToShares(maxSavingsShareValue);
+        uint256 remaining        = maxSavingsShares;
+        uint256 end              = _min(maxRequests, vaultState.depositCancellationRequests.length);
+
+        for (uint256 i = 0; i < end && remaining != 0; ++i) {
+            ( , address recipient, , uint256 requestShares ) = spPrime.getPendingDepositCancellationRequest(i);
+
+            uint256 savingsShares = _min(requestShares, remaining);
+            uint256 assets        = spUSDC.convertToAssets(savingsShares);
+
+            remaining -= savingsShares;
+
+            vaultState.availableLiquidAssets                         -= assets;
+            vaultState.depositCancellationRequests.pendingShareValue -= assets;
+
+            vaultBalances.savingsShareValue -= assets;
+
+            if (_redeemReverts(i)) {
+                _mockRedeemRevert(savingsShares, recipient);
+
+                _balancesOf(recipient).claimableAssetsOf += assets;
+                vaultState.totalClaimable                += assets;
+                vaultBalances.assets                     += assets;
+            } else {
+                _balancesOf(recipient).assets += assets;
+            }
+
+            if (savingsShares < requestShares) break;  // Partial fill, entry stays at the head
+
+            --vaultState.depositCancellationRequests.length;
+            ++vaultState.depositCancellationRequests.processedCount;
+        }
+
+        vm.prank(operator);
+        spPrime.processPendingDepositCancellations(maxSavingsShares, maxRequests);
+
+        _assertVaultState(10);
+        _assertAccountBalances(aliBalances,   10);
+        _assertAccountBalances(bobBalances,   10);
+        _assertAccountBalances(camBalances,   10);
+        _assertAccountBalances(danBalances,   10);
+        _assertAccountBalances(vaultBalances, 10);
+    }
+
 }
 
 contract ProcessPendingRedeemsTests is SparkPrimeVaultTests {
