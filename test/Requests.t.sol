@@ -29,7 +29,7 @@ contract RequestDepositCancellationTests is TestBase {
 
         depositRequestId = _requestDeposit(user, 1_000_000e6);  // Deposit Request 0 (Queued)
 
-        ( , , requestShares ) = spPrime.getPendingDepositRequest(depositRequestId);
+        ( , , , requestShares ) = spPrime.getPendingDepositRequest(depositRequestId);
 
         vaultState.rho                    = vm.getBlockTimestamp();
         vaultState.chi                    = 1.049999999999999999961070145e27;
@@ -39,14 +39,14 @@ contract RequestDepositCancellationTests is TestBase {
 
         vaultState.depositRequests.pendingShareValue = 1_000_000e6 - 1;
         vaultState.depositRequests.length            = 1;
-        vaultState.depositRequests.firstPendingId    = 0;
+        vaultState.depositRequests.processedCount    = 0;
 
         userBalances = AccountBalances({
             account           : user,
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         recipientBalances = AccountBalances({
@@ -54,7 +54,7 @@ contract RequestDepositCancellationTests is TestBase {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 0,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         vaultBalances = AccountBalances({
@@ -62,7 +62,7 @@ contract RequestDepositCancellationTests is TestBase {
             assets            : 0,
             shareValue        : 0,
             savingsShareValue : 1_000_000e6 - 1,
-            claimableAssets   : 0
+            claimableAssetsOf : 0
         });
 
         _assertVaultState();
@@ -109,7 +109,7 @@ contract RequestDepositCancellationTests is TestBase {
     function test_requestDepositCancellation_notRequestOwner() external {
         uint256 requestId2 = _requestDeposit(user, recipient, 1_000_000e6);
 
-        ( , , uint256 requestShares2 ) = spPrime.getPendingDepositRequest(requestId2);
+        ( , , , uint256 requestShares2 ) = spPrime.getPendingDepositRequest(requestId2);
 
         // The deposit recipient cannot cancel, only the owner can.
         vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
@@ -140,6 +140,13 @@ contract RequestDepositCancellationTests is TestBase {
 
     // Success tests
 
+    function test_requestDepositCancellation_whilePaused() external {
+        _pause();
+
+        vm.prank(user);
+        spPrime.requestDepositCancellation(depositRequestId, recipient, requestShares);
+    }
+
     function test_requestDepositCancellation_full() external {
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.DepositCancellationRequest(depositRequestId, 0, recipient, requestShares);
@@ -149,16 +156,15 @@ contract RequestDepositCancellationTests is TestBase {
 
         assertEq(cancelRequestId, 0);
 
-        vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
-        spPrime.getPendingDepositRequest(depositRequestId);
+        _assertEmptyDepositRequest(0);
 
         vaultState.depositRequests.pendingShareValue = 0;
-        vaultState.depositRequests.length            = 0;
-        vaultState.depositRequests.firstPendingId    = 1;
+        vaultState.depositRequests.length            = 1;
+        vaultState.depositRequests.processedCount    = 0;
 
         vaultState.depositCancellationRequests.pendingShareValue = 1_000_000e6 - 1;
         vaultState.depositCancellationRequests.length            = 1;
-        vaultState.depositCancellationRequests.firstPendingId    = 0;
+        vaultState.depositCancellationRequests.processedCount    = 0;
 
         _assertVaultState();
         _assertDepositCancellationRequest(cancelRequestId, user, recipient, 1_000_000e6 - 1);
@@ -187,7 +193,7 @@ contract RequestDepositCancellationTests is TestBase {
 
         vaultState.depositCancellationRequests.pendingShareValue = 400_000e6 - 1;
         vaultState.depositCancellationRequests.length            = 1;
-        vaultState.depositCancellationRequests.firstPendingId    = 0;
+        vaultState.depositCancellationRequests.processedCount    = 0;
 
         _assertVaultState();
         _assertDepositRequest(depositRequestId, user, user, 600_000e6 - 1);

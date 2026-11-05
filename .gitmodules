@@ -6,10 +6,10 @@
 	url = https://github.com/openzeppelin/openzeppelin-contracts
 [submodule "lib/oz-upgradeable"]
 	path = lib/oz-upgradeable
-	url = https://github.com/openzeppelin/openzeppelin-contracts-upgradeable.git
+	url = https://github.com/openzeppelin/openzeppelin-contracts-upgradeable
 [submodule "lib/spark-address-registry"]
 	path = lib/spark-address-registry
 	url = https://github.com/sparkdotfi/spark-address-registry
 [submodule "lib/token-tests"]
 	path = lib/token-tests
-	url = https://github.com/makerdao/token-tests
+	url = https://github.com/sparkdotfi/token-tests

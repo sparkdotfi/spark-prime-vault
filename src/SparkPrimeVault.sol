@@ -33,10 +33,6 @@ interface IERC4626Like {
         external
         returns (uint256 assets);
 
-    function withdraw(uint256 assets, address receiver, address owner)
-        external
-        returns (uint256 shares);
-
     function asset() external view returns (address);
 
     function convertToAssets(uint256 shares) external view returns (uint256 assets);
@@ -122,18 +118,18 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     string public override name;
     string public override symbol;
 
-    uint64  public override rho;    // Time of last drip              [unix epoch time]
-    uint192 public override chi;    // The Rate Accumulator           [ray]
-    uint256 public override vsr;    // The Vault Savings Rate         [ray]
-    uint256 public override minVSR; // The minimum Vault Savings Rate [ray]
-    uint256 public override maxVSR; // The maximum Vault Savings Rate [ray]
+    uint64  public override rho;     // Time of last drip              [unix epoch time]
+    uint192 public override chi;     // The Rate Accumulator           [ray]
+    uint256 public override vsr;     // The Vault Savings Rate         [ray]
+    uint256 public override minVSR;  // The minimum Vault Savings Rate [ray]
+    uint256 public override maxVSR;  // The maximum Vault Savings Rate [ray]
 
-    uint256 public override maxCapacity;            // Max totalSupply
-    uint256 public override minDeposit;             // [savings asset units]
-    uint256 public override minDepositCancellation; // [savings shares units]
-    uint256 public override minRedeem;              // [shares units]
-    uint256 public override redeemFeeRate;          // Fee rate burned in redeem requests [wad]
-    uint256 public override maxRedeemFeeRate;       // [wad]
+    uint256 public override maxCapacity;             // Max `totalSupply`
+    uint256 public override minDeposit;              // [savings asset units]
+    uint256 public override minDepositCancellation;  // [savings shares units]
+    uint256 public override minRedeem;               // [shares units]
+    uint256 public override redeemFeeRate;           // Fee rate burned in redeem requests [wad]
+    uint256 public override maxRedeemFeeRate;        // [wad]
 
     uint256 public override totalSupply;
 
@@ -143,20 +139,20 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     uint256 public override pendingCancelledDepositSavingsShares;
     uint256 public override pendingRedeemShares;
 
-    uint256 public override firstPendingDepositId;              // First unfilled index of the deposit queue
-    uint256 public override firstPendingDepositCancellationId;  // First unfilled index of the cancelled deposit queue
-    uint256 public override firstPendingRedeemId;               // First unfilled index of the redeem queue
+    uint256 public override processedDepositCount;
+    uint256 public override processedDepositCancellationCount;
+    uint256 public override processedRedeemCount;
 
     mapping (address account => uint256 balance) public override balanceOf;
     mapping (address account => uint256 nonce)   public override nonces;
 
-    mapping (address account => uint256 assets) public override claimableAssets;
+    mapping (address account => uint256 assets) public override claimableAssetsOf;
 
     mapping (address account => mapping (address spender => uint256 amount))
         public override allowance;
 
     modifier whenNotPaused() {
-        require(!paused, IsPaused());
+        _revertIfPaused();
         _;
     }
 
@@ -181,10 +177,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     )
         initializer external override
     {
-        require(minDeposit_             != 0, ZeroMinDeposit());
-        require(minDepositCancellation_ != 0, ZeroMinDepositCancellation());
-        require(minRedeem_              != 0, ZeroMinRedeem());
-
         address asset_ = IERC4626Like(savings_).asset();
 
         savings  = savings_;
@@ -195,16 +187,15 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
 
-        chi = uint192(RAY);
         rho = uint64(block.timestamp);
-        vsr = RAY;
 
-        minVSR = RAY;
-        maxVSR = RAY;
+        emit Drip(chi = uint192(RAY), 0);
+        emit VSRSet(address(this), vsr = RAY);
+        emit VSRBoundsSet(address(this), minVSR = RAY, maxVSR = RAY);
 
-        minDeposit             = minDeposit_;
-        minDepositCancellation = minDepositCancellation_;
-        minRedeem              = minRedeem_;
+        _setMinDeposit(minDeposit_);
+        _setMinDepositCancellation(minDepositCancellation_);
+        _setMinRedeem(minRedeem_);
 
         SafeERC20.forceApprove(IERC20OZ(asset_), savings_, type(uint256).max);
     }
@@ -218,13 +209,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
     function setMaxRedeemFeeRate(uint256 feeRate_) external override onlyRole(DEFAULT_ADMIN_ROLE) {
         require(feeRate_ <= MAX_REDEEM_FEE, MaxFeeTooHigh());
-        emit MaxRedeemFeeRateSet(maxRedeemFeeRate = feeRate_);
+        emit MaxRedeemFeeRateSet(msg.sender, maxRedeemFeeRate = feeRate_);
     }
 
     function setMinDeposit(uint256 minDeposit_) external override onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(minDeposit_ != 0, ZeroMinDeposit());
-
-        emit MinDepositSet(minDeposit = minDeposit_);
+        _setMinDeposit(minDeposit_);
     }
 
     function setMinDepositCancellation(uint256 minDepositCancellation_)
@@ -232,15 +221,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         override
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
-        require(minDepositCancellation_ != 0, ZeroMinDepositCancellation());
-
-        emit MinDepositCancellationSet(minDepositCancellation = minDepositCancellation_);
+        _setMinDepositCancellation(minDepositCancellation_);
     }
 
     function setMinRedeem(uint256 minRedeem_) external override onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(minRedeem_ != 0, ZeroMinRedeem());
-
-        emit MinRedeemSet(minRedeem = minRedeem_);
+        _setMinRedeem(minRedeem_);
     }
 
     function setVSRBounds(uint256 minVSR_, uint256 maxVSR_)
@@ -252,7 +237,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         require(maxVSR_ <= MAX_VSR, MaxVSRTooHigh());
         require(minVSR_ <= maxVSR_, MinVSRGtMaxVSR());
 
-        emit VSRBoundsSet(minVSR = minVSR_, maxVSR = maxVSR_);
+        emit VSRBoundsSet(msg.sender, minVSR = minVSR_, maxVSR = maxVSR_);
     }
 
     /**********************************************************************************************/
@@ -276,10 +261,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         // NOTE: Assuming totalSupply is not zero
         uint256 updatedChi_ = uint256(totalAssets_) * RAY / totalSupply;
 
-        require(updatedChi_ != 0,                 ChiTooLow());
-        require(updatedChi_ <= type(uint192).max, ChiTooHigh());
+        require(updatedChi_ != 0,                       ChiTooLow());
+        require(updatedChi_ <= type(uint256).max / RAY, ChiTooHigh());
 
-        emit TotalAssetsAdjusted(chi = uint192(updatedChi_), deltaTotalAssets_);
+        emit TotalAssetsAdjusted(msg.sender, chi = uint192(updatedChi_), deltaTotalAssets_);
     }
 
     /**********************************************************************************************/
@@ -292,9 +277,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
             InsufficientShares()
         );
 
-        SafeERC20.safeTransfer(IERC20OZ(savings), msg.sender, savingsShares_);
+        emit Take(msg.sender, savingsShares_);
 
-        emit Take(savingsShares_);
+        SafeERC20.safeTransfer(IERC20OZ(savings), msg.sender, savingsShares_);
     }
 
     /**********************************************************************************************/
@@ -302,7 +287,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /**********************************************************************************************/
 
     function setCapacity(uint256 capacity_) external override onlyRole(OPERATOR_ROLE) {
-        emit CapacitySet(maxCapacity = capacity_);
+        require(capacity_ <= type(uint128).max, CapacityTooHigh());
+
+        emit CapacitySet(msg.sender, maxCapacity = capacity_);
     }
 
     function setVSR(uint256 vsr_) external override onlyRole(OPERATOR_ROLE) {
@@ -311,7 +298,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
         drip();
 
-        emit VSRSet(vsr = vsr_);
+        emit VSRSet(msg.sender, vsr = vsr_);
     }
 
     function processPendingDeposits(uint256 maxSavingsShares_, uint256 maxRequests_)
@@ -320,6 +307,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         onlyRole(OPERATOR_ROLE)
         whenNotPaused
     {
+        emit ProcessPendingDeposits(msg.sender, maxSavingsShares_, maxRequests_);
         _processPendingDeposits(maxSavingsShares_, maxRequests_);
     }
 
@@ -328,6 +316,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         override
         onlyRole(OPERATOR_ROLE)
     {
+        emit ProcessPendingDepositCancellations(msg.sender, maxSavingsShares_, maxRequests_);
         _processPendingDepositCancellations(maxSavingsShares_, maxRequests_);
     }
 
@@ -337,6 +326,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         onlyRole(OPERATOR_ROLE)
         whenNotPaused
     {
+        emit ProcessPendingRedeems(msg.sender, maxShares_, maxRequests_);
         _processPendingRedeems(maxShares_, maxRequests_);
     }
 
@@ -346,7 +336,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
     function setRedeemFeeRate(uint256 feeRate_) external override onlyRole(REDEEM_FEE_SETTER_ROLE) {
         require(feeRate_ <= maxRedeemFeeRate, FeeTooHigh());
-        emit RedeemFeeRateSet(redeemFeeRate = feeRate_);
+        emit RedeemFeeRateSet(msg.sender, redeemFeeRate = feeRate_);
     }
 
     /**********************************************************************************************/
@@ -355,7 +345,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
     function pause() external override onlyRole(PAUSER_ROLE) {
         paused = true;
-        emit Paused();
+        emit Paused(msg.sender);
     }
 
     /**********************************************************************************************/
@@ -364,7 +354,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
     function unpause() external override onlyRole(UNPAUSER_ROLE) {
         paused = false;
-        emit Unpaused();
+        emit Unpaused(msg.sender);
     }
 
     /**********************************************************************************************/
@@ -387,18 +377,22 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
         uint256 savingsShares_ = IERC4626Like(savings).deposit(assets_, address(this));
 
-        requestId_ = _depositRequests.length;
+        _depositRequests.push(
+            Request(msg.sender, recipient_, uint64(block.timestamp), savingsShares_)
+        );
 
-        _depositRequests.push(Request(msg.sender, recipient_, savingsShares_));
+        requestId_ = _depositRequests.length - 1;
 
         pendingDepositSavingsShares += savingsShares_;
 
         emit Referral(referral_, requestId_, msg.sender, recipient_, assets_);
         emit DepositRequest(requestId_, msg.sender, recipient_, assets_, savingsShares_);
 
-        // Fill this request, only while no nonzero requests are queued ahead.
+        // If `pendingDepositSavingsShares == savingsShares_` then the only deposit requests that
+        // can exist ahead of `requestId_` are empty/cancelled.
         if (pendingDepositSavingsShares == savingsShares_) {
-            _processPendingDeposits(type(uint256).max, type(uint256).max);
+            processedDepositCount = requestId_;
+            _processPendingDeposits(savingsShares_, 1);
         }
     }
 
@@ -422,11 +416,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         require(savingsShares_ >= minDepositCancellation, BelowMinDepositCancellation());
         require(savingsShares_ <= depositRequest_.shares, SavingsSharesTooHigh());
 
-        newRequestId_ = _depositCancellationRequests.length;
-
         _depositCancellationRequests.push(
-            Request(depositRequest_.owner, recipient_, savingsShares_)
+            Request(depositRequest_.owner, recipient_, uint64(block.timestamp), savingsShares_)
         );
+
+        newRequestId_ = _depositCancellationRequests.length - 1;
 
         pendingDepositSavingsShares          -= savingsShares_;
         pendingCancelledDepositSavingsShares += savingsShares_;
@@ -438,11 +432,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         }
 
         emit DepositCancellationRequest(requestId_, newRequestId_, recipient_, savingsShares_);
-
-        // Clears all empty deposits that are at the front of the queue.
-        // Prevents depositing user from potential reverts on an atomic deposit due many processable
-        // cancelled deposit requests.
-        _processPendingDeposits(0, type(uint256).max);
     }
 
     function requestRedeem(uint256 shares_, address recipient_)
@@ -466,9 +455,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
         uint256 queuedShares_ = shares_ - fee_;
 
-        requestId_ = _redeemRequests.length;
+        _redeemRequests.push(
+            Request(msg.sender, recipient_, uint64(block.timestamp), queuedShares_)
+        );
 
-        _redeemRequests.push(Request(msg.sender, recipient_, queuedShares_));
+        requestId_ = _redeemRequests.length - 1;
 
         pendingRedeemShares += queuedShares_;
 
@@ -529,11 +520,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /**********************************************************************************************/
 
     function claim(address recipient_) external override returns (uint256 assets_) {
-        assets_ = claimableAssets[recipient_];
+        assets_ = claimableAssetsOf[recipient_];
 
         require(assets_ != 0, NothingToClaim());
 
-        claimableAssets[recipient_] = 0;
+        claimableAssetsOf[recipient_] = 0;
 
         totalClaimable -= assets_;
 
@@ -666,23 +657,27 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /*** Request getter functions                                                               ***/
     /**********************************************************************************************/
 
+    function pendingDepositRequestsLength() public view override returns (uint256) {
+        return _depositRequests.length - processedDepositCount;
+    }
+
     function getPendingDepositRequest(uint256 requestId_)
         external
         view
         override
-        returns (address owner_, address recipient_, uint256 shares_)
+        returns (address owner_, address recipient_, uint64 timestamp_, uint256 shares_)
     {
         require(
-            requestId_ >= firstPendingDepositId && requestId_ < _depositRequests.length,
+            requestId_ >= processedDepositCount && requestId_ < _depositRequests.length,
             InvalidRequestId()
         );
 
         Request storage request_ = _depositRequests[requestId_];
 
-        return (request_.owner, request_.recipient, request_.shares);
+        return (request_.owner, request_.recipient, request_.timestamp, request_.shares);
     }
 
-    function getPendingDepositRequests()
+    function pendingDepositRequests()
         external
         view
         override
@@ -690,10 +685,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     {
         uint256 pendingLength_ = _depositRequests.length;
 
-        requests_ = new Request[](pendingLength_ - firstPendingDepositId);
+        requests_ = new Request[](pendingLength_ - processedDepositCount);
 
-        for (uint256 i_ = firstPendingDepositId; i_ < pendingLength_; ++i_) {
-            requests_[i_ - firstPendingDepositId] = _depositRequests[i_];
+        for (uint256 i_ = processedDepositCount; i_ < pendingLength_; ++i_) {
+            requests_[i_ - processedDepositCount] = _depositRequests[i_];
         }
     }
 
@@ -703,9 +698,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         override
         returns (Request[] memory requests_)
     {
-        require(startId_ >= firstPendingDepositId,              StartIdTooSmall());
-        require(length_  <= _depositRequests.length - startId_, LengthTooLarge());
+        require(startId_ >= processedDepositCount,   StartIdTooSmall());
+        require(startId_ <= _depositRequests.length, StartIdTooLarge());
 
+        length_   = _min(length_, _depositRequests.length - startId_);
         requests_ = new Request[](length_);
 
         for (uint256 i_ = startId_; i_ < startId_ + length_; ++i_) {
@@ -713,24 +709,28 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         }
     }
 
+    function pendingDepositCancellationRequestsLength() external view override returns (uint256) {
+        return _depositCancellationRequests.length - processedDepositCancellationCount;
+    }
+
     function getPendingDepositCancellationRequest(uint256 requestId_)
         external
         view
         override
-        returns (address owner_, address recipient_, uint256 shares_)
+        returns (address owner_, address recipient_, uint64 timestamp_, uint256 shares_)
     {
         require(
-            requestId_ >= firstPendingDepositCancellationId &&
+            requestId_ >= processedDepositCancellationCount &&
             requestId_ < _depositCancellationRequests.length,
             InvalidRequestId()
         );
 
         Request storage request_ = _depositCancellationRequests[requestId_];
 
-        return (request_.owner, request_.recipient, request_.shares);
+        return (request_.owner, request_.recipient, request_.timestamp, request_.shares);
     }
 
-    function getPendingDepositCancellationRequests()
+    function pendingDepositCancellationRequests()
         external
         view
         override
@@ -738,10 +738,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     {
         uint256 pendingLength_ = _depositCancellationRequests.length;
 
-        requests_ = new Request[](pendingLength_ - firstPendingDepositCancellationId);
+        requests_ = new Request[](pendingLength_ - processedDepositCancellationCount);
 
-        for (uint256 i_ = firstPendingDepositCancellationId; i_ < pendingLength_; ++i_) {
-            requests_[i_ - firstPendingDepositCancellationId] = _depositCancellationRequests[i_];
+        for (uint256 i_ = processedDepositCancellationCount; i_ < pendingLength_; ++i_) {
+            requests_[i_ - processedDepositCancellationCount] = _depositCancellationRequests[i_];
         }
     }
 
@@ -751,9 +751,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         override
         returns (Request[] memory requests_)
     {
-        require(startId_ >= firstPendingDepositCancellationId,              StartIdTooSmall());
-        require(length_  <= _depositCancellationRequests.length - startId_, LengthTooLarge());
+        require(startId_ >= processedDepositCancellationCount,   StartIdTooSmall());
+        require(startId_ <= _depositCancellationRequests.length, StartIdTooLarge());
 
+        length_   = _min(length_, _depositCancellationRequests.length - startId_);
         requests_ = new Request[](length_);
 
         for (uint256 i_ = startId_; i_ < startId_ + length_; ++i_) {
@@ -761,23 +762,27 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         }
     }
 
+    function pendingRedeemRequestsLength() external view override returns (uint256) {
+        return _redeemRequests.length - processedRedeemCount;
+    }
+
     function getPendingRedeemRequest(uint256 requestId_)
         external
         view
         override
-        returns (address owner_, address recipient_, uint256 shares_)
+        returns (address owner_, address recipient_, uint64 timestamp_, uint256 shares_)
     {
         require(
-            requestId_ >= firstPendingRedeemId && requestId_ < _redeemRequests.length,
+            requestId_ >= processedRedeemCount && requestId_ < _redeemRequests.length,
             InvalidRequestId()
         );
 
         Request storage request_ = _redeemRequests[requestId_];
 
-        return (request_.owner, request_.recipient, request_.shares);
+        return (request_.owner, request_.recipient, request_.timestamp, request_.shares);
     }
 
-    function getPendingRedeemRequests()
+    function pendingRedeemRequests()
         external
         view
         override
@@ -785,10 +790,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     {
         uint256 pendingLength_ = _redeemRequests.length;
 
-        requests_ = new Request[](pendingLength_ - firstPendingRedeemId);
+        requests_ = new Request[](pendingLength_ - processedRedeemCount);
 
-        for (uint256 i_ = firstPendingRedeemId; i_ < pendingLength_; ++i_) {
-            requests_[i_ - firstPendingRedeemId] = _redeemRequests[i_];
+        for (uint256 i_ = processedRedeemCount; i_ < pendingLength_; ++i_) {
+            requests_[i_ - processedRedeemCount] = _redeemRequests[i_];
         }
     }
 
@@ -798,9 +803,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         override
         returns (Request[] memory requests_)
     {
-        require(startId_ >= firstPendingRedeemId,              StartIdTooSmall());
-        require(length_  <= _redeemRequests.length - startId_, LengthTooLarge());
+        require(startId_ >= processedRedeemCount,   StartIdTooSmall());
+        require(startId_ <= _redeemRequests.length, StartIdTooLarge());
 
+        length_   = _min(length_, _redeemRequests.length - startId_);
         requests_ = new Request[](length_);
 
         for (uint256 i_ = startId_; i_ < startId_ + length_; ++i_) {
@@ -811,6 +817,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /**********************************************************************************************/
     /*** External view functions                                                                ***/
     /**********************************************************************************************/
+
+    function DOMAIN_SEPARATOR() external view override returns (bytes32) {
+        return _calculateDomainSeparator(block.chainid);
+    }
 
     function assetsOf(address owner_) external view override returns (uint256) {
         return convertToAssets(balanceOf[owner_]);
@@ -832,10 +842,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         return (assets_ * RAY) / nowChi();
     }
 
-    function DOMAIN_SEPARATOR() external view override returns (bytes32) {
-        return _calculateDomainSeparator(block.chainid);
-    }
-
     function implementation() external view override returns (address) {
         return ERC1967Utils.getImplementation();
     }
@@ -847,8 +853,41 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
                 : chi;
     }
 
+    function supportsInterface(bytes4 interfaceId_)
+        public
+        view
+        override(ISparkPrimeVault, AccessControlEnumerableUpgradeable)
+        returns (bool)
+    {
+        return
+            interfaceId_ == type(ISparkPrimeVault).interfaceId ||
+            super.supportsInterface(interfaceId_);
+    }
+
     function totalAssets() public view override returns (uint256) {
         return convertToAssets(totalSupply);
+    }
+
+    /**********************************************************************************************/
+    /*** Config internal helper functions                                                       ***/
+    /**********************************************************************************************/
+
+    function _setMinDeposit(uint256 minDeposit_) internal {
+        require(minDeposit_ != 0, ZeroMinDeposit());
+
+        emit MinDepositSet(msg.sender, minDeposit = minDeposit_);
+    }
+
+    function _setMinDepositCancellation(uint256 minDepositCancellation_) internal {
+        require(minDepositCancellation_ != 0, ZeroMinDepositCancellation());
+
+        emit MinDepositCancellationSet(msg.sender, minDepositCancellation = minDepositCancellation_);
+    }
+
+    function _setMinRedeem(uint256 minRedeem_) internal {
+        require(minRedeem_ != 0, ZeroMinRedeem());
+
+        emit MinRedeemSet(msg.sender, minRedeem = minRedeem_);
     }
 
     /**********************************************************************************************/
@@ -866,7 +905,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
         // Process the deposit queue up to the maximum number of requests or until there are no more
         // remaining savings shares.
-        uint256 i_   = firstPendingDepositId;
+        uint256 i_   = processedDepositCount;
         uint256 end_ = i_ + _min(_depositRequests.length - i_, maxRequests_);
 
         for (; i_ < end_; ++i_) {
@@ -896,7 +935,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
             delete _depositRequests[i_];
         }
 
-        firstPendingDepositId = i_;
+        processedDepositCount = i_;
     }
 
     function _processPendingDepositCancellations(uint256 maxSavingsShares_, uint256 maxRequests_)
@@ -909,7 +948,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
         // Process the cancelled deposit queue up to the maximum number of requests or until there
         // are no more remaining savings shares.
-        uint256 i_   = firstPendingDepositCancellationId;
+        uint256 i_   = processedDepositCancellationCount;
         uint256 end_ = i_ + _min(_depositCancellationRequests.length - i_, maxRequests_);
 
         for (; i_ < end_ && remaining_ != 0; ++i_) {
@@ -936,7 +975,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
             delete _depositCancellationRequests[i_];
         }
 
-        firstPendingDepositCancellationId = i_;
+        processedDepositCancellationCount = i_;
     }
 
     function _processPendingRedeems(uint256 maxShares_, uint256 maxRequests_) internal {
@@ -944,7 +983,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
         uint256 remaining_ = maxShares_;
 
-        uint256 i_   = firstPendingRedeemId;
+        uint256 i_   = processedRedeemCount;
         uint256 end_ = i_ + _min(_redeemRequests.length - i_, maxRequests_);
 
         for (; i_ < end_ && remaining_ != 0; ++i_) {
@@ -955,7 +994,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
             if (fillable_ == 0) break;  // Out of liquidity
 
             uint256 shares_ = _min(request_.shares, fillable_);
-            uint256 assets_ = convertToAssets(shares_);
 
             pendingRedeemShares -= shares_;
             request_.shares     -= shares_;
@@ -963,7 +1001,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
             _burn(address(this), shares_);
 
-            uint256 savingsShares_ = _withdrawSavings(assets_, request_.recipient);
+            // Redeem savings shares rounded down, so that any rounding error stays with the vault.
+            uint256 savingsShares_ =
+                IERC4626Like(savings).convertToShares(convertToAssets(shares_));
+
+            uint256 assets_ = _redeemSavings(savingsShares_, request_.recipient);
 
             emit Redeem(i_, request_.owner, request_.recipient, shares_, savingsShares_, assets_);
 
@@ -972,7 +1014,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
             delete _redeemRequests[i_];
         }
 
-        firstPendingRedeemId = i_;
+        processedRedeemCount = i_;
     }
 
     function _redeemSavings(uint256 savingsShares_, address recipient_)
@@ -990,25 +1032,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         // to claimable funds to be handled asynchronously.
 
         assets_ = IERC4626Like(savings).redeem(savingsShares_, address(this), address(this));
-
-        _incrementClaimableAssets(recipient_, assets_);
-    }
-
-    function _withdrawSavings(uint256 assets_, address recipient_)
-        internal
-        returns (uint256 savingsShares_)
-    {
-        try IERC4626Like(savings).withdraw(assets_, recipient_, address(this))
-            returns (uint256 savingsSharesBurned_)
-        {
-            return savingsSharesBurned_;
-        } catch {}
-
-        // Any recipient-specific reversion of the savingsVault or underlying
-        // asset transfer that occurs as a result of a user-request is added
-        // to claimable funds to be handled asynchronously.
-
-        savingsShares_ = IERC4626Like(savings).withdraw(assets_, address(this), address(this));
 
         _incrementClaimableAssets(recipient_, assets_);
     }
@@ -1067,30 +1090,30 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         bytes32        digest_,
         bytes   memory signature_
     ) internal view returns (bool) {
-        if (signature_.length == 65) {
-            bytes32 r_;
-            bytes32 s_;
-            uint8   v_;
+        if (signer_.code.length != 0) {
+            ( bool success_, bytes memory result_ ) = signer_.staticcall(
+                abi.encodeCall(IERC1271.isValidSignature, (digest_, signature_))
+            );
 
-            assembly {
-                r_ := mload(add(signature_, 0x20))
-                s_ := mload(add(signature_, 0x40))
-                v_ := byte(0, mload(add(signature_, 0x60)))
-            }
-
-            if (signer_ == ecrecover(digest_, v_, r_, s_)) return true;
+            return
+                success_ &&
+                result_.length >= 32 &&
+                abi.decode(result_, (bytes4)) == IERC1271.isValidSignature.selector;
         }
 
-        if (signer_.code.length == 0) return false;
+        if (signature_.length != 65) return false;
 
-        ( bool success_, bytes memory result_ ) = signer_.staticcall(
-            abi.encodeCall(IERC1271.isValidSignature, (digest_, signature_))
-        );
+        bytes32 r_;
+        bytes32 s_;
+        uint8   v_;
 
-        return
-            success_ &&
-            result_.length == 32 &&
-            abi.decode(result_, (bytes4)) == IERC1271.isValidSignature.selector;
+        assembly {
+            r_ := mload(add(signature_, 0x20))
+            s_ := mload(add(signature_, 0x40))
+            v_ := byte(0, mload(add(signature_, 0x60)))
+        }
+
+        return signer_ == ecrecover(digest_, v_, r_, s_);
     }
 
     /**********************************************************************************************/
@@ -1098,8 +1121,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /**********************************************************************************************/
 
     function _incrementClaimableAssets(address recipient_, uint256 assets_) internal {
-        claimableAssets[recipient_] += assets_;
-        totalClaimable              += assets_;
+        claimableAssetsOf[recipient_] += assets_;
+        totalClaimable                += assets_;
 
         emit ClaimableAssetsIncreased(recipient_, assets_);
     }
@@ -1117,6 +1140,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
     function _min(uint256 x_, uint256 y_) internal pure returns (uint256) {
         return x_ < y_ ? x_ : y_;
+    }
+
+    function _revertIfPaused() internal view {
+        require(!paused, IsPaused());
     }
 
     function _rpow(uint256 x_, uint256 n_) internal pure returns (uint256 z_) {

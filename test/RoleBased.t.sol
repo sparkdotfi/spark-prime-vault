@@ -172,7 +172,7 @@ contract RoleBasedTests is TestBase {
     function test_adjustTotalAssets_chiTooHighBoundary() external {
         _pause();
 
-        // Small supply so that `totalAssets * RAY / totalSupply` can exceed uint192.
+        // Small supply so that `totalAssets * RAY / totalSupply` can exceed uint256.max / RAY.
         uint256 supply = 1e8;
 
         stdstore.target(address(spPrime)).sig("totalSupply()").checked_write(supply);
@@ -181,17 +181,17 @@ contract RoleBasedTests is TestBase {
 
         assertEq(uint256(totalAssets), supply);  // chi == RAY
 
-        // Largest totalAssets for which chi still fits in uint192.
-        int256 maxTotalAssets = int256(type(uint192).max * supply / RAY);
+        // Largest totalAssets for which chi still does not exceed uint256.max / RAY.
+        int256 maxTotalAssets = int256(type(uint256).max / RAY * supply / RAY);
 
-        assertEq(uint256(maxTotalAssets), 627710173538668076383578942320766.64161e6);
+        assertEq(uint256(maxTotalAssets), 11579208923731619542357098.500868e6);
 
-        // chi = (maxTotalAssets + 1) * RAY / supply > uint192.max
+        // chi = (maxTotalAssets + 1) * RAY / supply > uint256.max / RAY
         vm.expectRevert(ISparkPrimeVault.ChiTooHigh.selector);
         vm.prank(lossManager);
         spPrime.adjustTotalAssets(maxTotalAssets + 1 - totalAssets);
 
-        // chi = maxTotalAssets * RAY / supply <= uint192.max
+        // chi = maxTotalAssets * RAY / supply <= uint256.max / RAY
         vm.prank(lossManager);
         spPrime.adjustTotalAssets(maxTotalAssets - totalAssets);
     }
@@ -221,7 +221,7 @@ contract RoleBasedTests is TestBase {
         assertEq(expectedChi, 0.949999999998949999999998949e27);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.TotalAssetsAdjusted(expectedChi, -int256(loss));
+        emit ISparkPrimeVault.TotalAssetsAdjusted(lossManager, expectedChi, -int256(loss));
 
         vm.prank(lossManager);
         spPrime.adjustTotalAssets(-int256(loss));
@@ -259,7 +259,7 @@ contract RoleBasedTests is TestBase {
         assertEq(expectedChi, 1.149999999999149999999999149e27);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.TotalAssetsAdjusted(expectedChi, int256(gain));
+        emit ISparkPrimeVault.TotalAssetsAdjusted(lossManager, expectedChi, int256(gain));
 
         vm.prank(lossManager);
         spPrime.adjustTotalAssets(int256(gain));
@@ -295,7 +295,7 @@ contract RoleBasedTests is TestBase {
         assertEq(expectedChi, 0.899999999999899999999999899e27);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.TotalAssetsAdjusted(expectedChi, -int256(loss));
+        emit ISparkPrimeVault.TotalAssetsAdjusted(lossManager, expectedChi, -int256(loss));
 
         vm.prank(lossManager);
         spPrime.adjustTotalAssets(-int256(loss));
@@ -341,7 +341,7 @@ contract RoleBasedTests is TestBase {
         assertEq(expectedChi, 0.899999999999899999999999899e27);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.TotalAssetsAdjusted(expectedChi, -int256(loss));
+        emit ISparkPrimeVault.TotalAssetsAdjusted(lossManager, expectedChi, -int256(loss));
 
         vm.prank(lossManager);
         spPrime.adjustTotalAssets(-int256(loss));
@@ -370,7 +370,7 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.pendingRedeemShares(), 0);
         assertEq(spPrime.totalSupply(),         0);
         assertEq(spPrime.totalAssets(),         0);
-        assertEq(usdc.balanceOf(user),          900_000e6 - 2);  // Rounding, 100k loss incurred
+        assertEq(usdc.balanceOf(user),          900_000e6 - 3);  // Rounding, 100k loss incurred
     }
 
     /**********************************************************************************************/
@@ -383,12 +383,21 @@ contract RoleBasedTests is TestBase {
         spPrime.setCapacity(2_000_000e6);
     }
 
+    function test_setCapacity_capacityTooHighBoundary() external {
+        vm.expectRevert(ISparkPrimeVault.CapacityTooHigh.selector);
+        vm.prank(operator);
+        spPrime.setCapacity(uint256(type(uint128).max) + 1);
+
+        vm.prank(operator);
+        spPrime.setCapacity(type(uint128).max);
+    }
+
     function test_setCapacity() external {
         assertEq(spPrime.maxCapacity(),       100_000_000e6);
         assertEq(spPrime.availableCapacity(), 100_000_000e6);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.CapacitySet(2_000_000e6);
+        emit ISparkPrimeVault.CapacitySet(operator, 2_000_000e6);
 
         vm.prank(operator);
         spPrime.setCapacity(2_000_000e6);
@@ -397,16 +406,16 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.availableCapacity(), 2_000_000e6);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.CapacitySet(type(uint256).max);
+        emit ISparkPrimeVault.CapacitySet(operator, type(uint128).max);
 
         vm.prank(operator);
-        spPrime.setCapacity(type(uint256).max);
+        spPrime.setCapacity(type(uint128).max);
 
-        assertEq(spPrime.maxCapacity(),       type(uint256).max);
-        assertEq(spPrime.availableCapacity(), type(uint256).max);
+        assertEq(spPrime.maxCapacity(),       type(uint128).max);
+        assertEq(spPrime.availableCapacity(), type(uint128).max);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.CapacitySet(0);
+        emit ISparkPrimeVault.CapacitySet(operator, 0);
 
         vm.prank(operator);
         spPrime.setCapacity(0);
@@ -438,7 +447,7 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.maxRedeemFeeRate(), 0);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.MaxRedeemFeeRateSet(0.01e18);
+        emit ISparkPrimeVault.MaxRedeemFeeRateSet(admin, 0.01e18);
 
         vm.prank(admin);
         spPrime.setMaxRedeemFeeRate(0.01e18);
@@ -446,7 +455,7 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.maxRedeemFeeRate(), 0.01e18);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.MaxRedeemFeeRateSet(0);
+        emit ISparkPrimeVault.MaxRedeemFeeRateSet(admin, 0);
 
         vm.prank(admin);
         spPrime.setMaxRedeemFeeRate(0);
@@ -474,7 +483,7 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.minDeposit(), MINIMUM_DEPOSIT);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.MinDepositSet(100e6);
+        emit ISparkPrimeVault.MinDepositSet(admin, 100e6);
 
         vm.prank(admin);
         spPrime.setMinDeposit(100e6);
@@ -482,7 +491,7 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.minDeposit(), 100e6);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.MinDepositSet(1);
+        emit ISparkPrimeVault.MinDepositSet(admin, 1);
 
         vm.prank(admin);
         spPrime.setMinDeposit(1);
@@ -510,7 +519,7 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.minDepositCancellation(), MINIMUM_DEPOSIT_CANCELLATION);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.MinDepositCancellationSet(200e6);
+        emit ISparkPrimeVault.MinDepositCancellationSet(admin, 200e6);
 
         vm.prank(admin);
         spPrime.setMinDepositCancellation(200e6);
@@ -518,7 +527,7 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.minDepositCancellation(), 200e6);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.MinDepositCancellationSet(1);
+        emit ISparkPrimeVault.MinDepositCancellationSet(admin, 1);
 
         vm.prank(admin);
         spPrime.setMinDepositCancellation(1);
@@ -546,7 +555,7 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.minRedeem(), MINIMUM_REDEEM);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.MinRedeemSet(100e6);
+        emit ISparkPrimeVault.MinRedeemSet(admin, 100e6);
 
         vm.prank(admin);
         spPrime.setMinRedeem(100e6);
@@ -554,7 +563,7 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.minRedeem(), 100e6);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.MinRedeemSet(1);
+        emit ISparkPrimeVault.MinRedeemSet(admin, 1);
 
         vm.prank(admin);
         spPrime.setMinRedeem(1);
@@ -606,7 +615,7 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.maxVSR(), spPrime.MAX_VSR());
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.VSRBoundsSet(ONE_PCT_VSR, FOUR_PCT_VSR);
+        emit ISparkPrimeVault.VSRBoundsSet(admin, ONE_PCT_VSR, FOUR_PCT_VSR);
 
         vm.prank(admin);
         spPrime.setVSRBounds({ minVSR_ : ONE_PCT_VSR, maxVSR_ : FOUR_PCT_VSR });
@@ -637,7 +646,7 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.paused(), true);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Unpaused();
+        emit ISparkPrimeVault.Unpaused(unpauser);
 
         vm.prank(unpauser);
         spPrime.unpause();
@@ -692,7 +701,7 @@ contract RoleBasedTests is TestBase {
         emit ISparkPrimeVault.Drip(uint192(1.001337610630706965934046250e27), 0);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.VSRSet(FOUR_PCT_VSR);
+        emit ISparkPrimeVault.VSRSet(operator, FOUR_PCT_VSR);
 
         vm.prank(operator);
         spPrime.setVSR(FOUR_PCT_VSR);
@@ -734,7 +743,7 @@ contract RoleBasedTests is TestBase {
         assertEq(spUSDC.balanceOf(taker),            0);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Take(expectedSavingsShares);
+        emit ISparkPrimeVault.Take(taker, expectedSavingsShares);
 
         vm.prank(taker);
         spPrime.take(expectedSavingsShares);
@@ -779,7 +788,7 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.redeemFeeRate(), 0);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.RedeemFeeRateSet(0.01e18);
+        emit ISparkPrimeVault.RedeemFeeRateSet(redeemFeeSetter, 0.01e18);
 
         vm.prank(redeemFeeSetter);
         spPrime.setRedeemFeeRate(0.01e18);
@@ -787,7 +796,7 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.redeemFeeRate(), 0.01e18);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.RedeemFeeRateSet(0);
+        emit ISparkPrimeVault.RedeemFeeRateSet(redeemFeeSetter, 0);
 
         vm.prank(redeemFeeSetter);
         spPrime.setRedeemFeeRate(0);
@@ -809,7 +818,7 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.paused(), false);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Paused();
+        emit ISparkPrimeVault.Paused(pauser);
 
         vm.prank(pauser);
         spPrime.pause();
