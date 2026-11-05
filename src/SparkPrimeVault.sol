@@ -244,27 +244,23 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /*** Loss Manager external functions                                                        ***/
     /**********************************************************************************************/
 
-    function adjustTotalAssets(int256 deltaTotalAssets_)
+    function impairTotalAssets(uint256 impairment_)
         external
         override
         onlyRole(LOSS_MANAGER_ROLE)
     {
-        require(paused,                 IsNotPaused());
-        require(deltaTotalAssets_ != 0, ZeroDeltaTotalAssets());
+        require(paused,           IsNotPaused());
+        require(impairment_ != 0, ZeroImpairment());
 
         drip();
 
-        int256 totalAssets_ = int256(totalAssets()) + deltaTotalAssets_;
+        uint256 totalAssets_ = totalAssets();
 
-        require(totalAssets_ > 0, LossTooHigh());
+        require(impairment_ <= totalAssets_, ImpairmentTooLarge());
 
-        // NOTE: Assuming totalSupply is not zero
-        uint256 updatedChi_ = uint256(totalAssets_) * RAY / totalSupply;
+        uint192 chi_ = uint192(((totalAssets_ - impairment_) * RAY) / totalSupply);
 
-        require(updatedChi_ != 0,                       ChiTooLow());
-        require(updatedChi_ <= type(uint256).max / RAY, ChiTooHigh());
-
-        emit TotalAssetsAdjusted(msg.sender, chi = uint192(updatedChi_), deltaTotalAssets_);
+        emit TotalAssetsImpaired(msg.sender, chi = chi_, impairment_);
     }
 
     /**********************************************************************************************/
@@ -638,7 +634,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
     function drip() public override returns (uint192 nChi_) {
         uint192 chi_ = chi;
-        uint64  rho_ = rho;
+
+        require(chi_ != 0, ZeroChi());
+
+        uint64 rho_ = rho;
 
         if (block.timestamp <= rho_) return chi_;
 

@@ -190,6 +190,11 @@ abstract contract TestBase is Test {
     /*** Action Helpers                                                                         ***/
     /**********************************************************************************************/
 
+    function _impair(uint256 value) internal {
+        vm.prank(lossManager);
+        spPrime.impairTotalAssets(value);
+    }
+
     function _pause() internal {
         vm.prank(pauser);
         spPrime.pause();
