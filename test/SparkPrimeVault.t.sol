@@ -1684,8 +1684,9 @@ contract ProcessPendingDepositsCancellationsTests is SparkPrimeVaultTests {
         savingsShares = savingsSharesWithdrawn + requestShares > maxSavingsShares
             ? maxSavingsShares - savingsSharesWithdrawn
             : requestShares;
-        assets        = spUSDC.convertToAssets(savingsShares);
-        isPartial     = savingsShares < requestShares;
+
+        assets    = spUSDC.convertToAssets(savingsShares);
+        isPartial = savingsShares < requestShares;
     }
 
     function _mockRedeemRevert(uint256 savingsShares, address recipient) internal {
