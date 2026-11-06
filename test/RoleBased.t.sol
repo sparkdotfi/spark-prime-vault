@@ -140,14 +140,14 @@ contract RoleBasedTests is TestBase {
 
         skip(365 days);
 
-        uint192 chiBefore    = spPrime.nowChi();
         uint256 assetsBefore = spPrime.totalAssets();
         uint256 supply       = spPrime.totalSupply();
 
         // Drip is pending, impair must settle it before writing chi down.
-        assertEq(chiBefore,    1.049999999999999999961070145e27);  // ~5% APY
-        assertEq(assetsBefore, 1_050_000e6 - 2);  // 5% yield accrued
-        assertEq(supply,       1_000_000e6 - 1);
+        assertEq(spPrime.chi(),    RAY);
+        assertEq(spPrime.nowChi(), 1.049999999999999999961070145e27);  // ~5% APY
+        assertEq(assetsBefore,     1_050_000e6 - 2);  // 5% yield accrued
+        assertEq(supply,           1_000_000e6 - 1);
 
         assertEq(spPrime.rho(),          vm.getBlockTimestamp() - 365 days);
         assertEq(spPrime.assetsOf(user), assetsBefore);
@@ -157,12 +157,16 @@ contract RoleBasedTests is TestBase {
         assertEq(expectedChi, 0.949999999998949999999998949e27);
 
         vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.Drip(1.049999999999999999961070145e27, 50_000e6 - 1);
+
+        vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.Impairment(lossManager, expectedChi, impairment);
 
         vm.prank(lossManager);
         spPrime.impair(impairment);
 
         assertEq(spPrime.chi(),          expectedChi);
+        assertEq(spPrime.nowChi(),       expectedChi);
         assertEq(spPrime.rho(),          vm.getBlockTimestamp());
         assertEq(spPrime.totalAssets(),  950_000e6 - 3);  // 100k impairment incurred
         assertEq(spPrime.assetsOf(user), 950_000e6 - 3);  // 100k impairment incurred
@@ -177,11 +181,10 @@ contract RoleBasedTests is TestBase {
 
         // 5% APY over one year, compounding on the new chi
         assertEq(spPrime.chi(),          0.997499999998897499963015534e27);
+        assertEq(spPrime.nowChi(),       0.997499999998897499963015534e27);
         assertEq(spPrime.rho(),          vm.getBlockTimestamp());
         assertEq(spPrime.totalAssets(),  997_500e6 - 3);  // 5% yield on 950k
         assertEq(spPrime.assetsOf(user), 997_500e6 - 3);  // 5% yield on 950k
-
-        assertEq(spPrime.chi(), 1.049999999999999999961070145e27 * expectedChi / RAY);
 
         // Redeem reflects loss.
 
@@ -532,7 +535,7 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.vsr(),          1.000000001547125957863212448e27);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Drip(uint192(1.001337610630706965934046250e27), 0);
+        emit ISparkPrimeVault.Drip(1.001337610630706965934046250e27, 0);
 
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.VSRSet(operator, FOUR_PCT_VSR);
@@ -687,7 +690,7 @@ contract RoleBasedTests is TestBase {
         skip(365 days);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Drip(uint192(1.049999999999999999961070145e27), 50_000e6 - 1);
+        emit ISparkPrimeVault.Drip(1.049999999999999999961070145e27, 50_000e6 - 1);
 
         uint192 chi = spPrime.drip();
 
