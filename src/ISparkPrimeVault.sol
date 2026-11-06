@@ -511,7 +511,6 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      *         is paused. Drips before computing the new `chi` as:
      *         `chi = (totalAssets() - assets_) * RAY / totalSupply`
      *         `assets_` must be nonzero and less than `totalAssets()`.
-     *         The resulting `chi` must be at most `type(uint256).max / RAY`.
      *         Reverts if `totalSupply` is zero.
      *         This is a HIGHLY SENSITIVE AND NON-REVERSIBLE ACTION, and a large enough impairment
      *         can brick the vault, requiring a contract upgrade to undo, so it must be taken with
