@@ -505,7 +505,8 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**********************************************************************************************/
 
     /**
-     * @notice Impairs the total assets of the vault by updating the rate accumulator (`chi`).
+     * @notice Impairs the vault by updating the rate accumulator (`chi`) to account for the
+     *         `assets_` loss.
      * @dev    This function can only be called by accounts with `LOSS_MANAGER_ROLE` while the vault
      *         is paused. Drips before computing the new `chi` as:
      *         `chi = (totalAssets() - assets_) * RAY / totalSupply`
