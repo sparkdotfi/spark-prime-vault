@@ -210,6 +210,28 @@ contract RoleBasedTests is TestBase {
         assertEq(usdc.balanceOf(user),          997_500e6 - 4);
     }
 
+    function test_impair_twoUsers() external {
+        uint256 impairment = 150_000e6;
+
+        address user1 = makeAddr("user1");
+        address user2 = makeAddr("user2");
+
+        _requestDeposit(user1, 1_000_000e6);
+        _requestDeposit(user2, 2_000_000e6);
+        _pause();
+
+        skip(365 days);
+
+        assertEq(spPrime.assetsOf(user1), 1_050_000e6 - 2);
+        assertEq(spPrime.assetsOf(user2), 2_100_000e6 - 2);
+
+        vm.prank(lossManager);
+        spPrime.impair(impairment);
+
+        assertEq(spPrime.assetsOf(user1), 1_000_000e6 - 2);
+        assertEq(spPrime.assetsOf(user2), 2_000_000e6 - 2);
+    }
+
     /**********************************************************************************************/
     /*** setCapacity tests                                                                      ***/
     /**********************************************************************************************/
