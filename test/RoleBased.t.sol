@@ -95,30 +95,30 @@ contract RoleBasedTests is TestBase {
     }
 
     /**********************************************************************************************/
-    /*** impairTotalAssets tests                                                                ***/
+    /*** impair tests                                                                           ***/
     /**********************************************************************************************/
 
-    function test_impairTotalAssets_notLossManager() external {
+    function test_impair_notLossManager() external {
         vm.expectRevert(_notAuthorized(unauthorized, LOSS_MANAGER_ROLE));
         vm.prank(unauthorized);
-        spPrime.impairTotalAssets(0);
+        spPrime.impair(0);
     }
 
-    function test_impairTotalAssets_isNotPaused() external {
+    function test_impair_isNotPaused() external {
         vm.expectRevert(ISparkPrimeVault.IsNotPaused.selector);
         vm.prank(lossManager);
-        spPrime.impairTotalAssets(0);
+        spPrime.impair(0);
     }
 
-    function test_impairTotalAssets_zeroImpairment() external {
+    function test_impair_zeroImpairment() external {
         _pause();
 
         vm.expectRevert(ISparkPrimeVault.ZeroImpairment.selector);
         vm.prank(lossManager);
-        spPrime.impairTotalAssets(0);
+        spPrime.impair(0);
     }
 
-    function test_impairTotalAssets_impairmentTooLargeBoundary() external {
+    function test_impair_impairmentTooLargeBoundary() external {
         _requestDeposit(user, 1_000_000e6);
         _pause();
 
@@ -126,13 +126,13 @@ contract RoleBasedTests is TestBase {
 
         vm.expectRevert(ISparkPrimeVault.ImpairmentTooLarge.selector);
         vm.prank(lossManager);
-        spPrime.impairTotalAssets(1_000_000e6);
+        spPrime.impair(1_000_000e6);
 
         vm.prank(lossManager);
-        spPrime.impairTotalAssets(1_000_000e6 - 1);
+        spPrime.impair(1_000_000e6 - 1);
     }
 
-    function test_impairTotalAssets() external {
+    function test_impair() external {
         uint256 impairment = 100_000e6;
 
         _requestDeposit(user, 1_000_000e6);
@@ -144,7 +144,7 @@ contract RoleBasedTests is TestBase {
         uint256 assetsBefore = spPrime.totalAssets();
         uint256 supply       = spPrime.totalSupply();
 
-        // Drip is pending, impairTotalAssets must settle it before writing chi down.
+        // Drip is pending, impair must settle it before writing chi down.
         assertEq(chiBefore,    1.049999999999999999961070145e27);  // ~5% APY
         assertEq(assetsBefore, 1_050_000e6 - 2);  // 5% yield accrued
         assertEq(supply,       1_000_000e6 - 1);
@@ -157,10 +157,10 @@ contract RoleBasedTests is TestBase {
         assertEq(expectedChi, 0.949999999998949999999998949e27);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.TotalAssetsImpaired(lossManager, expectedChi, impairment);
+        emit ISparkPrimeVault.Impairment(lossManager, expectedChi, impairment);
 
         vm.prank(lossManager);
-        spPrime.impairTotalAssets(impairment);
+        spPrime.impair(impairment);
 
         assertEq(spPrime.chi(),          expectedChi);
         assertEq(spPrime.rho(),          vm.getBlockTimestamp());

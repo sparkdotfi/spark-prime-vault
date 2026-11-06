@@ -244,23 +244,19 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     /*** Loss Manager external functions                                                        ***/
     /**********************************************************************************************/
 
-    function impairTotalAssets(uint256 impairment_)
-        external
-        override
-        onlyRole(LOSS_MANAGER_ROLE)
-    {
-        require(paused,           IsNotPaused());
-        require(impairment_ != 0, ZeroImpairment());
+    function impair(uint256 assets_) external override onlyRole(LOSS_MANAGER_ROLE) {
+        require(paused,       IsNotPaused());
+        require(assets_ != 0, ZeroImpairment());
 
         drip();
 
         uint256 totalAssets_ = totalAssets();
 
-        require(impairment_ <= totalAssets_, ImpairmentTooLarge());
+        require(assets_ <= totalAssets_, ImpairmentTooLarge());
 
-        uint192 chi_ = uint192(((totalAssets_ - impairment_) * RAY) / totalSupply);
+        uint192 chi_ = uint192(((totalAssets_ - assets_) * RAY) / totalSupply);
 
-        emit TotalAssetsImpaired(msg.sender, chi = chi_, impairment_);
+        emit Impairment(msg.sender, chi = chi_, assets_);
     }
 
     /**********************************************************************************************/

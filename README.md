@@ -29,11 +29,11 @@ The vault token is a standard ERC-20 (with EIP-2612-style `permit`, supporting b
 ### 1. Rate Accumulator (`chi` & `vsr`)
 
 - Yield accrues continuously via the Vault Savings Rate (`vsr`), a per-second compounding factor (ray).
-- `drip()` (public) compounds accumulated interest into the accumulator `chi`. It is also invoked by `setVSR`, `adjustTotalAssets`, `requestDeposit`, `requestRedeem`, and all `process*` functions. `requestDepositCancellation` does **not** drip.
+- `drip()` (public) compounds accumulated interest into the accumulator `chi`. It is also invoked by `setVSR`, `impair`, `requestDeposit`, `requestRedeem`, and all `process*` functions. `requestDepositCancellation` does **not** drip.
 - Share-to-asset conversion: `assets = shares * nowChi() / RAY`, where `nowChi()` is the up-to-date `chi` without writing state.
 - Initialized with `chi = vsr = minVSR = maxVSR = RAY` (0% yield) until the admin sets bounds and `OPERATOR_ROLE` sets a rate.
 - `vsr` must stay within `[minVSR, maxVSR]`. Bounds are configured by `DEFAULT_ADMIN_ROLE` with `minVSR >= RAY` and `maxVSR <= MAX_VSR` (100% APY).
-- **Gain/Loss Realization**: While paused, `LOSS_MANAGER_ROLE` can call `adjustTotalAssets(delta)` to settle the pending drip and rewrite `chi` so that `totalAssets` moves by `delta` (positive or negative). Pausing first blocks request/processing activity so nobody can front-run the adjustment. `delta` must be nonzero, the resulting total assets must be positive, and the resulting `chi` must be non-zero and at most `type(uint256).max / RAY`. Requires a non-zero `totalSupply`.
+- **Loss Realization**: While paused, `LOSS_MANAGER_ROLE` can call `impair(assets_)` to settle the pending drip and rewrite `chi` so that `totalAssets` is decremented by `assets_`. Pausing first blocks request/processing activity so nobody can front-run the adjustment. The `totalSupply` must be non-zero.
 
 ### 2. Deposits & Deposit Queue
 
@@ -86,7 +86,7 @@ Redemptions are always asynchronous (there is no instant fill).
 - `PAUSER_ROLE` can `pause`; `UNPAUSER_ROLE` can `unpause`.
 - While paused, `requestDeposit`, `requestRedeem`, `processPendingDeposits`, and `processPendingRedeems` revert.
 - Deposit cancellations stay available so depositors can always exit: `requestDepositCancellation` and `processPendingDepositCancellations` work while paused. Recipient updates, `claim`, `take`, `drip`, and ERC-20 transfers/approvals also remain available.
-- `adjustTotalAssets` can only be called while paused.
+- `impair` can only be called while paused.
 
 ### 9. Savings Vault Assumptions
 
@@ -121,7 +121,7 @@ The vault is designed for Spark Vault V2 savings vaults (e.g., `spUSDC`) and rel
 | Role                         | Permitted Actions                                                                                                                             | Description                                                                                                                           |
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | **`DEFAULT_ADMIN_ROLE`**     | `setMaxRedeemFeeRate`, `setMinDeposit`, `setMinDepositCancellation`, `setMinRedeem`, `setVSRBounds`, `upgradeToAndCall` (`_authorizeUpgrade`) | Governs vault parameters, bounds, and contract upgrades.                                                                              |
-| **`LOSS_MANAGER_ROLE`**      | `adjustTotalAssets`                                                                                                                           | Manually changes `totalAssets` (and by extension `chi`) to realize gains or losses (only while paused).                               |
+| **`LOSS_MANAGER_ROLE`**      | `impair`                                                                                                                                      | Manually changes `totalAssets` (and by extension `chi`) to realize gains or losses (only while paused).                               |
 | **`OPERATOR_ROLE`**          | `setCapacity`, `setVSR`                                                                                                                       | Sets the deposit capacity and the Vault Savings Rate within configured bounds (`[minVSR, maxVSR]`).                                   |
 | **`OPERATOR_ROLE`**          | `processPendingDeposits`, `processPendingDepositCancellations`, `processPendingRedeems`                                                       | Settles the deposit, deposit-cancellation, and redeem queues (deposits and redeems only while unpaused).                              |
 | **`TAKER_ROLE`**             | `take`                                                                                                                                        | Withdraws any savings shares held by the vault, including those backing pending deposits and cancellations, for portfolio allocation. |
