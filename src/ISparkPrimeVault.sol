@@ -290,12 +290,12 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     event Take(address indexed caller, uint256 shares);
 
     /**
-     * @notice Emitted when the total assets of the vault are adjusted.
-     * @param  caller            The address that adjusted the total assets
-     * @param  chi               The new rate accumulator value after the adjustment [ray]
-     * @param  deltaTotalAssets  The signed change in total assets [asset units]
+     * @notice Emitted when the the vault is impaired.
+     * @param  caller The address that impaired the total assets
+     * @param  chi    The new rate accumulator value after the impairment [ray]
+     * @param  assets The impairment amount [asset units]
      */
-    event TotalAssetsAdjusted(address indexed caller, uint192 chi, int256 deltaTotalAssets);
+    event Impairment(address indexed caller, uint192 chi, uint256 assets);
 
     /**
      * @notice Emitted when the vault is unpaused.
@@ -337,17 +337,11 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /// @notice Thrown when the capacity is set above `type(uint128).max`.
     error CapacityTooHigh();
 
-    /**
-     * @notice Thrown when a total assets adjustment would make `chi` exceed
-     *         `type(uint256).max / RAY`.
-     */
-    error ChiTooHigh();
-
-    /// @notice Thrown when a total assets adjustment would make `chi` zero.
-    error ChiTooLow();
-
     /// @notice Thrown when the redeem fee rate is above the maximum redeem fee rate.
     error FeeTooHigh();
+
+    /// @notice Thrown when the impairment amount is greater than total assets.
+    error ImpairmentTooLarge();
 
     /// @notice Thrown when taking more savings shares than the vault holds.
     error InsufficientShares();
@@ -363,9 +357,6 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
 
     /// @notice Thrown when an action is attempted while the vault is paused.
     error IsPaused();
-
-    /// @notice Thrown when a total assets adjustment would reduce total assets to zero or below.
-    error LossTooHigh();
 
     /// @notice Thrown when the maximum redeem fee rate is above `MAX_REDEEM_FEE`.
     error MaxFeeTooHigh();
@@ -414,8 +405,8 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /// @notice Thrown when the VSR is below the minimum allowed bound.
     error VSRTooLow();
 
-    /// @notice Thrown when the total assets adjustment is zero.
-    error ZeroDeltaTotalAssets();
+    /// @notice Thrown when the impairment amount is zero.
+    error ZeroImpairment();
 
     /// @notice Thrown when the minimum deposit is set to zero.
     error ZeroMinDeposit();
@@ -514,16 +505,19 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**********************************************************************************************/
 
     /**
-     * @notice Adjusts the total assets of the vault by updating the rate accumulator (`chi`).
+     * @notice Impairs the vault by updating the rate accumulator (`chi`) to account for the
+     *         `assets_` loss.
      * @dev    This function can only be called by accounts with `LOSS_MANAGER_ROLE` while the vault
      *         is paused. Drips before computing the new `chi` as:
-     *         `chi = (totalAssets() + deltaTotalAssets_) * RAY / totalSupply`
-     *         `deltaTotalAssets_` must be nonzero and the resulting total assets must be positive.
-     *         The resulting `chi` must be non-zero and at most `type(uint256).max / RAY`.
+     *         `chi = (totalAssets() - assets_) * RAY / totalSupply`
+     *         `assets_` must be nonzero and less than `totalAssets()`.
      *         Reverts if `totalSupply` is zero.
-     * @param  deltaTotalAssets_ The signed change in total assets [asset units]
+     *         This is a HIGHLY SENSITIVE AND NON-REVERSIBLE ACTION, and a large enough impairment
+     *         can brick the vault, requiring a contract upgrade to undo, so it must be taken with
+     *         extreme care.
+     * @param  assets_ The amount to impair total assets by [asset units]
      */
-    function adjustTotalAssets(int256 deltaTotalAssets_) external;
+    function impair(uint256 assets_) external;
 
     /**********************************************************************************************/
     /*** Taker external functions                                                               ***/
@@ -846,7 +840,7 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      *         and increases exponentially over time based on the Vault Savings Rate (VSR). The
      *         formula is: `chi = chi_old * (vsr)^(time_delta) / RAY` where `time_delta` is the time
      *         since last drip. A user's assets are `assets = user_shares * nowChi() / RAY`.
-     *         It can also be set directly by `adjustTotalAssets()`.
+     *         It can also be set directly by `impair(assets_)`.
      */
     function chi() external view returns (uint192);
 

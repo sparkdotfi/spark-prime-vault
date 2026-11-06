@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity ^0.8.34;
 
-import { stdError }               from "../lib/forge-std/src/StdError.sol";
-import { stdStorage, StdStorage } from "../lib/forge-std/src/StdStorage.sol";
-
 import { IAccessControl } from "../lib/oz/contracts/access/IAccessControl.sol";
 import { IERC1967 }       from "../lib/oz/contracts/interfaces/IERC1967.sol";
 
@@ -13,8 +10,6 @@ import { ISparkPrimeVault } from "../src/ISparkPrimeVault.sol";
 import { SparkPrimeVault }  from "../src/SparkPrimeVault.sol";
 
 contract RoleBasedTests is TestBase {
-
-    using stdStorage for StdStorage;
 
     address internal user         = makeAddr("user");
     address internal unauthorized = makeAddr("unauthorized");
@@ -100,256 +95,98 @@ contract RoleBasedTests is TestBase {
     }
 
     /**********************************************************************************************/
-    /*** adjustTotalAssets tests                                                                ***/
+    /*** impair tests                                                                           ***/
     /**********************************************************************************************/
 
-    function test_adjustTotalAssets_notLossManager() external {
-        vm.expectRevert(_notAuthorized(user, LOSS_MANAGER_ROLE));
-        vm.prank(user);
-        spPrime.adjustTotalAssets(-1e6);
+    function test_impair_notLossManager() external {
+        vm.expectRevert(_notAuthorized(unauthorized, LOSS_MANAGER_ROLE));
+        vm.prank(unauthorized);
+        spPrime.impair(0);
     }
 
-    function test_adjustTotalAssets_isNotPaused() external {
+    function test_impair_isNotPaused() external {
         vm.expectRevert(ISparkPrimeVault.IsNotPaused.selector);
         vm.prank(lossManager);
-        spPrime.adjustTotalAssets(-1e6);
+        spPrime.impair(0);
     }
 
-    function test_adjustTotalAssets_zeroDeltaTotalAssets() external {
+    function test_impair_zeroImpairment() external {
         _pause();
 
-        vm.expectRevert(ISparkPrimeVault.ZeroDeltaTotalAssets.selector);
+        vm.expectRevert(ISparkPrimeVault.ZeroImpairment.selector);
         vm.prank(lossManager);
-        spPrime.adjustTotalAssets(0);
+        spPrime.impair(0);
     }
 
-    function test_adjustTotalAssets_lossTooHighBoundary() external {
+    function test_impair_impairmentTooLargeBoundary() external {
         _requestDeposit(user, 1_000_000e6);
         _pause();
 
         assertEq(spPrime.totalAssets(), 1_000_000e6 - 1);  // Rounding
 
-        vm.expectRevert(ISparkPrimeVault.LossTooHigh.selector);
+        vm.expectRevert(ISparkPrimeVault.ImpairmentTooLarge.selector);
         vm.prank(lossManager);
-        spPrime.adjustTotalAssets(-(1_000_000e6 - 1));
+        spPrime.impair(1_000_000e6);
 
         vm.prank(lossManager);
-        spPrime.adjustTotalAssets(-(1_000_000e6 - 2));
+        spPrime.impair(1_000_000e6 - 1);
     }
 
-    function test_adjustTotalAssets_zeroSupply() external {
-        _pause();
-
-        vm.expectRevert(stdError.divisionError);
-        vm.prank(lossManager);
-        spPrime.adjustTotalAssets(1e6);
-    }
-
-    function test_adjustTotalAssets_chiTooLowBoundary() external {
-        _pause();
-
-        // Inflate supply so that `totalAssets * RAY / totalSupply` can round down to zero.
-        uint256 supply = 1e28;
-
-        stdstore.target(address(spPrime)).sig("totalSupply()").checked_write(supply);
-
-        int256 totalAssets = int256(spPrime.totalAssets());
-
-        assertEq(uint256(totalAssets), supply);  // chi == RAY
-
-        // totalAssets -> 9: chi = 9e27 / 1e28 = 0
-        vm.expectRevert(ISparkPrimeVault.ChiTooLow.selector);
-        vm.prank(lossManager);
-        spPrime.adjustTotalAssets(-(totalAssets - 9));
-
-        // totalAssets -> 10: chi = 10e27 / 1e28 = 1
-        vm.prank(lossManager);
-        spPrime.adjustTotalAssets(-(totalAssets - 10));
-
-        assertEq(spPrime.chi(), 1);
-    }
-
-    function test_adjustTotalAssets_chiTooHighBoundary() external {
-        _pause();
-
-        // Small supply so that `totalAssets * RAY / totalSupply` can exceed uint256.max / RAY.
-        uint256 supply = 1e8;
-
-        stdstore.target(address(spPrime)).sig("totalSupply()").checked_write(supply);
-
-        int256 totalAssets = int256(spPrime.totalAssets());
-
-        assertEq(uint256(totalAssets), supply);  // chi == RAY
-
-        // Largest totalAssets for which chi still does not exceed uint256.max / RAY.
-        int256 maxTotalAssets = int256(type(uint256).max / RAY * supply / RAY);
-
-        assertEq(uint256(maxTotalAssets), 11579208923731619542357098.500868e6);
-
-        // chi = (maxTotalAssets + 1) * RAY / supply > uint256.max / RAY
-        vm.expectRevert(ISparkPrimeVault.ChiTooHigh.selector);
-        vm.prank(lossManager);
-        spPrime.adjustTotalAssets(maxTotalAssets + 1 - totalAssets);
-
-        // chi = maxTotalAssets * RAY / supply <= uint256.max / RAY
-        vm.prank(lossManager);
-        spPrime.adjustTotalAssets(maxTotalAssets - totalAssets);
-    }
-
-    function test_adjustTotalAssets_loss() external {
-        uint256 loss = 100_000e6;
+    function test_impair() external {
+        uint256 impairment = 100_000e6;
 
         _requestDeposit(user, 1_000_000e6);
         _pause();
 
         skip(365 days);
 
-        uint192 chiBefore    = spPrime.nowChi();
         uint256 assetsBefore = spPrime.totalAssets();
         uint256 supply       = spPrime.totalSupply();
 
-        // Drip is pending, adjustTotalAssets must settle it before writing chi down.
-        assertEq(chiBefore,    1.049999999999999999961070145e27);  // ~5% APY
-        assertEq(supply,       1_000_000e6 - 1);  // Rounding
-        assertEq(assetsBefore, 1_050_000e6 - 2);  // Rounding, 5% yield accrued
+        // Drip is pending, impair must settle it before writing chi down.
+        assertEq(spPrime.chi(),    RAY);
+        assertEq(spPrime.nowChi(), 1.049999999999999999961070145e27);  // ~5% APY
+        assertEq(assetsBefore,     1_050_000e6 - 2);  // 5% yield accrued
+        assertEq(supply,           1_000_000e6 - 1);
 
         assertEq(spPrime.rho(),          vm.getBlockTimestamp() - 365 days);
         assertEq(spPrime.assetsOf(user), assetsBefore);
 
-        uint192 expectedChi = uint192(((assetsBefore - loss) * RAY) / supply);
+        uint192 expectedChi = uint192(((assetsBefore - impairment) * RAY) / supply);
 
         assertEq(expectedChi, 0.949999999998949999999998949e27);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.TotalAssetsAdjusted(lossManager, expectedChi, -int256(loss));
-
-        vm.prank(lossManager);
-        spPrime.adjustTotalAssets(-int256(loss));
-
-        assertEq(spPrime.chi(),          expectedChi);
-        assertEq(spPrime.rho(),          vm.getBlockTimestamp());
-        assertEq(spPrime.totalAssets(),  950_000e6 - 3);  // Rounding, 100k loss incurred
-        assertEq(spPrime.assetsOf(user), 950_000e6 - 3);  // Rounding, 100k loss incurred
-
-        assertEq(spPrime.totalAssets(), assetsBefore - loss - 1);  // Rounding
-    }
-
-    function test_adjustTotalAssets_gain() external {
-        uint256 gain = 100_000e6;
-
-        _requestDeposit(user, 1_000_000e6);
-        _pause();
-
-        skip(365 days);
-
-        uint192 chiBefore    = spPrime.nowChi();
-        uint256 assetsBefore = spPrime.totalAssets();
-        uint256 supply       = spPrime.totalSupply();
-
-        // Drip is pending, adjustTotalAssets must settle it before writing chi up.
-        assertEq(chiBefore,    1.049999999999999999961070145e27);  // ~5% APY
-        assertEq(supply,       1_000_000e6 - 1);  // Rounding
-        assertEq(assetsBefore, 1_050_000e6 - 2);  // Rounding, 5% yield accrued
-
-        assertEq(spPrime.rho(),          vm.getBlockTimestamp() - 365 days);
-        assertEq(spPrime.assetsOf(user), assetsBefore);
-
-        uint192 expectedChi = uint192(((assetsBefore + gain) * RAY) / supply);
-
-        assertEq(expectedChi, 1.149999999999149999999999149e27);
+        emit ISparkPrimeVault.Drip(1.049999999999999999961070145e27, 50_000e6 - 1);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.TotalAssetsAdjusted(lossManager, expectedChi, int256(gain));
+        emit ISparkPrimeVault.Impairment(lossManager, expectedChi, impairment);
 
         vm.prank(lossManager);
-        spPrime.adjustTotalAssets(int256(gain));
+        spPrime.impair(impairment);
 
         assertEq(spPrime.chi(),          expectedChi);
+        assertEq(spPrime.nowChi(),       expectedChi);
         assertEq(spPrime.rho(),          vm.getBlockTimestamp());
-        assertEq(spPrime.totalAssets(),  1_150_000e6 - 3);  // Rounding, 100k gain realized
-        assertEq(spPrime.assetsOf(user), 1_150_000e6 - 3);  // Rounding, 100k gain realized
+        assertEq(spPrime.totalAssets(),  950_000e6 - 3);  // 100k impairment incurred
+        assertEq(spPrime.assetsOf(user), 950_000e6 - 3);  // 100k impairment incurred
 
-        assertEq(spPrime.totalAssets(), assetsBefore + gain - 1);  // Rounding
-    }
+        assertEq(spPrime.totalAssets(), assetsBefore - impairment - 1);
 
-    function test_adjustTotalAssets_accrualContinuesFromNewChi() external {
-        uint256 loss = 100_000e6;
-
-        _requestDeposit(user, 1_000_000e6);
-        _pause();
-
-        uint192 chiBefore    = spPrime.nowChi();
-        uint256 assetsBefore = spPrime.totalAssets();
-        uint256 supply       = spPrime.totalSupply();
-
-        // No time has passed, nothing to drip.
-        assertEq(chiBefore,    1e27);
-        assertEq(supply,       1_000_000e6 - 1);  // Rounding
-        assertEq(assetsBefore, 1_000_000e6 - 1);  // Rounding
-
-        assertEq(spPrime.rho(),          vm.getBlockTimestamp());
-        assertEq(spPrime.assetsOf(user), assetsBefore);
-
-        uint192 expectedChi = uint192(((assetsBefore - loss) * RAY) / supply);
-
-        assertEq(expectedChi, 0.899999999999899999999999899e27);
-
-        vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.TotalAssetsAdjusted(lossManager, expectedChi, -int256(loss));
-
-        vm.prank(lossManager);
-        spPrime.adjustTotalAssets(-int256(loss));
-
-        assertEq(spPrime.chi(),          expectedChi);
-        assertEq(spPrime.rho(),          vm.getBlockTimestamp());
-        assertEq(spPrime.totalAssets(),  900_000e6 - 2);  // Rounding, 100k loss incurred
-        assertEq(spPrime.assetsOf(user), 900_000e6 - 2);  // Rounding, 100k loss incurred
+        // Accrual continues from new chi.
 
         skip(365 days);
 
         spPrime.drip();
 
         // 5% APY over one year, compounding on the new chi
-        assertEq(spPrime.chi(),          0.944999999999894999964963024e27);
+        assertEq(spPrime.chi(),          0.997499999998897499963015534e27);
+        assertEq(spPrime.nowChi(),       0.997499999998897499963015534e27);
         assertEq(spPrime.rho(),          vm.getBlockTimestamp());
-        assertEq(spPrime.totalAssets(),  945_000e6 - 2);  // Rounding, 5% yield on 900k
-        assertEq(spPrime.assetsOf(user), 945_000e6 - 2);  // Rounding, 5% yield on 900k
+        assertEq(spPrime.totalAssets(),  997_500e6 - 3);  // 5% yield on 950k
+        assertEq(spPrime.assetsOf(user), 997_500e6 - 3);  // 5% yield on 950k
 
-        assertEq(spPrime.chi(), 1.049999999999999999961070145e27 * expectedChi / RAY);
-    }
-
-    function test_adjustTotalAssets_redeemReflectsLoss() external {
-        uint256 loss = 100_000e6;
-
-        _requestDeposit(user, 1_000_000e6);
-        _pause();
-
-        uint192 chiBefore    = spPrime.nowChi();
-        uint256 assetsBefore = spPrime.totalAssets();
-        uint256 supply       = spPrime.totalSupply();
-
-        // No time has passed, nothing to drip.
-        assertEq(chiBefore,    1e27);
-        assertEq(supply,       1_000_000e6 - 1);  // Rounding
-        assertEq(assetsBefore, 1_000_000e6 - 1);  // Rounding
-
-        assertEq(spPrime.rho(),          vm.getBlockTimestamp());
-        assertEq(spPrime.assetsOf(user), assetsBefore);
-
-        uint192 expectedChi = uint192(((assetsBefore - loss) * RAY) / supply);
-
-        assertEq(expectedChi, 0.899999999999899999999999899e27);
-
-        vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.TotalAssetsAdjusted(lossManager, expectedChi, -int256(loss));
-
-        vm.prank(lossManager);
-        spPrime.adjustTotalAssets(-int256(loss));
-
-        assertEq(spPrime.chi(),          expectedChi);
-        assertEq(spPrime.rho(),          vm.getBlockTimestamp());
-        assertEq(spPrime.totalAssets(),  900_000e6 - 2);  // Rounding, 100k loss incurred
-        assertEq(spPrime.assetsOf(user), 900_000e6 - 2);  // Rounding, 100k loss incurred
+        // Redeem reflects loss.
 
         _unpause();
 
@@ -370,7 +207,29 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.pendingRedeemShares(), 0);
         assertEq(spPrime.totalSupply(),         0);
         assertEq(spPrime.totalAssets(),         0);
-        assertEq(usdc.balanceOf(user),          900_000e6 - 3);  // Rounding, 100k loss incurred
+        assertEq(usdc.balanceOf(user),          997_500e6 - 4);
+    }
+
+    function test_impair_twoUsers() external {
+        uint256 impairment = 150_000e6;
+
+        address user1 = makeAddr("user1");
+        address user2 = makeAddr("user2");
+
+        _requestDeposit(user1, 1_000_000e6);
+        _requestDeposit(user2, 2_000_000e6);
+        _pause();
+
+        skip(365 days);
+
+        assertEq(spPrime.assetsOf(user1), 1_050_000e6 - 2);
+        assertEq(spPrime.assetsOf(user2), 2_100_000e6 - 2);
+
+        vm.prank(lossManager);
+        spPrime.impair(impairment);
+
+        assertEq(spPrime.assetsOf(user1), 1_000_000e6 - 2);
+        assertEq(spPrime.assetsOf(user2), 2_000_000e6 - 2);
     }
 
     /**********************************************************************************************/
@@ -698,7 +557,7 @@ contract RoleBasedTests is TestBase {
         assertEq(spPrime.vsr(),          1.000000001547125957863212448e27);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Drip(uint192(1.001337610630706965934046250e27), 0);
+        emit ISparkPrimeVault.Drip(1.001337610630706965934046250e27, 0);
 
         vm.expectEmit(address(spPrime));
         emit ISparkPrimeVault.VSRSet(operator, FOUR_PCT_VSR);
@@ -824,6 +683,43 @@ contract RoleBasedTests is TestBase {
         spPrime.pause();
 
         assertEq(spPrime.paused(), true);
+    }
+
+    /**********************************************************************************************/
+    /*** drip tests                                                                             ***/
+    /**********************************************************************************************/
+
+    function test_drip_earlyExit() external {
+        _requestDeposit(user, 1_000_000e6);
+
+        assertEq(spPrime.chi(), 1.000000000000000000000000000e27);
+        assertEq(spPrime.rho(), vm.getBlockTimestamp());
+
+        uint192 chi = spPrime.drip();
+
+        assertEq(chi, 1.000000000000000000000000000e27);
+
+        assertEq(spPrime.chi(), 1.000000000000000000000000000e27);
+        assertEq(spPrime.rho(), vm.getBlockTimestamp());
+    }
+
+    function test_drip_oneYear() external {
+        _requestDeposit(user, 1_000_000e6);
+
+        assertEq(spPrime.chi(), 1.000000000000000000000000000e27);
+        assertEq(spPrime.rho(), vm.getBlockTimestamp());
+
+        skip(365 days);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.Drip(1.049999999999999999961070145e27, 50_000e6 - 1);
+
+        uint192 chi = spPrime.drip();
+
+        assertEq(chi, 1.049999999999999999961070145e27);
+
+        assertEq(spPrime.chi(), 1.049999999999999999961070145e27);
+        assertEq(spPrime.rho(), vm.getBlockTimestamp());
     }
 
 }
