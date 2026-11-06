@@ -510,8 +510,9 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @dev    This function can only be called by accounts with `LOSS_MANAGER_ROLE` while the vault
      *         is paused. Drips before computing the new `chi` as:
      *         `chi = (totalAssets() - assets_) * RAY / totalSupply`
-     *         `assets_` must be nonzero and less than `totalAssets()`.
-     *         Reverts if `totalSupply` is zero.
+     *         `assets_` must be nonzero and at most `totalAssets()`. Reverts if `totalSupply` is
+     *         zero. Impairing the full `totalAssets()` sets `chi` to zero, after which every
+     *         conversion reverts.
      *         This is a HIGHLY SENSITIVE AND NON-REVERSIBLE ACTION, and a large enough impairment
      *         can brick the vault, requiring a contract upgrade to undo, so it must be taken with
      *         extreme care.
