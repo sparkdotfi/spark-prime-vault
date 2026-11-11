@@ -1093,7 +1093,7 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     function nowChi() external view returns (uint192);
 
     /**
-     * @notice Returns whether the contract implements the interface `interfaceId`.
+     * @notice Returns whether the contract implements the interface `interfaceId_`.
      * @param  interfaceId_ The interface ID to check
      * @return implemented_ Whether the contract implements the interface
      */
