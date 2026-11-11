@@ -24,6 +24,8 @@ interface ISparkVaultLike {
 
     function redeem(uint256 shares, address to, address from) external returns (uint256);
 
+    function setVsr(uint256 newVsr) external;
+
     function transfer(address to, uint256 amount) external returns (bool);
 
     function withdraw(uint256 assets, address to, address from) external returns (uint256);
@@ -190,6 +192,11 @@ abstract contract TestBase is Test {
     /*** Action Helpers                                                                         ***/
     /**********************************************************************************************/
 
+    function _impair(uint256 impairment) internal {
+        vm.prank(lossManager);
+        spPrime.impair(impairment);
+    }
+
     function _pause() internal {
         vm.prank(pauser);
         spPrime.pause();
@@ -203,6 +210,16 @@ abstract contract TestBase is Test {
     function _setCapacity(uint256 capacity) internal {
         vm.prank(operator);
         spPrime.setCapacity(capacity);
+    }
+
+    function _setVSR(uint256 vsr) internal {
+        vm.prank(operator);
+        spPrime.setVSR(vsr);
+    }
+
+    function _setSavingsVSR(uint256 vsr) internal {
+        vm.prank(Ethereum.ALM_PROXY_FREEZABLE);
+        spUSDC.setVsr(vsr);
     }
 
     function _setMaxRedeemFeeRate(uint256 maxRedeemFeeRate) internal {
@@ -287,6 +304,11 @@ abstract contract TestBase is Test {
     function _take(uint256 savingsShares) internal {
         vm.prank(taker);
         spPrime.take(savingsShares);
+    }
+
+    function _transferSavingsShares(address from, address to, uint256 amount) internal {
+        vm.prank(from);
+        spUSDC.transfer(to, amount);
     }
 
     /**********************************************************************************************/
