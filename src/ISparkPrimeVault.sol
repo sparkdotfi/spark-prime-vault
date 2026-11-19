@@ -16,10 +16,13 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
 
     /**
      * @notice Represents a request in one of the vault's queues.
+     * @dev    A request with zero `shares` is an empty slot: it was fully cancelled, fully filled
+     *         or suspended. Requests keep their `owner`, `recipient` and `timestamp` when they are
+     *         suspended and unsuspended.
      * @param  owner     The address that created the request and can update its recipient or, for
      *                   deposit requests, cancel it.
      * @param  recipient The address that receives the proceeds when the request is filled.
-     * @param  timestamp The timestamp of the request [unix epoch time].
+     * @param  timestamp The timestamp at which the request was created [unix epoch time].
      * @param  shares    The unfilled shares of the request, savings shares for deposit and deposit
      *                   cancellation requests, vault shares for redeem requests.
      */
@@ -37,7 +40,7 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**
      * @notice Emitted when the maximum capacity is updated.
      * @param  caller   The address that updated the maximum capacity
-     * @param  capacity The new maximum capacity [share units]
+     * @param  capacity The new maximum capacity (maximum `totalSupply`) [share units]
      */
     event CapacitySet(address indexed caller, uint256 capacity);
 
@@ -115,6 +118,27 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     );
 
     /**
+     * @notice Emitted when a pending deposit cancellation request is suspended.
+     * @param  caller    The address that suspended the deposit cancellation request
+     * @param  requestId The ID of the pending deposit cancellation request that was suspended; it
+     *                   is also the key of the request in the suspended requests
+     */
+    event DepositCancellationRequestSuspended(address indexed caller, uint256 indexed requestId);
+
+    /**
+     * @notice Emitted when a suspended deposit cancellation request is unsuspended.
+     * @param  caller       The address that unsuspended the deposit cancellation request
+     * @param  requestId    The ID the deposit cancellation request had when it was suspended
+     * @param  newRequestId The new request ID of the unsuspended pending deposit cancellation
+     *                      request, at the end of the deposit cancellation queue
+     */
+    event DepositCancellationRequestUnsuspended(
+        address indexed caller,
+        uint256 indexed requestId,
+        uint256 indexed newRequestId
+    );
+
+    /**
      * @notice Emitted when the recipient of a deposit request is updated.
      * @param  requestId The ID of the deposit request
      * @param  recipient The new recipient of the request
@@ -122,7 +146,8 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     event DepositRecipientUpdated(uint256 indexed requestId, address indexed recipient);
 
     /**
-     * @notice Emitted when a deposit is requested.
+     * @notice Emitted when a deposit is requested. Deposits are never filled within the request,
+     *         so a separate `Deposit` event is emitted when the request is processed.
      * @param  requestId           The ID of the deposit request
      * @param  owner               The address that created the request
      * @param  recipient           The address to receive the shares when the request is filled
@@ -139,7 +164,29 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     );
 
     /**
-     * @notice Emitted every time `drip()` is called at a new `rho`.
+     * @notice Emitted when a pending deposit request is suspended.
+     * @param  caller    The address that suspended the deposit request
+     * @param  requestId The ID of the pending deposit request that was suspended; it is also the
+     *                   key of the request in the suspended requests
+     */
+    event DepositRequestSuspended(address indexed caller, uint256 indexed requestId);
+
+    /**
+     * @notice Emitted when a suspended deposit request is unsuspended.
+     * @param  caller       The address that unsuspended the deposit request
+     * @param  requestId    The ID the deposit request had when it was suspended
+     * @param  newRequestId The new request ID of the unsuspended pending deposit request, at the
+     *                      end of the deposit queue
+     */
+    event DepositRequestUnsuspended(
+        address indexed caller,
+        uint256 indexed requestId,
+        uint256 indexed newRequestId
+    );
+
+    /**
+     * @notice Emitted every time `drip()` updates the rate accumulator, that is, when it is called
+     *         at a `block.timestamp` later than `rho`. Also emitted once by `initialize`.
      * @param  chi  The new rate accumulator value after the drip operation [ray]
      * @param  diff The difference in total assets due to the rate accumulation [asset units]
      */
@@ -182,8 +229,9 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**
      * @notice Emitted when pending deposits are processed.
      * @param  caller           The address that processed the pending deposits
-     * @param  maxSavingsShares The maximum amount of savings shares processed
-     * @param  maxRequests      The maximum number of requests processed
+     * @param  maxSavingsShares The maximum amount of savings shares to process
+     *                          [savings share units]
+     * @param  maxRequests      The maximum number of queue entries to visit
      */
     event ProcessPendingDeposits(
         address indexed caller,
@@ -194,8 +242,9 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**
      * @notice Emitted when pending deposit cancellations are processed.
      * @param  caller           The address that processed the pending deposit cancellations
-     * @param  maxSavingsShares The maximum amount of savings shares processed
-     * @param  maxRequests      The maximum number of requests processed
+     * @param  maxSavingsShares The maximum amount of savings shares to process
+     *                          [savings share units]
+     * @param  maxRequests      The maximum number of queue entries to visit
      */
     event ProcessPendingDepositCancellations(
         address indexed caller,
@@ -206,8 +255,8 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**
      * @notice Emitted when pending redemptions are processed.
      * @param  caller           The address that processed the pending redemptions
-     * @param  maxShares        The maximum amount of shares processed
-     * @param  maxRequests      The maximum number of requests processed
+     * @param  maxShares        The maximum amount of vault shares to process [share units]
+     * @param  maxRequests      The maximum number of queue entries to visit
      */
     event ProcessPendingRedeems(
         address indexed caller,
@@ -253,8 +302,8 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @param  requestId       The ID of the redeem request
      * @param  owner           The address that created the request
      * @param  recipient       The address to receive the assets when the request is filled
-     * @param  sharesToBurn    The amount of vault shares transferred in, including the fee
-     *                         [share units]
+     * @param  sharesToBurn    The amount of vault shares transferred in, including the fee; only
+     *                         `sharesToBurn - feeSharesBurned` is queued [share units]
      * @param  feeSharesBurned The amount of vault shares burned as the redeem fee [share units]
      */
     event RedeemRequest(
@@ -263,6 +312,27 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
         address indexed recipient,
         uint256         sharesToBurn,
         uint256         feeSharesBurned
+    );
+
+    /**
+     * @notice Emitted when a pending redeem request is suspended.
+     * @param  caller    The address that suspended the redeem request
+     * @param  requestId The ID of the pending redeem request that was suspended; it is also the
+     *                   key of the request in the suspended requests
+     */
+    event RedeemRequestSuspended(address indexed caller, uint256 indexed requestId);
+
+    /**
+     * @notice Emitted when a suspended redeem request is unsuspended.
+     * @param  caller       The address that unsuspended the redeem request
+     * @param  requestId    The ID the redeem request had when it was suspended
+     * @param  newRequestId The new request ID of the unsuspended pending redeem request, at the
+     *                      end of the redeem queue
+     */
+    event RedeemRequestUnsuspended(
+        address indexed caller,
+        uint256 indexed requestId,
+        uint256 indexed newRequestId
     );
 
     /**
@@ -290,10 +360,10 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     event Take(address indexed caller, uint256 shares);
 
     /**
-     * @notice Emitted when the the vault is impaired.
+     * @notice Emitted when the vault is impaired.
      * @param  caller The address that impaired the total assets
      * @param  chi    The new rate accumulator value after the impairment [ray]
-     * @param  assets The impairment amount [asset units]
+     * @param  assets The amount `totalAssets()` was reduced by [asset units]
      */
     event Impairment(address indexed caller, uint192 chi, uint256 assets);
 
@@ -347,8 +417,8 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     error InsufficientShares();
 
     /**
-     * @notice Thrown when a request ID is past the end of the queue or, in the single-request
-     *         getters, before the first unprocessed pending request.
+     * @notice Thrown when a pending request ID is before the first unprocessed pending request or
+     *         past the end of the queue.
      */
     error InvalidRequestId();
 
@@ -373,8 +443,8 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     error MinVSRTooLow();
 
     /**
-     * @notice Thrown when the request has no unfilled shares because it was cancelled or already
-     *         filled.
+     * @notice Thrown when a pending request has no unfilled shares because it was fully cancelled,
+     *         fully filled or suspended, or when there is no suspended request with the given ID.
      */
     error NoRequest();
 
@@ -387,7 +457,10 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /// @notice Thrown when cancelling more savings shares than the deposit request has.
     error SavingsSharesTooHigh();
 
-    /// @notice Thrown when a requested range of requests starts after the end of the queue.
+    /**
+     * @notice Thrown when a requested range of suspended or pending requests starts past the end
+     *         of the list or queue.
+     */
     error StartIdTooLarge();
 
     /**
@@ -426,11 +499,12 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
 
     /**
      * @notice Initializes the vault implementation with core configuration.
-     * @dev    Can only be called once. Sets the asset and decimals from `savings_`, sets
-     *         `chi`/`vsr`/`minVSR`/`maxVSR` to RAY, sets `rho` to `block.timestamp`, grants
-     *         `DEFAULT_ADMIN_ROLE` to `admin_`, sets the minimum deposit, deposit cancellation and
-     *         redeem amounts, and approves `savings_` to spend the vault's assets. All minimums
-     *         must be nonzero.
+     * @dev    Can only be called once. Reads the asset from `savings_` and the decimals from that
+     *         asset, sets `chi`/`vsr`/`minVSR`/`maxVSR` to RAY, sets `rho` to `block.timestamp`,
+     *         grants `DEFAULT_ADMIN_ROLE` to `admin_`, sets the minimum deposit, deposit
+     *         cancellation and redeem amounts, and approves `savings_` to spend an unlimited amount
+     *         of the vault's assets. All minimums must be nonzero. Emits `Drip`, `VSRSet`,
+     *         `VSRBoundsSet` and the `Min*Set` events.
      * @param  savings_                The address of the ERC-4626 savings vault the deposited
      *                                 assets are held in
      * @param  name_                   The name of the vault token
@@ -510,9 +584,9 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @dev    This function can only be called by accounts with `LOSS_MANAGER_ROLE` while the vault
      *         is paused. Drips before computing the new `chi` as:
      *         `chi = (totalAssets() - assets_) * RAY / totalSupply`
-     *         `assets_` must be nonzero and at most `totalAssets()`. Reverts if `totalSupply` is
-     *         zero. Impairing the full `totalAssets()` sets `chi` to zero, after which every
-     *         conversion reverts.
+     *         `assets_` must be nonzero and at most `totalAssets()`, so this reverts if
+     *         `totalSupply` is zero. Impairing the full `totalAssets()` sets `chi` to zero, after
+     *         which `convertToShares` reverts, so deposit and redeem processing stop working.
      *         This is a HIGHLY SENSITIVE AND NON-REVERSIBLE ACTION, and a large enough impairment
      *         can brick the vault, requiring a contract upgrade to undo, so it must be taken with
      *         extreme care.
@@ -549,9 +623,10 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**
      * @notice Sets the Vault Savings Rate (VSR) within the configured bounds.
      * @dev    This function can only be called by accounts with `OPERATOR_ROLE`.
-     *         Drips before updating the VSR, so the previous rate applies up to the current block.
-     *         The VSR determines the rate at which user shares grow over time. A higher VSR means
-     *         faster share growth and higher yields for depositors.
+     *         The VSR must be within `[minVSR, maxVSR]`. Drips before updating the VSR, so the
+     *         previous rate applies up to the current block. The VSR determines the rate at which
+     *         user shares grow over time. A higher VSR means faster share growth and higher yields
+     *         for depositors.
      * @param  vsr_ The new VSR value [ray]
      */
     function setVSR(uint256 vsr_) external;
@@ -559,12 +634,16 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /**
      * @notice Fills pending deposit requests in queue order, minting shares to their recipients.
      * @dev    This function can only be called by accounts with `OPERATOR_ROLE` while the vault is
-     *         not paused. Processing is limited by `maxSavingsShares_`, `maxRequests_`, and the
-     *         available capacity. The last processed request may be partially filled.
+     *         not paused. Drips first. Processing is limited by `maxSavingsShares_`,
+     *         `maxRequests_`, and the available capacity, converted to savings shares. Entries
+     *         without unfilled shares (cancelled, suspended or filled) are skipped, even when there
+     *         is no available capacity left, and the queue head advances past them. The last
+     *         processed request may be partially filled, in which case it stays at the head of the
+     *         queue.
      * @param  maxSavingsShares_ The maximum amount of savings shares to process
      *                           [savings share units]
-     * @param  maxRequests_      The maximum number of queue entries to visit, counting fully
-     *                           cancelled ones
+     * @param  maxRequests_      The maximum number of queue entries to visit, counting entries
+     *                           without unfilled shares
      */
     function processPendingDeposits(uint256 maxSavingsShares_, uint256 maxRequests_) external;
 
@@ -572,10 +651,11 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @notice Fills pending deposit cancellation requests in queue order, redeeming their savings
      *         shares for their recipients.
      * @dev    This function can only be called by accounts with `OPERATOR_ROLE`, including while
-     *         the vault is paused. Processing is limited by `maxSavingsShares_`, `maxRequests_`,
-     *         and the savings shares the vault can redeem. The last processed request may be
-     *         partially filled. Assets that cannot be sent to a recipient are credited as claimable
-     *         assets.
+     *         the vault is paused. Drips first. Processing is limited by `maxSavingsShares_`,
+     *         `maxRequests_`, and the savings shares the vault can redeem (`maxRedeem` of the
+     *         savings vault). The last processed request may be partially filled, in which case it
+     *         stays at the head of the queue. Assets that cannot be sent to a recipient are
+     *         credited as claimable assets. Suspended entries are skipped.
      * @param  maxSavingsShares_ The maximum amount of savings shares to process
      *                           [savings share units]
      * @param  maxRequests_      The maximum number of queue entries to visit
@@ -587,16 +667,109 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @notice Fills pending redeem requests in queue order, burning their shares and redeeming
      *         savings shares for their recipients.
      * @dev    This function can only be called by accounts with `OPERATOR_ROLE` while the vault is
-     *         not paused. Processing is limited by `maxShares_`, `maxRequests_`, and the available
-     *         liquid assets, which are re-checked before each request. The last processed request
-     *         may be partially filled. The value of the burned vault shares is converted to savings
-     *         shares rounding down, which are then redeemed, so the recipient receives at most
-     *         that value and rounding stays with the vault. Assets that cannot be sent to a
-     *         recipient are credited as claimable assets.
+     *         not paused. Drips first. Processing is limited by `maxShares_`, `maxRequests_`, and
+     *         the available liquid assets, which are re-checked before each request. The last
+     *         processed request may be partially filled, in which case it stays at the head of
+     *         the queue. Suspended entries are skipped. The value of the burned vault shares is
+     *         converted to savings shares rounding down, which are then redeemed, so the recipient
+     *         receives at most that value and rounding stays with the vault. Assets that cannot be
+     *         sent to a recipient are credited as claimable assets.
      * @param  maxShares_   The maximum amount of vault shares to process [share units]
      * @param  maxRequests_ The maximum number of queue entries to visit
      */
     function processPendingRedeems(uint256 maxShares_, uint256 maxRequests_) external;
+
+    /**
+     * @notice Suspends a pending deposit request, moving it out of the deposit queue.
+     * @dev    This function can only be called by accounts with `OPERATOR_ROLE`, including while
+     *         the vault is paused. Does not drip. Reverts with `InvalidRequestId` if the request is
+     *         outside the pending range and `NoRequest` if it has no unfilled shares. The request
+     *         is copied to the suspended deposit requests under the same ID and its slot in the
+     *         deposit queue is emptied, so it is skipped by processing. Its unfilled savings shares
+     *         move from `pendingDepositSavingsShares` to `suspendedDepositSavingsShares`. The
+     *         savings shares stay in the vault. While suspended the request cannot be processed,
+     *         cancelled or have its recipient updated.
+     * @param  requestId_ The ID of the pending deposit request to suspend
+     */
+    function suspendDepositRequest(uint256 requestId_) external;
+
+    /**
+     * @notice Suspends a pending deposit cancellation request, moving it out of the deposit
+     *         cancellation queue.
+     * @dev    This function can only be called by accounts with `OPERATOR_ROLE`, including while
+     *         the vault is paused. Does not drip. Reverts with `InvalidRequestId` if the request is
+     *         outside the pending range and `NoRequest` if it has no unfilled shares. The request
+     *         is copied to the suspended deposit cancellation requests under the same ID and its
+     *         slot in the deposit cancellation queue is emptied, so it is skipped by processing.
+     *         Its unfilled savings shares move from `pendingDepositCancellationSavingsShares` to
+     *         `suspendedDepositCancellationSavingsShares`. While suspended the request cannot be
+     *         processed or have its recipient updated.
+     * @param  requestId_ The ID of the pending deposit cancellation request to suspend
+     */
+    function suspendDepositCancellationRequest(uint256 requestId_) external;
+
+    /**
+     * @notice Suspends a pending redeem request, moving it out of the redeem queue.
+     * @dev    This function can only be called by accounts with `OPERATOR_ROLE`, including while
+     *         the vault is paused. Does not drip. Reverts with `InvalidRequestId` if the request is
+     *         outside the pending range and `NoRequest` if it has no unfilled shares. The request
+     *         is copied to the suspended redeem requests under the same ID and its slot in the
+     *         redeem queue is emptied, so it is skipped by processing. Its unfilled shares move
+     *         from `pendingRedeemShares` to `suspendedRedeemShares`. The shares stay escrowed in
+     *         the vault. While suspended the request cannot be processed or have its recipient
+     *         updated.
+     * @param  requestId_ The ID of the pending redeem request to suspend
+     */
+    function suspendRedeemRequest(uint256 requestId_) external;
+
+    /**
+     * @notice Unsuspends a suspended deposit request, re-queueing it at the end of the deposit
+     *         queue.
+     * @dev    This function can only be called by accounts with `OPERATOR_ROLE`, including while
+     *         the vault is paused. Reverts with `NoRequest` if there is no suspended deposit
+     *         request with ID `requestId_`. The request, with its original owner, recipient and
+     *         timestamp, is appended to the deposit queue under a new ID and loses its previous
+     *         position. Its unfilled savings shares move from `suspendedDepositSavingsShares` to
+     *         `pendingDepositSavingsShares`. The suspended entry is removed by swapping the last
+     *         suspended ID into its place, so the order of the suspended requests is not stable.
+     * @param  requestId_    The ID of the suspended deposit request to unsuspend
+     * @return newRequestId_ The new ID of the unsuspended pending deposit request
+     */
+    function unsuspendDepositRequest(uint256 requestId_) external returns (uint256 newRequestId_);
+
+    /**
+     * @notice Unsuspends a suspended deposit cancellation request, re-queueing it at the end of
+     *         the deposit cancellation queue.
+     * @dev    This function can only be called by accounts with `OPERATOR_ROLE`, including while
+     *         the vault is paused. Reverts with `NoRequest` if there is no suspended deposit
+     *         cancellation request with ID `requestId_`. The request, with its original owner,
+     *         recipient and timestamp, is appended to the deposit cancellation queue under a new
+     *         ID and loses its previous position. Its unfilled savings shares move from
+     *         `suspendedDepositCancellationSavingsShares` to
+     *         `pendingDepositCancellationSavingsShares`. The suspended entry is removed by swapping
+     *         the last suspended ID into its place, so the order of the suspended requests is not
+     *         stable.
+     * @param  requestId_    The ID of the suspended deposit cancellation request to unsuspend
+     * @return newRequestId_ The new ID of the unsuspended pending deposit cancellation request
+     */
+    function unsuspendDepositCancellationRequest(uint256 requestId_)
+        external
+        returns (uint256 newRequestId_);
+
+    /**
+     * @notice Unsuspends a suspended redeem request, re-queueing it at the end of the redeem
+     *         queue.
+     * @dev    This function can only be called by accounts with `OPERATOR_ROLE`, including while
+     *         the vault is paused. Reverts with `NoRequest` if there is no suspended redeem request
+     *         with ID `requestId_`. The request, with its original owner, recipient and timestamp,
+     *         is appended to the redeem queue under a new ID and loses its previous position. Its
+     *         unfilled shares move from `suspendedRedeemShares` to `pendingRedeemShares`. The
+     *         suspended entry is removed by swapping the last suspended ID into its place, so the
+     *         order of the suspended requests is not stable.
+     * @param  requestId_    The ID of the suspended redeem request to unsuspend
+     * @return newRequestId_ The new ID of the unsuspended pending redeem request
+     */
+    function unsuspendRedeemRequest(uint256 requestId_) external returns (uint256 newRequestId_);
 
     /**********************************************************************************************/
     /*** Redeem Fee Setter external functions                                                   ***/
@@ -618,7 +791,9 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @notice Pauses the vault.
      * @dev    This function can only be called by accounts with `PAUSER_ROLE`.
      *         While paused, deposit and redeem requests and their processing are disabled. Deposit
-     *         cancellations can still be requested and processed.
+     *         cancellations can still be requested and processed, and `impair` becomes callable.
+     *         Suspending and unsuspending requests, recipient updates, claims and `take` remain
+     *         available.
      */
     function pause() external;
 
@@ -641,9 +816,11 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      *         to be converted into shares.
      * @dev    Can only be called while the vault is not paused. `assets_` must be at least
      *         `minDeposit` and `recipient_` must be neither `address(0)` nor the vault. Updates the
-     *         rate accumulator (via `drip()`) before depositing. If no unfilled deposit requests
-     *         are queued ahead, the request is filled immediately, up to the available capacity, in
-     *         which case the returned request may already be fully filled.
+     *         rate accumulator (via `drip()`), pulls `assets_` from the caller and deposits them
+     *         into the savings vault. The resulting savings shares are appended to the deposit
+     *         queue; shares are only minted when the request is processed with
+     *         `processPendingDeposits`, which is bounded by the available capacity.
+     *         Emits `Referral` and `DepositRequest`.
      * @param  assets_    The amount of assets to deposit [asset units]
      * @param  recipient_ The address to receive the minted shares
      * @param  referral_  The referral ID (16-bit) for tracking
@@ -657,12 +834,14 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @notice Cancels `savingsShares_` of a deposit request and queues them to be redeemed for
      *         `recipient_`.
      * @dev    Can only be called by the owner of the request, including while the vault is paused.
-     *         `savingsShares_` must be at least `minDepositCancellation` and at most the unfilled
-     *         savings shares of the request. If all of them are cancelled the deposit request is
-     *         removed, otherwise it keeps the rest and its position in the queue. `recipient_` must
-     *         be neither `address(0)` nor the vault. Does not drip and does not touch the rest of
-     *         the deposit queue: a fully cancelled entry stays in place until
-     *         `processPendingDeposits` or an instant fill skips over it.
+     *         The request must be pending and have unfilled shares (`InvalidRequestId` or
+     *         `NoRequest` otherwise). `savingsShares_` must be at least `minDepositCancellation`
+     *         and at most the unfilled savings shares of the request. If all of them are cancelled
+     *         the deposit request is removed, otherwise it keeps the rest and its position in the
+     *         queue. `recipient_` must be neither `address(0)` nor the vault. Does not drip and
+     *         does not touch the rest of the deposit queue: a fully cancelled entry stays in place
+     *         until `processPendingDeposits` skips over it. The cancelled savings shares move from
+     *         `pendingDepositSavingsShares` to `pendingDepositCancellationSavingsShares`.
      * @param  requestId_     The ID of the deposit request to cancel
      * @param  recipient_     The address to receive the assets when the cancellation is filled
      * @param  savingsShares_ The amount of savings shares to cancel [savings share units]
@@ -696,7 +875,10 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
 
     /**
      * @notice Updates the recipient of a deposit request.
-     * @dev    Can only be called by the owner of the request.
+     * @dev    Can only be called by the owner of the request. `recipient_` must be neither
+     *         `address(0)` nor the vault. The request must be pending and have unfilled shares
+     *         (`InvalidRequestId` or `NoRequest` otherwise), so suspended requests cannot be
+     *         updated. Available while the vault is paused.
      * @param  requestId_ The ID of the deposit request
      * @param  recipient_ The new address to receive the shares when the request is filled
      */
@@ -704,7 +886,10 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
 
     /**
      * @notice Updates the recipient of a deposit cancellation request.
-     * @dev    Can only be called by the owner of the request.
+     * @dev    Can only be called by the owner of the request. `recipient_` must be neither
+     *         `address(0)` nor the vault. The request must be pending and have unfilled shares
+     *         (`InvalidRequestId` or `NoRequest` otherwise), so suspended requests cannot be
+     *         updated. Available while the vault is paused.
      * @param  requestId_ The ID of the deposit cancellation request
      * @param  recipient_ The new address to receive the assets when the request is filled
      */
@@ -712,7 +897,10 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
 
     /**
      * @notice Updates the recipient of a redeem request.
-     * @dev    Can only be called by the owner of the request.
+     * @dev    Can only be called by the owner of the request. `recipient_` must be neither
+     *         `address(0)` nor the vault. The request must be pending and have unfilled shares
+     *         (`InvalidRequestId` or `NoRequest` otherwise), so suspended requests cannot be
+     *         updated. Available while the vault is paused.
      * @param  requestId_ The ID of the redeem request
      * @param  recipient_ The new address to receive the assets when the request is filled
      */
@@ -739,7 +927,11 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
 
     /**
      * @notice Approves `spender_` to spend `value_` shares of `owner_` with an EIP-712 signature.
-     * @dev    Supports ECDSA signatures from EOAs and ERC-1271 signatures from contracts.
+     * @dev    Supports ECDSA signatures (65 bytes, `r || s || v`) from accounts without code and
+     *         ERC-1271 signatures from accounts with code. Accounts with code include EOAs that
+     *         have delegated to a contract via EIP-7702, which therefore need to implement
+     *         ERC-1271. Reverts if `deadline_` has passed, `owner_` is `address(0)` or the
+     *         signature is invalid. The `v`, `r`, `s` overload of `IERC20Permit` is also supported.
      * @param  owner_     The address approving the spender
      * @param  spender_   The address being approved
      * @param  value_     The amount of shares approved [share units]
@@ -761,9 +953,11 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
 
     /**
      * @notice Updates the rate accumulator and returns the new value.
-     * @dev    This function calculates the new `chi` value based on the time elapsed since the last
-     *         `drip()` and the current VSR. The formula used is:
+     * @dev    Calculates the new `chi` value based on the time elapsed since the last `drip()` and
+     *         the current VSR. The formula used is:
      *         `new_chi = old_chi * (vsr)^(block.timestamp - rho) / RAY`
+     *         If `block.timestamp <= rho` nothing is updated and the current `chi` is returned.
+     *         Otherwise `rho` and `chi` are updated and `Drip` is emitted.
      * @return nChi_ The new Chi value [ray]
      */
     function drip() external returns (uint192 nChi_);
@@ -773,18 +967,18 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /*** Constants                                                                              ***/
     /**********************************************************************************************/
 
-    /// @notice Returns the identifier of the role that can adjust the total assets.
+    /// @notice Returns the identifier of the role that can impair the vault (via `impair`).
     function LOSS_MANAGER_ROLE() external view returns (bytes32);
 
-    /// @notice Returns the absolute maximum allowed redeem fee rate [wad].
+    /// @notice Returns the absolute maximum allowed redeem fee rate, 1% [wad].
     function MAX_REDEEM_FEE() external view returns (uint256);
 
-    /// @notice Returns the absolute maximum allowed Vault Savings Rate (VSR).
+    /// @notice Returns the absolute maximum allowed Vault Savings Rate (VSR), 100% APY [ray].
     function MAX_VSR() external view returns (uint256);
 
     /**
-     * @notice Returns the identifier of the role that can process the request queues, set VSR, and
-     *         set capacity.
+     * @notice Returns the identifier of the role that can process the request queues, suspend and
+     *         unsuspend requests, set the VSR, and set the capacity.
      */
     function OPERATOR_ROLE() external view returns (bytes32);
 
@@ -852,13 +1046,14 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      */
     function vsr() external view returns (uint256);
 
-    /// @notice Returns the minimum allowed VSR value.
+    /// @notice Returns the minimum allowed VSR value [ray].
     function minVSR() external view returns (uint256);
 
-    /// @notice Returns the maximum allowed VSR value.
+    /// @notice Returns the maximum allowed VSR value [ray].
     function maxVSR() external view returns (uint256);
 
-    /// @notice Returns the maximum total supply of shares [share units].
+    /// @notice Returns the maximum total supply of shares that deposits can be filled up to
+    ///         [share units].
     function maxCapacity() external view returns (uint256);
 
     /// @notice Returns the minimum amount of assets for a deposit request [asset units].
@@ -879,72 +1074,107 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     /// @notice Returns the maximum allowed redeem fee rate [wad].
     function maxRedeemFeeRate() external view returns (uint256);
 
-    /// @notice Returns the total claimable assets in the vault.
+    /// @notice Returns the total assets owed to recipients via `claim()`, that is, the sum of
+    ///         `claimableAssetsOf` [asset units].
     function totalClaimable() external view returns (uint256);
 
-    /// @notice Returns the total savings shares in the deposit queue [savings share units].
+    /// @notice Returns the total savings shares in the pending deposit queue, excluding suspended
+    ///         requests [savings share units].
     function pendingDepositSavingsShares() external view returns (uint256);
 
     /**
-     * @notice Returns the total savings shares in the deposit cancellation queue
-     *         [savings share units].
+     * @notice Returns the total savings shares in the pending deposit cancellation queue, excluding
+     *         suspended requests [savings share units].
      */
-    function pendingCancelledDepositSavingsShares() external view returns (uint256);
+    function pendingDepositCancellationSavingsShares() external view returns (uint256);
 
-    /// @notice Returns the total vault shares in the redeem queue [share units].
+    /// @notice Returns the total vault shares in the pending redeem queue, excluding suspended
+    ///         requests [share units].
     function pendingRedeemShares() external view returns (uint256);
 
-    /// @notice Returns the number of fully processed (or cancelled) deposit requests.
+    /**
+     * @notice Returns the index of the head of the deposit queue.
+     * @dev    All deposit requests before it were fully filled, fully cancelled or suspended.
+     *         Pending deposit request IDs are at least this value.
+     */
     function processedDepositCount() external view returns (uint256);
 
-    /// @notice Returns the number of fully processed deposit cancellation requests.
+    /**
+     * @notice Returns the index of the head of the deposit cancellation queue.
+     * @dev    All deposit cancellation requests before it were fully filled or suspended. Pending
+     *         deposit cancellation request IDs are at least this value.
+     */
     function processedDepositCancellationCount() external view returns (uint256);
 
-    /// @notice Returns the number of fully processed redeem requests.
+    /**
+     * @notice Returns the index of the head of the redeem queue.
+     * @dev    All redeem requests before it were fully filled or suspended. Pending redeem request
+     *         IDs are at least this value.
+     */
     function processedRedeemCount() external view returns (uint256);
+
+    /**
+     * @notice Returns the total savings shares in the suspended deposit requests
+     *         [savings share units].
+     */
+    function suspendedDepositSavingsShares() external view returns (uint256);
+
+    /**
+     * @notice Returns the total savings shares in the suspended deposit cancellation requests
+     *         [savings share units].
+     */
+    function suspendedDepositCancellationSavingsShares() external view returns (uint256);
+
+    /// @notice Returns the total vault shares in the suspended redeem requests [share units].
+    function suspendedRedeemShares() external view returns (uint256);
 
     /// @notice Returns the address of the current implementation contract.
     function implementation() external view returns (address);
 
     /**********************************************************************************************/
-    /*** Request getter functions                                                               ***/
+    /*** Pending request getter functions                                                       ***/
     /**********************************************************************************************/
 
-    /// @notice Gets the number of pending deposit requests that have not yet been processed.
+    /**
+     * @notice Gets the number of entries in the pending deposit queue from the head onwards.
+     * @dev    Includes entries without unfilled shares that have not been skipped yet.
+     */
     function pendingDepositRequestsLength() external view returns (uint256);
 
     /**
      * @notice Returns a pending deposit request.
-     * @dev    Reverts if `requestId_` is before the first unprocessed pending request or does not
-     *         exist. A fully cancelled request still in the queue is returned with zero shares.
+     * @dev    Reverts with `InvalidRequestId` if `requestId_` is before the first unprocessed
+     *         pending request or past the end of the queue, and with `NoRequest` if the request has
+     *         no unfilled shares (fully cancelled, filled or suspended).
      * @param  requestId_ The ID of the deposit request
-     * @return owner_     The owner of the request
-     * @return recipient_ The address to receive the shares when the request is filled
-     * @return timestamp_ The timestamp of the request [unix epoch time]
-     * @return shares_    The unfilled savings shares of the request [savings share units]
+     * @return request_   The pending deposit request
      */
     function getPendingDepositRequest(uint256 requestId_)
         external
         view
-        returns (address owner_, address recipient_, uint64 timestamp_, uint256 shares_);
+        returns (Request memory request_);
 
     /**
-     * @notice Returns the deposit requests from the first unprocessed pending request to the end of
-     *         the queue.
-     * @dev    Includes fully cancelled requests, which have zero shares.
-     * @return requests_ The deposit requests
+     * @notice Returns the pending deposit requests from the first unprocessed pending request to
+     *         the end of the queue.
+     * @dev    Includes entries without unfilled shares (fully cancelled or suspended) that have not
+     *         been skipped yet, which have zero shares.
+     * @return requests_ The pending deposit requests
      */
     function pendingDepositRequests() external view returns (Request[] memory requests_);
 
     /**
-     * @notice Returns `length_` deposit requests, starting from the request with ID `startId_`.
-     * @dev    Returns an empty array if `length_` is zero and `startId_` is valid. Reverts if
-     *         `startId_` is before the first unprocessed pending request or if `startId_` is itself
-     *         past the end of the queue. Length is clamped to the number of request entries
-     *         starting from `startId_`. Includes fully cancelled requests, which have zero shares.
+     * @notice Returns `length_` pending deposit requests, starting from the request with ID
+     *         `startId_`.
+     * @dev    Returns an empty array if `length_` is zero and `startId_` is valid. Reverts with
+     *         `StartIdTooSmall` if `startId_` is before the first unprocessed pending request and
+     *         with `StartIdTooLarge` if `startId_` is past the end of the queue (`startId_` equal
+     *         to the queue length is valid and returns an empty array). Length is clamped to the
+     *         number of entries starting from `startId_`. Includes entries without unfilled shares,
+     *         which have zero shares.
      * @param  startId_  The first request ID to return
      * @param  length_   The number of requests to return
-     * @return requests_ The deposit requests
+     * @return requests_ The pending deposit requests
      */
     function getPendingDepositRequests(uint256 startId_, uint256 length_)
         external
@@ -952,30 +1182,31 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
         returns (Request[] memory requests_);
 
     /**
-     * @notice Gets the number of pending deposit cancellation requests that have not yet been
-     *         processed.
+     * @notice Gets the number of entries in the pending deposit cancellation queue from the head
+     *         onwards.
+     * @dev    Includes entries without unfilled shares (suspended) that have not been skipped yet.
      */
     function pendingDepositCancellationRequestsLength() external view returns (uint256);
 
     /**
      * @notice Returns a pending deposit cancellation request.
-     * @dev    Reverts if `requestId_` is before the first unprocessed pending request or does not
-     *         exist.
+     * @dev    Reverts with `InvalidRequestId` if `requestId_` is before the first unprocessed
+     *         pending request or past the end of the queue, and with `NoRequest` if the request
+     *         has no unfilled shares (filled or suspended).
      * @param  requestId_ The ID of the deposit cancellation request
-     * @return owner_     The owner of the request
-     * @return recipient_ The address to receive the assets when the request is filled
-     * @return timestamp_ The timestamp of the request [unix epoch time]
-     * @return shares_    The unfilled savings shares of the request [savings share units]
+     * @return request_   The pending deposit cancellation request
      */
     function getPendingDepositCancellationRequest(uint256 requestId_)
         external
         view
-        returns (address owner_, address recipient_, uint64 timestamp_, uint256 shares_);
+        returns (Request memory request_);
 
     /**
-     * @notice Returns the deposit cancellation requests from the first unprocessed pending request
-     *         to the end of the queue.
-     * @return requests_ The deposit cancellation requests
+     * @notice Returns the pending deposit cancellation requests from the first unprocessed pending
+     *         request to the end of the queue.
+     * @dev    Includes entries without unfilled shares (suspended) that have not been skipped yet,
+     *         which have zero shares.
+     * @return requests_ The pending deposit cancellation requests
      */
     function pendingDepositCancellationRequests()
         external
@@ -983,60 +1214,208 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
         returns (Request[] memory requests_);
 
     /**
-     * @notice Returns `length_` deposit cancellation requests, starting from the request with ID
-     *         `startId_`.
-     * @dev    Returns an empty array if `length_` is zero and `startId_` is valid. Reverts if
-     *         `startId_` is before the first unprocessed pending request or if `startId_` is itself
-     *         past the end of the queue. Length is clamped to the number of request entries
-     *         starting from `startId_`.
+     * @notice Returns `length_` pending deposit cancellation requests, starting from the request
+     *         with ID `startId_`.
+     * @dev    Returns an empty array if `length_` is zero and `startId_` is valid. Reverts with
+     *         `StartIdTooSmall` if `startId_` is before the first unprocessed pending request and
+     *         with `StartIdTooLarge` if `startId_` is past the end of the queue (`startId_` equal
+     *         to the queue length is valid and returns an empty array). Length is clamped to the
+     *         number of entries starting from `startId_`. Includes entries without unfilled shares,
+     *         which have zero shares.
      * @param  startId_  The first request ID to return
      * @param  length_   The number of requests to return
-     * @return requests_ The deposit cancellation requests
+     * @return requests_ The pending deposit cancellation requests
      */
     function getPendingDepositCancellationRequests(uint256 startId_, uint256 length_)
         external
         view
         returns (Request[] memory requests_);
 
-    /// @notice Gets the number of pending redeem requests that have not yet been processed.
+    /**
+     * @notice Gets the number of entries in the pending redeem queue from the head onwards.
+     * @dev    Includes entries without unfilled shares (suspended) that have not been skipped yet.
+     */
     function pendingRedeemRequestsLength() external view returns (uint256);
 
     /**
      * @notice Returns a pending redeem request.
-     * @dev    Reverts if `requestId_` is before the first unprocessed pending request or does not
-     *         exist.
+     * @dev    Reverts with `InvalidRequestId` if `requestId_` is before the first unprocessed
+     *         pending request or past the end of the queue, and with `NoRequest` if the request has
+     *         no unfilled shares (filled or suspended).
      * @param  requestId_ The ID of the redeem request
-     * @return owner_     The owner of the request
-     * @return recipient_ The address to receive the assets when the request is filled
-     * @return timestamp_ The timestamp of the request [unix epoch time]
-     * @return shares_    The unfilled vault shares of the request [share units]
+     * @return request_   The pending redeem request
      */
     function getPendingRedeemRequest(uint256 requestId_)
         external
         view
-        returns (address owner_, address recipient_, uint64 timestamp_, uint256 shares_);
+        returns (Request memory request_);
 
     /**
-     * @notice Returns the redeem requests from the first unprocessed pending request to the end of
-     *         the queue.
-     * @return requests_ The redeem requests
+     * @notice Returns the pending redeem requests from the first unprocessed pending request to the
+     *         end of the queue.
+     * @dev    Includes entries without unfilled shares (suspended) that have not been skipped yet,
+     *         which have zero shares.
+     * @return requests_ The pending redeem requests
      */
     function pendingRedeemRequests() external view returns (Request[] memory requests_);
 
     /**
-     * @notice Returns `length_` redeem requests, starting from the request with ID `startId_`.
-     * @dev    Returns an empty array if `length_` is zero and `startId_` is valid. Reverts if
-     *         `startId_` is before the first unprocessed pending request or if `startId_` is itself
-     *         past the end of the queue. Length is clamped to the number of request entries
-     *         starting from `startId_`.
+     * @notice Returns `length_` pending redeem requests, starting from the request with ID
+     *         `startId_`.
+     * @dev    Returns an empty array if `length_` is zero and `startId_` is valid. Reverts with
+     *         `StartIdTooSmall` if `startId_` is before the first unprocessed pending request and
+     *         with `StartIdTooLarge` if `startId_` is past the end of the queue (`startId_` equal
+     *         to the queue length is valid and returns an empty array). Length is clamped to the
+     *         number of entries starting from `startId_`. Includes entries without unfilled shares,
+     *         which have zero shares.
      * @param  startId_  The first request ID to return
      * @param  length_   The number of requests to return
-     * @return requests_ The redeem requests
+     * @return requests_ The pending redeem requests
      */
     function getPendingRedeemRequests(uint256 startId_, uint256 length_)
         external
         view
         returns (Request[] memory requests_);
+
+    /**********************************************************************************************/
+    /*** Suspended request getter functions                                                     ***/
+    /**********************************************************************************************/
+
+    /// @notice Gets the number of currently suspended deposit requests.
+    function suspendedDepositRequestsLength() external view returns (uint256);
+
+    /**
+     * @notice Returns a suspended deposit request.
+     * @dev    Reverts with `NoRequest` if there is no suspended deposit request with ID
+     *         `requestId_`.
+     * @param  requestId_ The ID the deposit request had in the deposit queue
+     * @return request_   The suspended deposit request
+     */
+    function getSuspendedDepositRequest(uint256 requestId_)
+        external
+        view
+        returns (Request memory request_);
+
+    /**
+     * @notice Returns all suspended deposit requests and their IDs.
+     * @dev    Returns empty arrays if there are no suspended deposit requests. The order is not
+     *         stable, since unsuspending a request moves the last one into its place.
+     * @return requestIds_ The IDs the suspended deposit requests had in the deposit queue
+     * @return requests_   The suspended deposit requests
+     */
+    function suspendedDepositRequests()
+        external
+        view
+        returns (uint256[] memory requestIds_, Request[] memory requests_);
+
+    /**
+     * @notice Returns a subset of `length_` suspended deposit requests, starting from `startIndex_`.
+     * @dev    Returns empty arrays if `length_` is zero and `startIndex_` is valid. Reverts with
+     *         `StartIdTooLarge` if `startIndex_` is greater than the number of suspended deposit
+     *         requests (`startIndex_` equal to that number is valid and returns empty arrays).
+     *         Length is clamped to the number of entries starting from `startIndex_`. The order is
+     *         not stable, since unsuspending a request moves the last one into its place.
+     * @param  startIndex_ The index of the first request to return
+     * @param  length_     The number of requests to return
+     * @return requestIds_ The IDs the suspended deposit requests had in the deposit queue
+     * @return requests_   The suspended deposit requests
+     */
+    function getSuspendedDepositRequests(uint256 startIndex_, uint256 length_)
+        external
+        view
+        returns (uint256[] memory requestIds_, Request[] memory requests_);
+
+    /// @notice Gets the number of currently suspended deposit cancellation requests.
+    function suspendedDepositCancellationRequestsLength() external view returns (uint256);
+
+    /**
+     * @notice Returns a suspended deposit cancellation request.
+     * @dev    Reverts with `NoRequest` if there is no suspended deposit cancellation request with
+     *         ID `requestId_`.
+     * @param  requestId_ The ID the deposit cancellation request had in the deposit cancellation
+     *                    queue
+     * @return request_   The suspended deposit cancellation request
+     */
+    function getSuspendedDepositCancellationRequest(uint256 requestId_)
+        external
+        view
+        returns (Request memory request_);
+
+    /**
+     * @notice Returns all suspended deposit cancellation requests and their IDs.
+     * @dev    Returns empty arrays if there are no suspended deposit cancellation requests. The
+     *         order is not stable, since unsuspending a request moves the last one into its place.
+     * @return requestIds_ The IDs the suspended deposit cancellation requests had in the deposit
+     *                     cancellation queue
+     * @return requests_   The suspended deposit cancellation requests
+     */
+    function suspendedDepositCancellationRequests()
+        external
+        view
+        returns (uint256[] memory requestIds_, Request[] memory requests_);
+
+    /**
+     * @notice Returns a subset of `length_` suspended deposit cancellation requests, starting from
+     *         `startIndex_`.
+     * @dev    Returns empty arrays if `length_` is zero and `startIndex_` is valid. Reverts with
+     *         `StartIdTooLarge` if `startIndex_` is greater than the number of suspended deposit
+     *         cancellation requests (`startIndex_` equal to that number is valid and returns empty
+     *         arrays). Length is clamped to the number of entries starting from `startIndex_`. The
+     *         order is not stable, since unsuspending a request moves the last one into its place.
+     * @param  startIndex_ The index of the first request to return
+     * @param  length_     The number of requests to return
+     * @return requestIds_ The IDs the suspended deposit cancellation requests had in the deposit
+     *                     cancellation queue
+     * @return requests_   The suspended deposit cancellation requests
+     */
+    function getSuspendedDepositCancellationRequests(uint256 startIndex_, uint256 length_)
+        external
+        view
+        returns (uint256[] memory requestIds_, Request[] memory requests_);
+
+    /// @notice Gets the number of currently suspended redeem requests.
+    function suspendedRedeemRequestsLength() external view returns (uint256);
+
+    /**
+     * @notice Returns a suspended redeem request.
+     * @dev    Reverts with `NoRequest` if there is no suspended redeem request with ID
+     *         `requestId_`.
+     * @param  requestId_ The ID the redeem request had in the redeem queue
+     * @return request_   The suspended redeem request
+     */
+    function getSuspendedRedeemRequest(uint256 requestId_)
+        external
+        view
+        returns (Request memory request_);
+
+    /**
+     * @notice Returns all suspended redeem requests and their IDs.
+     * @dev    Returns empty arrays if there are no suspended redeem requests. The order is not
+     *         stable, since unsuspending a request moves the last one into its place.
+     * @return requestIds_ The IDs the suspended redeem requests had in the redeem queue
+     * @return requests_   The suspended redeem requests
+     */
+    function suspendedRedeemRequests()
+        external
+        view
+        returns (uint256[] memory requestIds_, Request[] memory requests_);
+
+    /**
+     * @notice Returns a subset of `length_` suspended redeem requests, starting from `startIndex_`.
+     * @dev    Returns empty arrays if `length_` is zero and `startIndex_` is valid. Reverts with
+     *         `StartIdTooLarge` if `startIndex_` is greater than the number of suspended redeem
+     *         requests (`startIndex_` equal to that number is valid and returns empty arrays).
+     *         Length is clamped to the number of entries starting from `startIndex_`. The order is
+     *         not stable, since unsuspending a request moves the last one into its place.
+     * @param  startIndex_ The index of the first request to return
+     * @param  length_     The number of requests to return
+     * @return requestIds_ The IDs the suspended redeem requests had in the redeem queue
+     * @return requests_   The suspended redeem requests
+     */
+    function getSuspendedRedeemRequests(uint256 startIndex_, uint256 length_)
+        external
+        view
+        returns (uint256[] memory requestIds_, Request[] memory requests_);
 
     /**********************************************************************************************/
     /*** View functions                                                                         ***/
