@@ -78,7 +78,7 @@ Redemptions are always asynchronous (there is no instant fill).
 
 - All three queues (deposit, deposit cancellation, redeem) are FIFO and are processed with `maxRequests` bounding the number of entries visited per call, so processing can be batched.
 - Each queue's head is tracked by a processed counter (`processedDepositCount`, `processedDepositCancellationCount`, `processedRedeemCount`); fully filled entries are deleted and the head advances past them.
-- Aggregate pending amounts are tracked in `pendingDepositSavingsShares`, `pendingCancelledDepositSavingsShares`, and `pendingRedeemShares`. `totalClaimable` tracks the sum of `claimableAssetsOf`.
+- Aggregate pending amounts are tracked in `pendingDepositSavingsShares`, `pendingDepositCancellationSavingsShares`, and `pendingRedeemShares`. `totalClaimable` tracks the sum of `claimableAssetsOf`.
 - Pending requests can be inspected with `pending{Deposit,DepositCancellation,Redeem}RequestsLength()`, `getPending{Deposit,DepositCancellation,Redeem}Request(requestId)` (reverts with `InvalidRequestId` if outside the pending range), `pending*Requests()` (full pending list; the deposit list can include fully cancelled entries with zero shares), or `getPending*Requests(startId, length)`. The ranged getter reverts if `startId` is before the queue head (`StartIdTooSmall`) or greater than the queue length (`StartIdTooLarge`); `length` is clamped to the entries available, so overshooting or a `length` of zero returns a shorter or empty array rather than reverting.
 
 ### 8. Pausing

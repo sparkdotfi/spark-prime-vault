@@ -361,7 +361,7 @@ abstract contract TestBase is Test {
         // Deposit Cancellation Requests
 
         assertApproxEqAbs(
-            spUSDC.convertToAssets(spPrime.pendingCancelledDepositSavingsShares()),
+            spUSDC.convertToAssets(spPrime.pendingDepositCancellationSavingsShares()),
             vaultState.depositCancellationRequests.pendingShareValue,
             tolerance,
             "vaultState.depositCancellationRequests.pendingShareValue"
