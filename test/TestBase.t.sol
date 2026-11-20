@@ -42,10 +42,9 @@ interface ISparkVaultLike {
 
 abstract contract TestBase is Test {
 
-    struct PendingRequestsState {
-        uint256 pendingShareValue;  // USDC value of spUSDC shares (deposit queue) or spPrime shares (redeem queue)
-        uint256 length;             // Number of requests from `processedCount` to the end, cancelled included
-        uint256 processedCount;     // Number of requests that have been processed (either filled or cancelled)
+    struct RequestsState {
+        uint256 shareValue;  // USDC value of spUSDC shares (deposit/cancellation) or spPrime shares (redeem)
+        uint256 length;      // Number of requests in the list
     }
 
     struct VaultState {
@@ -55,9 +54,12 @@ abstract contract TestBase is Test {
         uint256 totalClaimable;          // USDC value of all claimable assets
         uint256 availableCapacityValue;  // USDC value of spPrime shares left to mint
         uint256 availableLiquidAssets;   // USDC the vault can withdraw from spUSDC now (maxWithdraw)
-        PendingRequestsState depositRequests;
-        PendingRequestsState depositCancellationRequests;
-        PendingRequestsState redeemRequests;
+        RequestsState pendingDeposits;
+        RequestsState suspendedDeposits;
+        RequestsState pendingDepositCancellations;
+        RequestsState suspendedDepositCancellations;
+        RequestsState pendingRedeems;
+        RequestsState suspendedRedeems;
     }
 
     struct AccountBalances {
@@ -141,34 +143,24 @@ abstract contract TestBase is Test {
         spPrime.setVSR(FIVE_PCT_VSR);
         vm.stopPrank();
 
-        PendingRequestsState memory depositRequests = PendingRequestsState({
-            pendingShareValue : 0,
-            length            : 0,
-            processedCount    : 0
-        });
-
-        PendingRequestsState memory depositCancellationRequests = PendingRequestsState({
-            pendingShareValue : 0,
-            length            : 0,
-            processedCount    : 0
-        });
-
-        PendingRequestsState memory redeemRequests = PendingRequestsState({
-            pendingShareValue : 0,
-            length            : 0,
-            processedCount    : 0
+        RequestsState memory emptyRequests = RequestsState({
+            shareValue : 0,
+            length     : 0
         });
 
         vaultState = VaultState({
-            rho                         : vm.getBlockTimestamp(),
-            chi                         : uint192(RAY),
-            totalAssets                 : 0,
-            totalClaimable              : 0,
-            availableCapacityValue      : spPrime.convertToAssets(VAULT_CAPACITY),
-            availableLiquidAssets       : 0,
-            depositRequests             : depositRequests,
-            depositCancellationRequests : depositCancellationRequests,
-            redeemRequests              : redeemRequests
+            rho                           : vm.getBlockTimestamp(),
+            chi                           : uint192(RAY),
+            totalAssets                   : 0,
+            totalClaimable                : 0,
+            availableCapacityValue        : spPrime.convertToAssets(VAULT_CAPACITY),
+            availableLiquidAssets         : 0,
+            pendingDeposits               : emptyRequests,
+            suspendedDeposits             : emptyRequests,
+            pendingDepositCancellations   : emptyRequests,
+            suspendedDepositCancellations : emptyRequests,
+            pendingRedeems                : emptyRequests,
+            suspendedRedeems              : emptyRequests
         });
 
         vm.label(address(admin),           "admin");
@@ -215,7 +207,7 @@ abstract contract TestBase is Test {
         spPrime.setRedeemFeeRate(feeRate);
     }
 
-    function _requestDeposit(address account, address recipient, uint256 assets) internal returns (uint256 requestId) {
+    function _requestDeposit(address account, address recipient, uint256 assets) internal returns (uint48 requestId) {
         deal(address(usdc), account, assets);
 
         vm.startPrank(account);
@@ -224,28 +216,28 @@ abstract contract TestBase is Test {
         vm.stopPrank();
     }
 
-    function _requestDeposit(address account, uint256 assets) internal returns (uint256 requestId) {
+    function _requestDeposit(address account, uint256 assets) internal returns (uint48 requestId) {
         return _requestDeposit(account, account, assets);
     }
 
     function _requestDepositCancellation(address account, uint256 requestId, address recipient, uint256 savingShares)
         internal
-        returns (uint256 newRequestId)
+        returns (uint48 newRequestId)
     {
         vm.prank(account);
-        return spPrime.requestDepositCancellation(requestId, recipient, savingShares);
+        return spPrime.requestDepositCancellation(uint48(requestId), recipient, savingShares);
     }
 
-    function _requestDepositCancellation(address account, uint256 requestId, uint256 savingShares) internal returns (uint256 newRequestId) {
+    function _requestDepositCancellation(address account, uint256 requestId, uint256 savingShares) internal returns (uint48 newRequestId) {
         return _requestDepositCancellation(account, requestId, account, savingShares);
     }
 
-    function _requestRedeem(address account, address recipient, uint256 shares) internal returns (uint256 requestId) {
+    function _requestRedeem(address account, address recipient, uint256 shares) internal returns (uint48 requestId) {
         vm.prank(account);
         return spPrime.requestRedeem(shares, recipient);
     }
 
-    function _requestRedeem(address account, uint256 shares) internal returns (uint256 requestId) {
+    function _requestRedeem(address account, uint256 shares) internal returns (uint48 requestId) {
         return _requestRedeem(account, account, shares);
     }
 
@@ -287,6 +279,36 @@ abstract contract TestBase is Test {
     function _take(uint256 savingsShares) internal {
         vm.prank(taker);
         spPrime.take(savingsShares);
+    }
+
+    function _suspendDeposit(uint256 requestId) internal {
+        vm.prank(operator);
+        spPrime.suspendDepositRequest(uint48(requestId));
+    }
+
+    function _suspendDepositCancellation(uint256 requestId) internal {
+        vm.prank(operator);
+        spPrime.suspendDepositCancellationRequest(uint48(requestId));
+    }
+
+    function _suspendRedeem(uint256 requestId) internal {
+        vm.prank(operator);
+        spPrime.suspendRedeemRequest(uint48(requestId));
+    }
+
+    function _unsuspendDeposit(uint256 requestId) internal {
+        vm.prank(operator);
+        spPrime.unsuspendDepositRequest(uint48(requestId));
+    }
+
+    function _unsuspendDepositCancellation(uint256 requestId) internal {
+        vm.prank(operator);
+        spPrime.unsuspendDepositCancellationRequest(uint48(requestId));
+    }
+
+    function _unsuspendRedeem(uint256 requestId) internal {
+        vm.prank(operator);
+        spPrime.unsuspendRedeemRequest(uint48(requestId));
     }
 
     /**********************************************************************************************/
@@ -337,67 +359,130 @@ abstract contract TestBase is Test {
             "vaultState.availableLiquidAssets"
         );
 
-        // Deposit Requests
+        // Pending Deposits
 
         assertApproxEqAbs(
             spUSDC.convertToAssets(spPrime.pendingDepositSavingsShares()),
-            vaultState.depositRequests.pendingShareValue,
+            vaultState.pendingDeposits.shareValue,
             tolerance,
-            "vaultState.depositRequests.pendingShareValue"
+            "vaultState.pendingDeposits.shareValue"
+        );
+
+        assertEq(
+            spPrime.pendingDepositRequestsLength(),
+            vaultState.pendingDeposits.length,
+            "vaultState.pendingDeposits.length"
         );
 
         assertEq(
             spPrime.pendingDepositRequests().length,
-            vaultState.depositRequests.length,
-            "vaultState.depositRequests.length"
+            vaultState.pendingDeposits.length,
+            "vaultState.pendingDeposits.requests.length"
+        );
+
+        // Suspended Deposits
+
+        assertApproxEqAbs(
+            spUSDC.convertToAssets(spPrime.suspendedDepositSavingsShares()),
+            vaultState.suspendedDeposits.shareValue,
+            tolerance,
+            "vaultState.suspendedDeposits.shareValue"
         );
 
         assertEq(
-            spPrime.processedDepositCount(),
-            vaultState.depositRequests.processedCount,
-            "vaultState.depositRequests.processedCount"
+            spPrime.suspendedDepositRequestsLength(),
+            vaultState.suspendedDeposits.length,
+            "vaultState.suspendedDeposits.length"
         );
 
-        // Deposit Cancellation Requests
+        assertEq(
+            spPrime.suspendedDepositRequests().length,
+            vaultState.suspendedDeposits.length,
+            "vaultState.suspendedDeposits.requests.length"
+        );
+
+        // Pending Deposit Cancellations
 
         assertApproxEqAbs(
-            spUSDC.convertToAssets(spPrime.pendingCancelledDepositSavingsShares()),
-            vaultState.depositCancellationRequests.pendingShareValue,
+            spUSDC.convertToAssets(spPrime.pendingDepositCancellationSavingsShares()),
+            vaultState.pendingDepositCancellations.shareValue,
             tolerance,
-            "vaultState.depositCancellationRequests.pendingShareValue"
+            "vaultState.pendingDepositCancellations.shareValue"
+        );
+
+        assertEq(
+            spPrime.pendingDepositCancellationRequestsLength(),
+            vaultState.pendingDepositCancellations.length,
+            "vaultState.pendingDepositCancellations.length"
         );
 
         assertEq(
             spPrime.pendingDepositCancellationRequests().length,
-            vaultState.depositCancellationRequests.length,
-            "vaultState.depositCancellationRequests.length"
+            vaultState.pendingDepositCancellations.length,
+            "vaultState.pendingDepositCancellations.requests.length"
+        );
+
+        // Suspended Deposit Cancellations
+
+        assertApproxEqAbs(
+            spUSDC.convertToAssets(spPrime.suspendedDepositCancellationSavingsShares()),
+            vaultState.suspendedDepositCancellations.shareValue,
+            tolerance,
+            "vaultState.suspendedDepositCancellations.shareValue"
         );
 
         assertEq(
-            spPrime.processedDepositCancellationCount(),
-            vaultState.depositCancellationRequests.processedCount,
-            "vaultState.depositCancellationRequests.processedCount"
+            spPrime.suspendedDepositCancellationRequestsLength(),
+            vaultState.suspendedDepositCancellations.length,
+            "vaultState.suspendedDepositCancellations.length"
         );
 
-        // Redeem Requests
+        assertEq(
+            spPrime.suspendedDepositCancellationRequests().length,
+            vaultState.suspendedDepositCancellations.length,
+            "vaultState.suspendedDepositCancellations.requests.length"
+        );
+
+        // Pending Redeems
 
         assertApproxEqAbs(
             spPrime.convertToAssets(spPrime.pendingRedeemShares()),
-            vaultState.redeemRequests.pendingShareValue,
+            vaultState.pendingRedeems.shareValue,
             tolerance,
-            "vaultState.redeemRequests.pendingShareValue"
+            "vaultState.pendingRedeems.shareValue"
+        );
+
+        assertEq(
+            spPrime.pendingRedeemRequestsLength(),
+            vaultState.pendingRedeems.length,
+            "vaultState.pendingRedeems.length"
         );
 
         assertEq(
             spPrime.pendingRedeemRequests().length,
-            vaultState.redeemRequests.length,
-            "vaultState.redeemRequests.length"
+            vaultState.pendingRedeems.length,
+            "vaultState.pendingRedeems.requests.length"
+        );
+
+        // Suspended Redeems
+
+        assertApproxEqAbs(
+            spPrime.convertToAssets(spPrime.suspendedRedeemShares()),
+            vaultState.suspendedRedeems.shareValue,
+            tolerance,
+            "vaultState.suspendedRedeems.shareValue"
         );
 
         assertEq(
-            spPrime.processedRedeemCount(),
-            vaultState.redeemRequests.processedCount,
-            "vaultState.redeemRequests.processedCount"
+            spPrime.suspendedRedeemRequestsLength(),
+            vaultState.suspendedRedeems.length,
+            "vaultState.suspendedRedeems.length"
+        );
+
+        assertEq(
+            spPrime.suspendedRedeemRequests().length,
+            vaultState.suspendedRedeems.length,
+            "vaultState.suspendedRedeems.requests.length"
         );
 
     }
@@ -440,38 +525,47 @@ abstract contract TestBase is Test {
         _assertAccountBalances(accountState, 0);
     }
 
+    /**********************************************************************************************/
+    /*** Deposit request assertion helpers                                                      ***/
+    /**********************************************************************************************/
+
     function _assertDepositRequest(
-        uint256 requestId,
-        address owner,
-        address recipient,
-        uint256 savingsShareValue,
-        uint256 timestamp
+        ISparkPrimeVault.Request memory request,
+        uint256                         id,
+        address                         owner,
+        address                         recipient,
+        uint256                         savingsShareValue,
+        uint256                         timestamp
     )
-        internal view
+        internal
+        view
     {
-        ( address owner_, address recipient_, uint64 timestamp_, uint256 shares_ ) =
-            spPrime.getPendingDepositRequest(requestId);
+        assertEq(
+            request.id,
+            uint48(id),
+            "depositRequest.id"
+        );
 
         assertEq(
-            owner_,
+            request.owner,
             owner,
             "depositRequest.owner"
         );
 
         assertEq(
-            recipient_,
+            request.recipient,
             recipient,
             "depositRequest.recipient"
         );
 
         assertEq(
-            spUSDC.convertToAssets(shares_),
+            spUSDC.convertToAssets(request.shares),
             savingsShareValue,
             "depositRequest.savingsShareValue"
         );
 
         assertEq(
-            timestamp_,
+            request.timestamp,
             uint64(timestamp),
             "depositRequest.timestamp"
         );
@@ -481,56 +575,123 @@ abstract contract TestBase is Test {
         uint256 requestId,
         address owner,
         address recipient,
+        uint256 savingsShareValue,
+        uint256 timestamp
+    )
+        internal
+        view
+    {
+        _assertDepositRequest(
+            spPrime.getPendingDepositRequest(uint48(requestId)),
+            requestId,
+            owner,
+            recipient,
+            savingsShareValue,
+            timestamp
+        );
+    }
+
+    function _assertDepositRequest(
+        ISparkPrimeVault.Request memory request,
+        uint256                         id,
+        address                         owner,
+        address                         recipient,
+        uint256                         savingsShareValue
+    )
+        internal
+        view
+    {
+        _assertDepositRequest(request, id, owner, recipient, savingsShareValue, vm.getBlockTimestamp());
+    }
+
+    function _assertDepositRequest(
+        uint256 requestId,
+        address owner,
+        address recipient,
         uint256 savingsShareValue
-    ) internal view {
+    )
+        internal
+        view
+    {
         _assertDepositRequest(requestId, owner, recipient, savingsShareValue, vm.getBlockTimestamp());
     }
 
-    function _assertDepositRequest(
+    function _assertSuspendedDepositRequest(
+        uint256 requestId,
+        address owner,
+        address recipient,
+        uint256 savingsShareValue,
+        uint256 timestamp
+    )
+        internal
+        view
+    {
+        _assertDepositRequest(
+            spPrime.getSuspendedDepositRequest(uint48(requestId)),
+            requestId,
+            owner,
+            recipient,
+            savingsShareValue,
+            timestamp
+        );
+    }
+
+    function _assertSuspendedDepositRequest(
+        uint256 requestId,
+        address owner,
+        address recipient,
+        uint256 savingsShareValue
+    )
+        internal
+        view
+    {
+        _assertSuspendedDepositRequest(requestId, owner, recipient, savingsShareValue, vm.getBlockTimestamp());
+    }
+
+    /**********************************************************************************************/
+    /*** Deposit cancellation request assertion helpers                                         ***/
+    /**********************************************************************************************/
+
+    function _assertDepositCancellationRequest(
         ISparkPrimeVault.Request memory request,
+        uint256                         id,
         address                         owner,
         address                         recipient,
         uint256                         savingsShareValue,
         uint256                         timestamp
     )
-        internal view
+        internal
+        view
     {
+        assertEq(
+            request.id,
+            uint48(id),
+            "depositCancellationRequest.id"
+        );
+
         assertEq(
             request.owner,
             owner,
-            "depositRequest.owner"
+            "depositCancellationRequest.owner"
         );
 
         assertEq(
             request.recipient,
             recipient,
-            "depositRequest.recipient"
+            "depositCancellationRequest.recipient"
         );
 
         assertEq(
             spUSDC.convertToAssets(request.shares),
             savingsShareValue,
-            "depositRequest.savingsShareValue"
+            "depositCancellationRequest.savingsShareValue"
         );
 
         assertEq(
             request.timestamp,
             uint64(timestamp),
-            "depositRequest.timestamp"
+            "depositCancellationRequest.timestamp"
         );
-    }
-
-    function _assertDepositRequest(
-        ISparkPrimeVault.Request memory request,
-        address                         owner,
-        address                         recipient,
-        uint256                         savingsShareValue
-    ) internal view {
-        _assertDepositRequest(request, owner, recipient, savingsShareValue, vm.getBlockTimestamp());
-    }
-
-    function _assertEmptyDepositRequest(uint256 requestId) internal view {
-        _assertDepositRequest(requestId, address(0), address(0), 0, 0);
     }
 
     function _assertDepositCancellationRequest(
@@ -540,34 +701,30 @@ abstract contract TestBase is Test {
         uint256 savingsShareValue,
         uint256 timestamp
     )
-        internal view
+        internal
+        view
     {
-        ( address owner_, address recipient_, uint64 timestamp_, uint256 shares_ ) =
-            spPrime.getPendingDepositCancellationRequest(requestId);
-
-        assertEq(
-            owner_,
+        _assertDepositCancellationRequest(
+            spPrime.getPendingDepositCancellationRequest(uint48(requestId)),
+            requestId,
             owner,
-            "depositCancellationRequest.owner"
-        );
-
-        assertEq(
-            recipient_,
             recipient,
-            "depositCancellationRequest.recipient"
-        );
-
-        assertEq(
-            spUSDC.convertToAssets(shares_),
             savingsShareValue,
-            "depositCancellationRequest.savingsShareValue"
+            timestamp
         );
+    }
 
-        assertEq(
-            timestamp_,
-            uint64(timestamp),
-            "depositCancellationRequest.timestamp"
-        );
+    function _assertDepositCancellationRequest(
+        ISparkPrimeVault.Request memory request,
+        uint256                         id,
+        address                         owner,
+        address                         recipient,
+        uint256                         savingsShareValue
+    )
+        internal
+        view
+    {
+        _assertDepositCancellationRequest(request, id, owner, recipient, savingsShareValue, vm.getBlockTimestamp());
     }
 
     function _assertDepositCancellationRequest(
@@ -575,116 +732,66 @@ abstract contract TestBase is Test {
         address owner,
         address recipient,
         uint256 savingsShareValue
-    ) internal view {
+    )
+        internal
+        view
+    {
         _assertDepositCancellationRequest(requestId, owner, recipient, savingsShareValue, vm.getBlockTimestamp());
     }
 
-    function _assertEmptyDepositCancellationRequest(uint256 requestId) internal view {
-        _assertDepositCancellationRequest(requestId, address(0), address(0), 0, 0);
-    }
-
-    function _assertDepositCancellationRequest(
-        ISparkPrimeVault.Request memory request,
-        address                         owner,
-        address                         recipient,
-        uint256                         savingsShareValue,
-        uint256                         timestamp
-    )
-        internal view
-    {
-        assertEq(
-            request.owner,
-            owner,
-            "depositCancellationRequest.owner"
-        );
-
-        assertEq(
-            request.recipient,
-            recipient,
-            "depositCancellationRequest.recipient"
-        );
-
-        assertEq(
-            spUSDC.convertToAssets(request.shares),
-            savingsShareValue,
-            "depositCancellationRequest.savingsShareValue"
-        );
-
-        assertEq(
-            request.timestamp,
-            uint64(timestamp),
-            "depositCancellationRequest.timestamp"
-        );
-    }
-
-    function _assertDepositCancellationRequest(
-        ISparkPrimeVault.Request memory request,
-        address                         owner,
-        address                         recipient,
-        uint256                         savingsShareValue
-    ) internal view {
-        _assertDepositCancellationRequest(request, owner, recipient, savingsShareValue, vm.getBlockTimestamp());
-    }
-
-    function _assertRedeemRequest(
+    function _assertSuspendedDepositCancellationRequest(
         uint256 requestId,
         address owner,
         address recipient,
-        uint256 shareValue,
+        uint256 savingsShareValue,
         uint256 timestamp
     )
-        internal view
+        internal
+        view
     {
-        ( address owner_, address recipient_, uint64 timestamp_, uint256 shares_ ) =
-            spPrime.getPendingRedeemRequest(requestId);
-
-        assertEq(
-            owner_,
+        _assertDepositCancellationRequest(
+            spPrime.getSuspendedDepositCancellationRequest(uint48(requestId)),
+            requestId,
             owner,
-            "redeemRequest.owner"
-        );
-
-        assertEq(
-            recipient_,
             recipient,
-            "redeemRequest.recipient"
-        );
-
-        assertEq(
-            spPrime.convertToAssets(shares_),
-            shareValue,
-            "redeemRequest.shareValue"
-        );
-
-        assertEq(
-            timestamp_,
-            uint64(timestamp),
-            "redeemRequest.timestamp"
+            savingsShareValue,
+            timestamp
         );
     }
 
-    function _assertRedeemRequest(
+    function _assertSuspendedDepositCancellationRequest(
         uint256 requestId,
         address owner,
         address recipient,
-        uint256 shareValue
-    ) internal view {
-        _assertRedeemRequest(requestId, owner, recipient, shareValue, vm.getBlockTimestamp());
+        uint256 savingsShareValue
+    )
+        internal
+        view
+    {
+        _assertSuspendedDepositCancellationRequest(requestId, owner, recipient, savingsShareValue, vm.getBlockTimestamp());
     }
 
-    function _assertEmptyRedeemRequest(uint256 requestId) internal view {
-        _assertRedeemRequest(requestId, address(0), address(0), 0, 0);
-    }
+    /**********************************************************************************************/
+    /*** Redeem request assertion helpers                                                       ***/
+    /**********************************************************************************************/
 
     function _assertRedeemRequest(
         ISparkPrimeVault.Request memory request,
+        uint256                         id,
         address                         owner,
         address                         recipient,
         uint256                         shareValue,
         uint256                         timestamp
     )
-        internal view
+        internal
+        view
     {
+        assertEq(
+            request.id,
+            uint48(id),
+            "redeemRequest.id"
+        );
+
         assertEq(
             request.owner,
             owner,
@@ -711,38 +818,80 @@ abstract contract TestBase is Test {
     }
 
     function _assertRedeemRequest(
+        uint256 requestId,
+        address owner,
+        address recipient,
+        uint256 shareValue,
+        uint256 timestamp
+    )
+        internal
+        view
+    {
+        _assertRedeemRequest(
+            spPrime.getPendingRedeemRequest(uint48(requestId)),
+            requestId,
+            owner,
+            recipient,
+            shareValue,
+            timestamp
+        );
+    }
+
+    function _assertRedeemRequest(
         ISparkPrimeVault.Request memory request,
+        uint256                         id,
         address                         owner,
         address                         recipient,
         uint256                         shareValue
-    ) internal view {
-        _assertRedeemRequest(request, owner, recipient, shareValue, vm.getBlockTimestamp());
+    )
+        internal
+        view
+    {
+        _assertRedeemRequest(request, id, owner, recipient, shareValue, vm.getBlockTimestamp());
     }
 
-    function _assertEmptyRequest(ISparkPrimeVault.Request memory request) internal pure {
-        assertEq(
-            request.owner,
-            address(0),
-            "request.owner not zero"
-        );
+    function _assertRedeemRequest(
+        uint256 requestId,
+        address owner,
+        address recipient,
+        uint256 shareValue
+    )
+        internal
+        view
+    {
+        _assertRedeemRequest(requestId, owner, recipient, shareValue, vm.getBlockTimestamp());
+    }
 
-        assertEq(
-            request.recipient,
-            address(0),
-            "request.recipient not zero"
+    function _assertSuspendedRedeemRequest(
+        uint256 requestId,
+        address owner,
+        address recipient,
+        uint256 shareValue,
+        uint256 timestamp
+    )
+        internal
+        view
+    {
+        _assertRedeemRequest(
+            spPrime.getSuspendedRedeemRequest(uint48(requestId)),
+            requestId,
+            owner,
+            recipient,
+            shareValue,
+            timestamp
         );
+    }
 
-        assertEq(
-            request.shares,
-            0,
-            "request.shares not zero"
-        );
-
-        assertEq(
-            request.timestamp,
-            0,
-            "request.timestamp not zero"
-        );
+    function _assertSuspendedRedeemRequest(
+        uint256 requestId,
+        address owner,
+        address recipient,
+        uint256 shareValue
+    )
+        internal
+        view
+    {
+        _assertSuspendedRedeemRequest(requestId, owner, recipient, shareValue, vm.getBlockTimestamp());
     }
 
 }

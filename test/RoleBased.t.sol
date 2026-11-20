@@ -120,6 +120,7 @@ contract RoleBasedTests is TestBase {
 
     function test_impair_impairmentTooLargeBoundary() external {
         _requestDeposit(user, 1_000_000e6);
+        _processPendingDeposits();
         _pause();
 
         assertEq(spPrime.totalAssets(), 1_000_000e6 - 1);  // Rounding
@@ -136,6 +137,7 @@ contract RoleBasedTests is TestBase {
         uint256 impairment = 100_000e6;
 
         _requestDeposit(user, 1_000_000e6);
+        _processPendingDeposits();
         _pause();
 
         skip(365 days);
@@ -218,6 +220,7 @@ contract RoleBasedTests is TestBase {
 
         _requestDeposit(user1, 1_000_000e6);
         _requestDeposit(user2, 2_000_000e6);
+        _processPendingDeposits();
         _pause();
 
         skip(365 days);
@@ -705,6 +708,7 @@ contract RoleBasedTests is TestBase {
 
     function test_drip_oneYear() external {
         _requestDeposit(user, 1_000_000e6);
+        _processPendingDeposits();
 
         assertEq(spPrime.chi(), 1.000000000000000000000000000e27);
         assertEq(spPrime.rho(), vm.getBlockTimestamp());
