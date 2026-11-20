@@ -146,6 +146,14 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     event Drip(uint192 chi, uint256 diff);
 
     /**
+     * @notice Emitted when an account is frozen or unfrozen.
+     * @param  caller  The address that froze or unfroze the account
+     * @param  account The address that was frozen or unfrozen
+     * @param  frozen  Whether the account is frozen
+     */
+    event FrozenSet(address indexed caller, address indexed account, bool frozen);
+
+    /**
      * @notice Emitted when the maximum redeem fee rate is updated.
      * @param  caller The address that updated the maximum redeem fee rate
      * @param  fee    The new maximum redeem fee rate [wad]
@@ -339,6 +347,9 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
 
     /// @notice Thrown when the redeem fee rate is above the maximum redeem fee rate.
     error FeeTooHigh();
+
+    /// @notice Thrown when an account involved in the call is frozen.
+    error Frozen();
 
     /// @notice Thrown when the impairment amount is greater than total assets.
     error ImpairmentTooLarge();
@@ -557,6 +568,22 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
     function setVSR(uint256 vsr_) external;
 
     /**
+     * @notice Freezes or unfreezes an account.
+     * @dev    This function can only be called by accounts with `OPERATOR_ROLE`.
+     *         A frozen account cannot send or receive shares, request deposits or redeems, be set
+     *         as the recipient of a new request, or claim.
+     *         A pending deposit request whose owner or recipient is frozen is never filled. It
+     *         blocks the deposit queue until it is cancelled, by its owner or by an operator on
+     *         behalf of its owner with `requestDepositCancellation()`.
+     *         The assets of a deposit cancellation or redeem request are not sent if its owner or
+     *         recipient is frozen. They are held as claimable assets, of the owner if it is frozen
+     *         and of the recipient otherwise, until that account is unfrozen.
+     * @param  account_ The address to freeze or unfreeze
+     * @param  frozen_  Whether the account is frozen
+     */
+    function setFrozen(address account_, bool frozen_) external;
+
+    /**
      * @notice Fills pending deposit requests in queue order, minting shares to their recipients.
      * @dev    This function can only be called by accounts with `OPERATOR_ROLE` while the vault is
      *         not paused. Processing is limited by `maxSavingsShares_`, `maxRequests_`, and the
@@ -726,6 +753,7 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @notice Transfers all claimable assets of `recipient_` to `recipient_`.
      * @dev    Permissionless, assets always go to `recipient_`.
      *         Reverts if the recipient has nothing to claim or the asset transfer fails.
+     *         Reverts if the recipient is frozen.
      *         Claimable assets cannot be redirected to another address and there is no admin sweep,
      *         so assets of a recipient that can never receive are only recoverable via an upgrade.
      * @param  recipient_ The address whose claimable assets are transferred to it
@@ -1085,6 +1113,13 @@ interface ISparkPrimeVault is IERC20Metadata, IERC20Permit, IAccessControlEnumer
      * @return shares_ The amount of shares [share units]
      */
     function convertToShares(uint256 assets_) external view returns (uint256 shares_);
+
+    /**
+     * @notice Returns whether `account_` is frozen.
+     * @param  account_  The address of the account
+     * @return isFrozen_ Whether the account is frozen
+     */
+    function frozen(address account_) external view returns (bool isFrozen_);
 
     /**
      * @notice Returns the current rate accumulator calculated up to the current block timestamp.
