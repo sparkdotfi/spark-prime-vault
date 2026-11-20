@@ -316,7 +316,47 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         whenNotPaused
     {
         emit ProcessPendingDeposits(msg.sender, maxSavingsShares_, maxRequests_);
-        _processPendingDeposits(maxSavingsShares_, maxRequests_);
+
+        drip();
+
+        // Convert the maximum admissible assets into savings shares denomination.
+        uint256 remaining_ = _min(
+            maxSavingsShares_,
+            _convertAssetsToSavingsShares(convertToAssets(availableCapacity()))
+        );
+
+        // Process the deposit queue up to the maximum number of requests or until there are no more
+        // remaining savings shares.
+        for (
+            uint48 id_ = _pendingDeposits.head;                       // Start at the head
+            (maxRequests_ != 0) && (remaining_ != 0) && (id_ != 0);
+            id_ = _remove(_pendingDeposits, id_)                      // Remove and get next
+        ) {
+            Request storage request_ = _requests[id_];
+
+            // Convert processable savings shares into vault shares.
+            uint256 savingsShares_ = _min(request_.shares, remaining_);
+            uint256 assets_        = IERC4626Like(savings).convertToAssets(savingsShares_);
+            uint256 shares_        = convertToShares(assets_);
+
+            unchecked {
+                _pendingDeposits.shares -= savingsShares_;
+                request_.shares         -= savingsShares_;
+                remaining_              -= savingsShares_;
+
+                --maxRequests_;
+            }
+
+            address recipient_ = request_.recipient;
+
+            _mint(recipient_, shares_);
+
+            emit Deposit(id_, request_.owner, recipient_, savingsShares_, assets_, shares_);
+
+            if (request_.shares != 0) return;  // Partial fill, entry stays at the head
+
+            delete _requests[id_];
+        }
     }
 
     function processPendingDepositCancellations(uint256 maxSavingsShares_, uint256 maxRequests_)
@@ -325,7 +365,40 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         onlyRole(OPERATOR_ROLE)
     {
         emit ProcessPendingDepositCancellations(msg.sender, maxSavingsShares_, maxRequests_);
-        _processPendingDepositCancellations(maxSavingsShares_, maxRequests_);
+
+        drip();
+
+        uint256 remaining_ =
+            _min(maxSavingsShares_, IERC4626Like(savings).maxRedeem(address(this)));
+
+        // Process the cancelled deposit queue up to the maximum number of requests or until there
+        // are no more remaining savings shares.
+        for (
+            uint48 id_ = _pendingDepositCancellations.head;           // Start at the head
+            (maxRequests_ != 0) && (remaining_ != 0) && (id_ != 0);
+            id_ = _remove(_pendingDepositCancellations, id_)          // Remove and get next
+        ) {
+            Request storage request_ = _requests[id_];
+
+            uint256 savingsShares_ = _min(request_.shares, remaining_);
+
+            unchecked {
+                _pendingDepositCancellations.shares -= savingsShares_;
+                request_.shares                     -= savingsShares_;
+                remaining_                          -= savingsShares_;
+
+                --maxRequests_;
+            }
+
+            address recipient_ = request_.recipient;
+            uint256 assets_    = _redeemSavings(savingsShares_, recipient_);
+
+            emit DepositCancellation(id_, request_.owner, recipient_, savingsShares_, assets_);
+
+            if (request_.shares != 0) return;  // Partial fill, entry stays at the head
+
+            delete _requests[id_];
+        }
     }
 
     function processPendingRedeems(uint256 maxShares_, uint256 maxRequests_)
@@ -335,35 +408,83 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         whenNotPaused
     {
         emit ProcessPendingRedeems(msg.sender, maxShares_, maxRequests_);
-        _processPendingRedeems(maxShares_, maxRequests_);
+
+        drip();
+
+        uint256 remaining_ = maxShares_;
+
+        // Process the redeem queue up to the maximum number of requests or until there are no more
+        // remaining shares or available liquidity.
+        for (
+            uint48 id_ = _pendingRedeems.head;                        // Start at the head
+            (maxRequests_ != 0) && (remaining_ != 0) && (id_ != 0);
+            id_ = _remove(_pendingRedeems, id_)                       // Remove and get next
+        ) {
+            uint256 fillable_ = _min(remaining_, convertToShares(availableLiquidAssets()));
+
+            if (fillable_ == 0) return;  // Out of liquidity
+
+            Request storage request_ = _requests[id_];
+
+            uint256 shares_ = _min(request_.shares, fillable_);
+
+            unchecked {
+                _pendingRedeems.shares -= shares_;
+                request_.shares        -= shares_;
+                remaining_             -= shares_;
+
+                --maxRequests_;
+            }
+
+            _burn(address(this), shares_);
+
+            // Redeem savings shares rounded down, so that any rounding error stays with the vault.
+            uint256 savingsShares_ = _convertAssetsToSavingsShares(convertToAssets(shares_));
+            address recipient_     = request_.recipient;
+            uint256 assets_        = _redeemSavings(savingsShares_, recipient_);
+
+            emit Redeem(id_, request_.owner, recipient_, shares_, savingsShares_, assets_);
+
+            if (request_.shares != 0) return;  // Partial fill, entry stays at the head
+
+            delete _requests[id_];
+        }
     }
 
-    function suspendDepositRequest(uint48 requestId_) external override {
+    function suspendDepositRequest(uint48 requestId_) external override onlyRole(OPERATOR_ROLE) {
         _moveRequest(requestId_, _pendingDeposits, _suspendedDeposits);
         emit DepositRequestSuspended(msg.sender, requestId_);
     }
 
-    function suspendDepositCancellationRequest(uint48 requestId_) external override {
+    function suspendDepositCancellationRequest(uint48 requestId_)
+        external
+        override
+        onlyRole(OPERATOR_ROLE)
+    {
         _moveRequest(requestId_, _pendingDepositCancellations, _suspendedDepositCancellations);
         emit DepositCancellationRequestSuspended(msg.sender, requestId_);
     }
 
-    function suspendRedeemRequest(uint48 requestId_) external override {
+    function suspendRedeemRequest(uint48 requestId_) external override onlyRole(OPERATOR_ROLE) {
         _moveRequest(requestId_, _pendingRedeems, _suspendedRedeems);
         emit RedeemRequestSuspended(msg.sender, requestId_);
     }
 
-    function unsuspendDepositRequest(uint48 requestId_) external override {
+    function unsuspendDepositRequest(uint48 requestId_)external override onlyRole(OPERATOR_ROLE) {
         _moveRequest(requestId_, _suspendedDeposits, _pendingDeposits);
         emit DepositRequestUnsuspended(msg.sender, requestId_);
     }
 
-    function unsuspendDepositCancellationRequest(uint48 requestId_) external override {
+    function unsuspendDepositCancellationRequest(uint48 requestId_)
+        external
+        override
+        onlyRole(OPERATOR_ROLE)
+    {
         _moveRequest(requestId_, _suspendedDepositCancellations, _pendingDepositCancellations);
         emit DepositCancellationRequestUnsuspended(msg.sender, requestId_);
     }
 
-    function unsuspendRedeemRequest(uint48 requestId_) external override {
+    function unsuspendRedeemRequest(uint48 requestId_) external override onlyRole(OPERATOR_ROLE) {
         _moveRequest(requestId_, _suspendedRedeems, _pendingRedeems);
         emit RedeemRequestUnsuspended(msg.sender, requestId_);
     }
@@ -919,134 +1040,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     }
 
     /**********************************************************************************************/
-    /*** Process internal helper functions                                                      ***/
-    /**********************************************************************************************/
-
-    function _processPendingDeposits(uint256 maxSavingsShares_, uint256 requestsLeft_) internal {
-        drip();
-
-        // Convert the maximum admissible assets into savings shares denomination.
-        uint256 remaining_ = _min(
-            maxSavingsShares_,
-            _convertAssetsToSavingsShares(convertToAssets(availableCapacity()))
-        );
-
-        // Process the deposit queue up to the maximum number of requests or until there are no more
-        // remaining savings shares.
-        for (
-            uint48 id_ = _pendingDeposits.head;                       // Start at the head
-            (requestsLeft_ != 0) && (remaining_ != 0) && (id_ != 0);
-            id_ = _remove(_pendingDeposits, id_)                      // Remove and get next
-        ) {
-            Request storage request_ = _requests[id_];
-
-            // Convert processable savings shares into vault shares.
-            uint256 savingsShares_ = _min(request_.shares, remaining_);
-            uint256 assets_        = IERC4626Like(savings).convertToAssets(savingsShares_);
-            uint256 shares_        = convertToShares(assets_);
-
-            unchecked {
-                _pendingDeposits.shares -= savingsShares_;
-                request_.shares         -= savingsShares_;
-                remaining_              -= savingsShares_;
-
-                --requestsLeft_;
-            }
-
-            address recipient_ = request_.recipient;
-
-            _mint(recipient_, shares_);
-
-            emit Deposit(id_, request_.owner, recipient_, savingsShares_, assets_, shares_);
-
-            if (request_.shares != 0) return;  // Partial fill, entry stays at the head
-
-            delete _requests[id_];
-        }
-    }
-
-    function _processPendingDepositCancellations(uint256 maxSavingsShares_, uint256 requestsLeft_)
-        internal
-    {
-        drip();
-
-        uint256 remaining_ =
-            _min(maxSavingsShares_, IERC4626Like(savings).maxRedeem(address(this)));
-
-        // Process the cancelled deposit queue up to the maximum number of requests or until there
-        // are no more remaining savings shares.
-        for (
-            uint48 id_ = _pendingDepositCancellations.head;           // Start at the head
-            (requestsLeft_ != 0) && (remaining_ != 0) && (id_ != 0);
-            id_ = _remove(_pendingDepositCancellations, id_)          // Remove and get next
-        ) {
-            Request storage request_ = _requests[id_];
-
-            uint256 savingsShares_ = _min(request_.shares, remaining_);
-
-            unchecked {
-                _pendingDepositCancellations.shares -= savingsShares_;
-                request_.shares                     -= savingsShares_;
-                remaining_                          -= savingsShares_;
-
-                --requestsLeft_;
-            }
-
-            address recipient_ = request_.recipient;
-            uint256 assets_    = _redeemSavings(savingsShares_, recipient_);
-
-            emit DepositCancellation(id_, request_.owner, recipient_, savingsShares_, assets_);
-
-            if (request_.shares != 0) return;  // Partial fill, entry stays at the head
-
-            delete _requests[id_];
-        }
-    }
-
-    function _processPendingRedeems(uint256 maxShares_, uint256 requestsLeft_) internal {
-        drip();
-
-        uint256 remaining_ = maxShares_;
-
-        // Process the redeem queue up to the maximum number of requests or until there are no more
-        // remaining shares or available liquidity.
-        for (
-            uint48 id_ = _pendingRedeems.head;                        // Start at the head
-            (requestsLeft_ != 0) && (remaining_ != 0) && (id_ != 0);
-            id_ = _remove(_pendingRedeems, id_)                       // Remove and get next
-        ) {
-            uint256 fillable_ = _min(remaining_, convertToShares(availableLiquidAssets()));
-
-            if (fillable_ == 0) return;  // Out of liquidity
-
-            Request storage request_ = _requests[id_];
-
-            uint256 shares_ = _min(request_.shares, fillable_);
-
-            unchecked {
-                _pendingRedeems.shares -= shares_;
-                request_.shares        -= shares_;
-                remaining_             -= shares_;
-
-                --requestsLeft_;
-            }
-
-            _burn(address(this), shares_);
-
-            // Redeem savings shares rounded down, so that any rounding error stays with the vault.
-            uint256 savingsShares_ = _convertAssetsToSavingsShares(convertToAssets(shares_));
-            address recipient_     = request_.recipient;
-            uint256 assets_        = _redeemSavings(savingsShares_, recipient_);
-
-            emit Redeem(id_, request_.owner, recipient_, shares_, savingsShares_, assets_);
-
-            if (request_.shares != 0) return;  // Partial fill, entry stays at the head
-
-            delete _requests[id_];
-        }
-    }
-
-    /**********************************************************************************************/
     /*** ERC4626 internal helper functions                                                      ***/
     /**********************************************************************************************/
 
@@ -1098,6 +1091,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         }
     }
 
+    // NOTE: Callers must guarantee membership.
     function _remove(List storage list_, uint48 requestId_) internal returns (uint48 next_) {
         Links storage links_ = list_.links[requestId_];
 
@@ -1176,10 +1170,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         list_.shares += shares_;
     }
 
-    function _moveRequest(uint48 requestId_, List storage from_, List storage to_)
-        internal
-        onlyRole(OPERATOR_ROLE)
-    {
+    function _moveRequest(uint48 requestId_, List storage from_, List storage to_) internal {
         uint256 shares_ = _getRequest(from_, requestId_).shares;
 
         _remove(from_, requestId_);
