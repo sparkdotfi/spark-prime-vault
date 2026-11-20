@@ -151,6 +151,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     mapping (address account => mapping (address spender => uint256 amount))
         public override allowance;
 
+    // TODO: Decide if the shares of frozen accounts should accrue yield.
+    mapping (address account => bool isFrozen) public override frozen;
+
     modifier whenNotPaused() {
         _revertIfPaused();
         _;
@@ -293,6 +296,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         emit VSRSet(msg.sender, vsr = vsr_);
     }
 
+    function setFrozen(address account_, bool frozen_) external override onlyRole(OPERATOR_ROLE) {
+        emit FrozenSet(msg.sender, account_, frozen[account_] = frozen_);
+    }
+
     function processPendingDeposits(uint256 maxSavingsShares_, uint256 maxRequests_)
         external
         override
@@ -363,6 +370,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         require(recipient_ != address(this), VaultIsRecipient());
         require(assets_ >= minDeposit,       BelowMinDeposit());
 
+        _revertIfFrozen(msg.sender, recipient_);
+
         drip();
 
         SafeERC20.safeTransferFrom(IERC20OZ(asset), msg.sender, address(this), assets_);
@@ -404,7 +413,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         Request memory depositRequest_ = _depositRequests[requestId_];
 
         require(depositRequest_.shares != 0,              NoRequest());
-        require(msg.sender == depositRequest_.owner,      NotRequestOwner());
+        require(
+            msg.sender == depositRequest_.owner || _canReject(depositRequest_, recipient_),
+            NotRequestOwner()
+        );
         require(savingsShares_ >= minDepositCancellation, BelowMinDepositCancellation());
         require(savingsShares_ <= depositRequest_.shares, SavingsSharesTooHigh());
 
@@ -435,6 +447,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         require(recipient_ != address(0),    ZeroRecipient());
         require(recipient_ != address(this), VaultIsRecipient());
         require(shares_ >= minRedeem,        BelowMinRedeem());
+
+        _revertIfFrozen(msg.sender, recipient_);
 
         drip();
 
@@ -515,6 +529,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         assets_ = claimableAssetsOf[recipient_];
 
         require(assets_ != 0, NothingToClaim());
+
+        require(!frozen[recipient_], Frozen());
 
         claimableAssetsOf[recipient_] = 0;
 
@@ -905,6 +921,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
             if (request_.shares == 0) continue;  // Cancelled
 
+            // A request with a frozen owner or recipient is never filled, it blocks the queue
+            // until it is cancelled, which the operator can do on behalf of its owner.
+            // TODO: Earmark the savings shares of such requests so that they cannot be taken.
+            if (frozen[request_.owner] || frozen[request_.recipient]) break;
+
             // Allow processing cancelled deposits while `remaining_ == 0`.
             if (remaining_ == 0) break;
 
@@ -952,7 +973,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
             request_.shares                      -= savingsShares_;
             remaining_                           -= savingsShares_;
 
-            uint256 assets_ = _redeemSavings(savingsShares_, request_.recipient);
+            uint256 assets_ = _redeemSavings(savingsShares_, _payee(request_));
 
             emit DepositCancellation(
                 i_,
@@ -997,7 +1018,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
             uint256 savingsShares_ =
                 IERC4626Like(savings).convertToShares(convertToAssets(shares_));
 
-            uint256 assets_ = _redeemSavings(savingsShares_, request_.recipient);
+            uint256 assets_ = _redeemSavings(savingsShares_, _payee(request_));
 
             emit Redeem(i_, request_.owner, request_.recipient, shares_, savingsShares_, assets_);
 
@@ -1009,15 +1030,35 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
         processedRedeemCount = i_;
     }
 
+    // Returns whether the caller is an operator rejecting a deposit request with a frozen owner or
+    // recipient, by cancelling it on behalf of its owner without changing its recipient.
+    function _canReject(Request memory request_, address recipient_) internal view returns (bool) {
+        return
+            hasRole(OPERATOR_ROLE, msg.sender) &&
+            (frozen[request_.owner] || frozen[request_.recipient]) &&
+            recipient_ == request_.recipient;
+    }
+
+    // Returns the account that receives the proceeds of a request, which is its recipient unless
+    // its owner is frozen, in which case the proceeds are held as claimable assets of the owner.
+    // TODO: Decide if the proceeds of a request with a frozen recipient should be held for its
+    //       owner or its recipient.
+    function _payee(Request storage request_) internal view returns (address) {
+        return frozen[request_.owner] ? request_.owner : request_.recipient;
+    }
+
     function _redeemSavings(uint256 savingsShares_, address recipient_)
         internal
         returns (uint256 assets_)
     {
-        try IERC4626Like(savings).redeem(savingsShares_, recipient_, address(this))
-            returns (uint256 assetsRedeemed_)
-        {
-            return assetsRedeemed_;
-        } catch {}
+        // The assets of a frozen recipient are never sent, they are held as claimable assets.
+        if (!frozen[recipient_]) {
+            try IERC4626Like(savings).redeem(savingsShares_, recipient_, address(this))
+                returns (uint256 assetsRedeemed_)
+            {
+                return assetsRedeemed_;
+            } catch {}
+        }
 
         // Any recipient-specific reversion of the savingsVault or underlying
         // asset transfer that occurs as a result of a user-request is added
@@ -1047,6 +1088,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
     }
 
     function _transfer(address from_, address to_, uint256 amount_) internal {
+        _revertIfFrozen(from_, to_);
+
         uint256 balance_ = balanceOf[from_];
 
         require(balance_ >= amount_, "SparkPrimeVault/insufficient-balance");
@@ -1132,6 +1175,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable,
 
     function _min(uint256 x_, uint256 y_) internal pure returns (uint256) {
         return x_ < y_ ? x_ : y_;
+    }
+
+    function _revertIfFrozen(address account1_, address account2_) internal view {
+        require(!frozen[account1_] && !frozen[account2_], Frozen());
     }
 
     function _revertIfPaused() internal view {
