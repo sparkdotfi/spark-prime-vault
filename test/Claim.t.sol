@@ -31,9 +31,8 @@ contract ClaimTests is TestBase {
     }
 
     function test_claim_transferAmountExceedsBalanceBoundary() external {
-        _setCapacity(0);
         _requestDeposit(user, 1_000_000e6);
-        _requestDepositCancellation(user, 0, spUSDC.convertToShares(1_000_000e6));
+        _requestDepositCancellation(user, 1, spUSDC.convertToShares(1_000_000e6));
 
         // Redeeming directly to the recipient fails, so assets are kept in the vault as claimable
         vm.mockCallRevert(
@@ -65,9 +64,8 @@ contract ClaimTests is TestBase {
     }
 
     function test_claim_transferFails() external {
-        _setCapacity(0);
         _requestDeposit(user, 1_000_000e6);
-        _requestDepositCancellation(user, 0, spUSDC.convertToShares(1_000_000e6));
+        _requestDepositCancellation(user, 1, spUSDC.convertToShares(1_000_000e6));
 
         // Redeeming directly to the recipient fails, so assets are kept in the vault as claimable
         vm.mockCallRevert(
@@ -95,20 +93,16 @@ contract ClaimTests is TestBase {
     }
 
     function test_claim_fromDepositCancellation() external {
-        _setCapacity(0);
         _requestDeposit(user, 1_000_000e6);
-        _requestDepositCancellation(user, 0, spUSDC.convertToShares(1_000_000e6));
+        _requestDepositCancellation(user, 1, spUSDC.convertToShares(1_000_000e6));
 
-        vaultState.availableCapacityValue  = 0;
-        vaultState.availableLiquidAssets  += 1_000_000e6 - 1;
+        vaultState.availableLiquidAssets += 1_000_000e6 - 1;
 
-        vaultState.depositRequests.pendingShareValue = 0;
-        vaultState.depositRequests.length            = 1;
-        vaultState.depositRequests.processedCount    = 0;
+        vaultState.pendingDeposits.shareValue = 0;
+        vaultState.pendingDeposits.length     = 0;
 
-        vaultState.depositCancellationRequests.pendingShareValue = 1_000_000e6 - 1;
-        vaultState.depositCancellationRequests.length            = 1;
-        vaultState.depositCancellationRequests.processedCount    = 0;
+        vaultState.pendingDepositCancellations.shareValue = 1_000_000e6 - 1;
+        vaultState.pendingDepositCancellations.length     = 1;
 
         AccountBalances memory userBalances = AccountBalances({
             account           : user,
@@ -150,9 +144,8 @@ contract ClaimTests is TestBase {
         vaultState.totalClaimable        += 1_000_000e6 - 1;
         vaultState.availableLiquidAssets -= 1_000_000e6 - 1;
 
-        vaultState.depositCancellationRequests.pendingShareValue = 0;
-        vaultState.depositCancellationRequests.length            = 0;
-        vaultState.depositCancellationRequests.processedCount    = 1;
+        vaultState.pendingDepositCancellations.shareValue = 0;
+        vaultState.pendingDepositCancellations.length     = 0;
 
         userBalances.claimableAssetsOf = 1_000_000e6 - 1;
 
@@ -184,19 +177,18 @@ contract ClaimTests is TestBase {
 
     function test_claim_fromRedeem() external {
         _requestDeposit(user, 1_000_000e6);
+        _processPendingDeposits(1);
         _requestRedeem(user,  spPrime.convertToShares(500_000e6));
 
         vaultState.availableCapacityValue -= 1_000_000e6 - 1;
         vaultState.availableLiquidAssets  += 1_000_000e6 - 1;
         vaultState.totalAssets            += 1_000_000e6 - 1;
 
-        vaultState.depositRequests.pendingShareValue = 0;
-        vaultState.depositRequests.length            = 0;
-        vaultState.depositRequests.processedCount    = 1;
+        vaultState.pendingDeposits.shareValue = 0;
+        vaultState.pendingDeposits.length     = 0;
 
-        vaultState.redeemRequests.pendingShareValue = 500_000e6;
-        vaultState.redeemRequests.length            = 1;
-        vaultState.redeemRequests.processedCount    = 0;
+        vaultState.pendingRedeems.shareValue = 500_000e6;
+        vaultState.pendingRedeems.length     = 1;
 
         AccountBalances memory userBalances = AccountBalances({
             account           : user,
@@ -240,9 +232,8 @@ contract ClaimTests is TestBase {
         vaultState.totalAssets            -= 500_000e6;
         vaultState.totalClaimable         += 500_000e6 - 1;
 
-        vaultState.redeemRequests.pendingShareValue = 0;
-        vaultState.redeemRequests.length            = 0;
-        vaultState.redeemRequests.processedCount    = 1;
+        vaultState.pendingRedeems.shareValue = 0;
+        vaultState.pendingRedeems.length     = 0;
 
         userBalances.claimableAssetsOf = 500_000e6 - 1;
 
