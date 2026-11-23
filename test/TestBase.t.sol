@@ -361,7 +361,7 @@ abstract contract TestBase is Test {
         // Deposit Cancellation Requests
 
         assertApproxEqAbs(
-            spUSDC.convertToAssets(spPrime.pendingCancelledDepositSavingsShares()),
+            spUSDC.convertToAssets(spPrime.pendingDepositCancellationSavingsShares()),
             vaultState.depositCancellationRequests.pendingShareValue,
             tolerance,
             "vaultState.depositCancellationRequests.pendingShareValue"
@@ -449,31 +449,12 @@ abstract contract TestBase is Test {
     )
         internal view
     {
-        ( address owner_, address recipient_, uint64 timestamp_, uint256 shares_ ) =
-            spPrime.getPendingDepositRequest(requestId);
-
-        assertEq(
-            owner_,
+        _assertDepositRequest(
+            spPrime.getPendingDepositRequest(requestId),
             owner,
-            "depositRequest.owner"
-        );
-
-        assertEq(
-            recipient_,
             recipient,
-            "depositRequest.recipient"
-        );
-
-        assertEq(
-            spUSDC.convertToAssets(shares_),
             savingsShareValue,
-            "depositRequest.savingsShareValue"
-        );
-
-        assertEq(
-            timestamp_,
-            uint64(timestamp),
-            "depositRequest.timestamp"
+            timestamp
         );
     }
 
@@ -542,31 +523,12 @@ abstract contract TestBase is Test {
     )
         internal view
     {
-        ( address owner_, address recipient_, uint64 timestamp_, uint256 shares_ ) =
-            spPrime.getPendingDepositCancellationRequest(requestId);
-
-        assertEq(
-            owner_,
+        _assertDepositCancellationRequest(
+            spPrime.getPendingDepositCancellationRequest(requestId),
             owner,
-            "depositCancellationRequest.owner"
-        );
-
-        assertEq(
-            recipient_,
             recipient,
-            "depositCancellationRequest.recipient"
-        );
-
-        assertEq(
-            spUSDC.convertToAssets(shares_),
             savingsShareValue,
-            "depositCancellationRequest.savingsShareValue"
-        );
-
-        assertEq(
-            timestamp_,
-            uint64(timestamp),
-            "depositCancellationRequest.timestamp"
+            timestamp
         );
     }
 
@@ -635,31 +597,12 @@ abstract contract TestBase is Test {
     )
         internal view
     {
-        ( address owner_, address recipient_, uint64 timestamp_, uint256 shares_ ) =
-            spPrime.getPendingRedeemRequest(requestId);
-
-        assertEq(
-            owner_,
+        _assertRedeemRequest(
+            spPrime.getPendingRedeemRequest(requestId),
             owner,
-            "redeemRequest.owner"
-        );
-
-        assertEq(
-            recipient_,
             recipient,
-            "redeemRequest.recipient"
-        );
-
-        assertEq(
-            spPrime.convertToAssets(shares_),
             shareValue,
-            "redeemRequest.shareValue"
-        );
-
-        assertEq(
-            timestamp_,
-            uint64(timestamp),
-            "redeemRequest.timestamp"
+            timestamp
         );
     }
 

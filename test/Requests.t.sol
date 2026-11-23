@@ -25,17 +25,14 @@ contract RequestDepositCancellationTests is TestBase {
         vm.label(address(user),      "user");
         vm.label(address(recipient), "recipient");
 
-        _setCapacity(0);
-
         depositRequestId = _requestDeposit(user, 1_000_000e6);  // Deposit Request 0 (Queued)
 
-        ( , , , requestShares ) = spPrime.getPendingDepositRequest(depositRequestId);
+        requestShares = spPrime.getPendingDepositRequest(depositRequestId).shares;
 
-        vaultState.rho                    = vm.getBlockTimestamp();
-        vaultState.chi                    = 1.049999999999999999961070145e27;
-        vaultState.totalAssets            = 0;
-        vaultState.availableCapacityValue = 0;
-        vaultState.availableLiquidAssets  = 1_000_000e6 - 1;
+        vaultState.rho                     = vm.getBlockTimestamp();
+        vaultState.chi                     = 1.049999999999999999961070145e27;
+        vaultState.availableCapacityValue += 5_000_000e6 - 1;
+        vaultState.availableLiquidAssets  += 1_000_000e6 - 1;
 
         vaultState.depositRequests.pendingShareValue = 1_000_000e6 - 1;
         vaultState.depositRequests.length            = 1;
@@ -97,9 +94,8 @@ contract RequestDepositCancellationTests is TestBase {
     }
 
     function test_requestDepositCancellation_noRequest() external {
-        _setCapacity(VAULT_CAPACITY);
-
-        _processPendingDeposits(type(uint256).max);
+        vm.prank(operator);
+        spPrime.rejectDepositRequest(depositRequestId);
 
         vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vm.prank(user);
@@ -109,7 +105,7 @@ contract RequestDepositCancellationTests is TestBase {
     function test_requestDepositCancellation_notRequestOwner() external {
         uint256 requestId2 = _requestDeposit(user, recipient, 1_000_000e6);
 
-        ( , , , uint256 requestShares2 ) = spPrime.getPendingDepositRequest(requestId2);
+        uint256 requestShares2 = spPrime.getPendingDepositRequest(requestId2).shares;
 
         // The deposit recipient cannot cancel, only the owner can.
         vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
