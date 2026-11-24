@@ -44,7 +44,10 @@ contract UpdateRecipientTests is TestBase {
     }
 
     function test_updateDepositRecipient_noRequest() external {
-        _requestDeposit(user, 1_000_000e6);  // Request 0 filled instantly
+        _requestDeposit(user, 1_000_000e6);  // Request 0 queued
+
+        vm.prank(operator);
+        spPrime.rejectDepositRequest(0);
 
         vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vm.prank(user);
@@ -110,7 +113,9 @@ contract UpdateRecipientTests is TestBase {
         _setCapacity(0);
         _requestDeposit(user, 1_000_000e6);                                         // Request 0 queued
         _requestDepositCancellation(user, 0, spUSDC.convertToShares(1_000_000e6));  // Request 0 cancellation queued
-        _processPendingDepositCancellations(1);                                     // Request 0 processed
+
+        vm.prank(operator);
+        spPrime.rejectDepositCancellationRequest(0);
 
         vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vm.prank(user);
@@ -162,8 +167,9 @@ contract UpdateRecipientTests is TestBase {
     }
 
     function test_updateRedeemRecipient_invalidRequestIdBoundary() external {
-        _requestDeposit(user, 1_000_000e6);  // Request 0 filled instantly
-        _requestRedeem(user,  100e6);        // Request 0 redeem queued
+        _requestDeposit(user, 1_000_000e6);
+        _processPendingDeposits(1);
+        _requestRedeem(user,  100e6);  // Request 0 redeem queued
 
         vm.expectRevert(ISparkPrimeVault.InvalidRequestId.selector);
         vm.prank(user);
@@ -174,10 +180,12 @@ contract UpdateRecipientTests is TestBase {
     }
 
     function test_updateRedeemRecipient_noRequest() external {
-        _requestDeposit(user, 1_000_000e6);  // Request 0 filled instantly
-        _requestRedeem(user,  100e6);        // Request 0 redeem queued
+        _requestDeposit(user, 1_000_000e6);
+        _processPendingDeposits(1);
+        _requestRedeem(user,  100e6);  // Request 0 redeem queued
 
-        _processPendingRedeems(1);
+        vm.prank(operator);
+        spPrime.rejectRedeemRequest(0);
 
         vm.expectRevert(ISparkPrimeVault.NoRequest.selector);
         vm.prank(user);
@@ -185,8 +193,9 @@ contract UpdateRecipientTests is TestBase {
     }
 
     function test_updateRedeemRecipient_notRequestOwner() external {
-        _requestDeposit(user, 1_000_000e6);  // Request 0 filled instantly
-        _requestRedeem(user,  100e6);        // Request 0 redeem queued
+        _requestDeposit(user, 1_000_000e6);
+        _processPendingDeposits(1);
+        _requestRedeem(user,  100e6);  // Request 0 redeem queued
 
         vm.expectRevert(ISparkPrimeVault.NotRequestOwner.selector);
         vm.prank(makeAddr("unauthorized"));
@@ -196,7 +205,8 @@ contract UpdateRecipientTests is TestBase {
     function test_updateRedeemRecipient() external {
         address newRecipient = makeAddr("newRecipient");
 
-        _requestDeposit(user, 1_000_000e6);      // Request 0 filled instantly
+        _requestDeposit(user, 1_000_000e6);
+        _processPendingDeposits(1);
         _requestRedeem(user,  1_000_000e6 - 1);  // Request 0 redeem queued
 
         _assertRedeemRequest(0, user, user, 1_000_000e6 - 1);

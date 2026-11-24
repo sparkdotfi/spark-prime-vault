@@ -17,21 +17,56 @@ interface IERC4626Like {
 
 contract ClaimTests is TestBase {
 
-    address internal user = makeAddr("user");
+    address internal user      = makeAddr("user");
+    address internal recipient = makeAddr("recipient");
 
     function setUp() public override virtual {
         super.setUp();
 
-        vm.label(user, "user");
+        vm.label(user,      "user");
+        vm.label(recipient, "recipient");
+    }
+
+    function test_claim_zeroRecipient() external {
+        vm.expectRevert(ISparkPrimeVault.ZeroRecipient.selector);
+        vm.prank(user);
+        spPrime.claim(address(0));
+    }
+
+    function test_claim_vaultIsRecipient() external {
+        vm.expectRevert(ISparkPrimeVault.VaultIsRecipient.selector);
+        vm.prank(user);
+        spPrime.claim(address(spPrime));
     }
 
     function test_claim_nothingToClaim() external {
         vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
+        vm.prank(user);
         spPrime.claim(user);
     }
 
+    function test_claim_onlyOwnerCanClaim() external {
+        _requestDeposit(user, recipient, 1_000_000e6);
+
+        vm.prank(operator);
+        spPrime.rejectDepositRequest(0);
+
+        // Recipient has no claimable assets; only the request owner can claim.
+        vm.expectRevert(ISparkPrimeVault.NothingToClaim.selector);
+        vm.prank(recipient);
+        spPrime.claim(recipient);
+
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.Claim(user, recipient, 1_000_000e6 - 1);
+
+        vm.prank(user);
+        uint256 claimed = spPrime.claim(recipient);
+
+        assertEq(claimed, 1_000_000e6 - 1);
+        assertEq(usdc.balanceOf(recipient), 1_000_000e6 - 1);
+    }
+
     function test_claim_transferAmountExceedsBalanceBoundary() external {
-        _setCapacity(0);
         _requestDeposit(user, 1_000_000e6);
         _requestDepositCancellation(user, 0, spUSDC.convertToShares(1_000_000e6));
 
@@ -53,19 +88,20 @@ contract ClaimTests is TestBase {
         deal(address(usdc), address(spPrime), 1_000_000e6 - 2);
 
         vm.expectRevert("ERC20: transfer amount exceeds balance");
+        vm.prank(user);
         spPrime.claim(user);
 
         // spPrime has the full claimable amount
         deal(address(usdc), address(spPrime), 1_000_000e6 - 1);
 
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Claim(user, 1_000_000e6 - 1);
+        emit ISparkPrimeVault.Claim(user, user, 1_000_000e6 - 1);
 
+        vm.prank(user);
         spPrime.claim(user);
     }
 
     function test_claim_transferFails() external {
-        _setCapacity(0);
         _requestDeposit(user, 1_000_000e6);
         _requestDepositCancellation(user, 0, spUSDC.convertToShares(1_000_000e6));
 
@@ -83,7 +119,7 @@ contract ClaimTests is TestBase {
 
         _processPendingDepositCancellations(1);
 
-        // Recipient is still unable to receive the asset (e.g. blacklisted)
+        // Original recipient is still unable to receive the asset (e.g. blacklisted)
         vm.mockCallRevert(
             address(usdc),
             abi.encodeWithSelector(IERC20.transfer.selector, user, 1_000_000e6 - 1),
@@ -91,16 +127,24 @@ contract ClaimTests is TestBase {
         );
 
         vm.expectRevert(bytes(""));
+        vm.prank(user);
         spPrime.claim(user);
+
+        // Owner can still claim to a different recipient
+        vm.expectEmit(address(spPrime));
+        emit ISparkPrimeVault.Claim(user, recipient, 1_000_000e6 - 1);
+
+        vm.prank(user);
+        spPrime.claim(recipient);
+
+        assertEq(usdc.balanceOf(recipient), 1_000_000e6 - 1);
     }
 
     function test_claim_fromDepositCancellation() external {
-        _setCapacity(0);
         _requestDeposit(user, 1_000_000e6);
-        _requestDepositCancellation(user, 0, spUSDC.convertToShares(1_000_000e6));
+        _requestDepositCancellation(user, 0, recipient, spUSDC.convertToShares(1_000_000e6));
 
-        vaultState.availableCapacityValue  = 0;
-        vaultState.availableLiquidAssets  += 1_000_000e6 - 1;
+        vaultState.availableLiquidAssets += 1_000_000e6 - 1;
 
         vaultState.depositRequests.pendingShareValue = 0;
         vaultState.depositRequests.length            = 1;
@@ -118,6 +162,14 @@ contract ClaimTests is TestBase {
             claimableAssetsOf : 0
         });
 
+        AccountBalances memory recipientBalances = AccountBalances({
+            account           : recipient,
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 0,
+            claimableAssetsOf : 0
+        });
+
         AccountBalances memory vaultBalances = AccountBalances({
             account           : address(spPrime),
             assets            : 0,
@@ -128,15 +180,17 @@ contract ClaimTests is TestBase {
 
         _assertVaultState();
         _assertAccountBalances(userBalances);
+        _assertAccountBalances(recipientBalances);
         _assertAccountBalances(vaultBalances);
 
         // Redeeming directly to the recipient fails, so assets are kept in the vault as claimable
+        // by the request owner.
         vm.mockCallRevert(
             address(spUSDC),
             abi.encodeWithSelector(
                 IERC4626Like.redeem.selector,
                 spUSDC.convertToShares(1_000_000e6),
-                user,
+                recipient,
                 address(spPrime)
             ),
             ""
@@ -161,30 +215,34 @@ contract ClaimTests is TestBase {
 
         _assertVaultState();
         _assertAccountBalances(userBalances);
+        _assertAccountBalances(recipientBalances);
         _assertAccountBalances(vaultBalances);
 
-        // User claims their assets
-
+        // Owner claims their assets to recipient
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Claim(user, 1_000_000e6 - 1);
+        emit ISparkPrimeVault.Claim(user, recipient, 1_000_000e6 - 1);
 
-        spPrime.claim(user);
+        vm.prank(user);
+        spPrime.claim(recipient);
 
         vaultState.totalClaimable = 0;
 
-        userBalances.assets            = 1_000_000e6 - 1;
         userBalances.claimableAssetsOf = 0;
+
+        recipientBalances.assets = 1_000_000e6 - 1;
 
         vaultBalances.assets = 0;
 
         _assertVaultState();
         _assertAccountBalances(userBalances);
+        _assertAccountBalances(recipientBalances);
         _assertAccountBalances(vaultBalances);
     }
 
     function test_claim_fromRedeem() external {
         _requestDeposit(user, 1_000_000e6);
-        _requestRedeem(user,  spPrime.convertToShares(500_000e6));
+        _processPendingDeposits(1);
+        _requestRedeem(user, recipient, spPrime.convertToShares(500_000e6));
 
         vaultState.availableCapacityValue -= 1_000_000e6 - 1;
         vaultState.availableLiquidAssets  += 1_000_000e6 - 1;
@@ -206,6 +264,14 @@ contract ClaimTests is TestBase {
             claimableAssetsOf : 0
         });
 
+        AccountBalances memory recipientBalances = AccountBalances({
+            account           : recipient,
+            assets            : 0,
+            shareValue        : 0,
+            savingsShareValue : 0,
+            claimableAssetsOf : 0
+        });
+
         AccountBalances memory vaultBalances = AccountBalances({
             account           : address(spPrime),
             assets            : 0,
@@ -216,15 +282,17 @@ contract ClaimTests is TestBase {
 
         _assertVaultState();
         _assertAccountBalances(userBalances);
+        _assertAccountBalances(recipientBalances);
         _assertAccountBalances(vaultBalances);
 
         // Redeeming directly to the recipient fails, so assets are kept in the vault as claimable
+        // by the request owner.
         vm.mockCallRevert(
             address(spUSDC),
             abi.encodeWithSelector(
                 IERC4626Like.redeem.selector,
                 spUSDC.convertToShares(500_000e6),
-                user,
+                recipient,
                 address(spPrime)
             ),
             ""
@@ -252,23 +320,27 @@ contract ClaimTests is TestBase {
 
         _assertVaultState();
         _assertAccountBalances(userBalances);
+        _assertAccountBalances(recipientBalances);
         _assertAccountBalances(vaultBalances);
-        // User claims their assets
 
+        // Owner claims their assets to recipient
         vm.expectEmit(address(spPrime));
-        emit ISparkPrimeVault.Claim(user, 500_000e6 - 1);
+        emit ISparkPrimeVault.Claim(user, recipient, 500_000e6 - 1);
 
-        spPrime.claim(user);
+        vm.prank(user);
+        spPrime.claim(recipient);
 
         vaultState.totalClaimable = 0;
 
-        userBalances.assets            = 500_000e6 - 1;
         userBalances.claimableAssetsOf = 0;
+
+        recipientBalances.assets = 500_000e6 - 1;
 
         vaultBalances.assets = 0;
 
         _assertVaultState();
         _assertAccountBalances(userBalances);
+        _assertAccountBalances(recipientBalances);
         _assertAccountBalances(vaultBalances);
     }
 
